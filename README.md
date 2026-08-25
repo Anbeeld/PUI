@@ -17,6 +17,8 @@ Pi is a great harness, one of the most efficient on the market. But it's minimal
 - **Keep the CLI and browser in the same Pi environment.** PUI aligns standalone Pi with the agent runtime bundled by Pi Web, uses Pi's normal `~/.pi/agent` configuration, and enables Pi's standard local tools by default.
 - **Install and maintain the composition as one profile.** The lifecycle scripts back up JSON before changing it, structurally merge only PUI-owned settings, reconcile managed packages, reapply branding after updates, and preserve user-owned configuration during uninstall.
 
+![Support my work!](docs/screenshot.jpg)
+
 ## Requirements
 
 - Windows 10 or 11, macOS, or Linux
