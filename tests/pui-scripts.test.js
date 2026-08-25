@@ -48,6 +48,9 @@ test("CI runs the complete test suite and fails PowerShell parse errors", () => 
   assert.doesNotMatch(workflow, /node --test tests\/pui-config\.test\.js/);
   assert.match(workflow, /npm test/);
   assert.match(workflow, /throw .*Parse/i);
+  // "$f:" is parsed by PowerShell as a drive-qualified variable and aborts
+  // the workflow step before the parse check runs; use "${f}" instead.
+  assert.doesNotMatch(workflow, /\$\w+:/);
 });
 
 test("Unix lifecycle scripts propagate autostart registration and restart failures", () => {
@@ -149,6 +152,16 @@ test("full uninstall stops Pi Web before removing its global package", () => {
 test("uninstall completion text does not claim Pi remains after full removal", () => {
   for (const file of ["uninstall.ps1", "uninstall.sh"]) {
     assert.doesNotMatch(read(file), /uninstall complete[^\n]*Pi installation remains/i);
+  }
+});
+
+test("Windows VBS autostart launcher is written without a UTF-8 BOM", () => {
+  // Windows Script Host cannot parse UTF-8 with BOM: the EF BB BF prefix
+  // surfaces as "Invalid character" (800A0408) at line 1, char 1 on login.
+  for (const file of ["install.ps1", "update.ps1"]) {
+    const content = read(file);
+    assert.doesNotMatch(content, /WriteAllText\(\$launcherVbs[^)]*\$true\)/);
+    assert.match(content, /WriteAllText\(\$launcherVbs[^)]*UTF8Encoding]::new\(\$false\)\)/);
   }
 });
 

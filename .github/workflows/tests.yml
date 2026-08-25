@@ -29,7 +29,7 @@ jobs:
           foreach ($f in @("install.ps1","update.ps1","uninstall.ps1","doctor.ps1")) {
             $tokens = $null; $errs = $null
             $null = [System.Management.Automation.Language.Parser]::ParseFile("$PWD/$f", [ref]$tokens, [ref]$errs)
-            if ($errs) { throw "Parse failure in $f: $($errs[0].Message)" }
+            if ($errs) { throw "Parse failure in ${f}: $($errs[0].Message)" }
           }
       - name: Complete Node test suite
         shell: pwsh

@@ -468,7 +468,8 @@ if (-not $NoPwa) {
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""$piWebCmd"" --no-open", 0, False
 "@
-    [System.IO.File]::WriteAllText($launcherVbs, $vbsContent, [System.Text.UTF8Encoding]::new($true))
+    # No BOM: Windows Script Host rejects UTF-8 BOM with "Invalid character" (800A0408).
+    [System.IO.File]::WriteAllText($launcherVbs, $vbsContent, [System.Text.UTF8Encoding]::new($false))
     # Remove old .bat if present (migration from earlier version)
     if (Test-Path $launcherBat) { Remove-Item $launcherBat -Force -ErrorAction SilentlyContinue }
     Write-Host "  autostart launcher written: $launcherVbs (logon, hidden, loopback)"

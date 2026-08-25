@@ -200,7 +200,8 @@ if (Test-Path $launcherVbs) {
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""$piWebCmd"" --no-open", 0, False
 "@
-      [System.IO.File]::WriteAllText($launcherVbs, $vbsContent, [System.Text.UTF8Encoding]::new($true))
+      # No BOM: Windows Script Host rejects UTF-8 BOM with "Invalid character" (800A0408).
+      [System.IO.File]::WriteAllText($launcherVbs, $vbsContent, [System.Text.UTF8Encoding]::new($false))
       Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set PI_WEB_SKIP_VERSION_CHECK=1&&`"$piWebCmd`" --no-open" -WindowStyle Hidden | Out-Null
       Start-Sleep -Seconds 5
       Write-Host "    pi-web restarted"
