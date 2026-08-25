@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# PUI installer backups (written beside config files outside the repo, but just in case)
+*.pui-backup-*
+*.pui-original
+
+# OS / editor
+Thumbs.db
+.DS_Store
+*~
+.*.swp
+
+# Logs
+*.log
+/tmp/

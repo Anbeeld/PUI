@@ -1,0 +1,38 @@
+name: integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly: install current upstream packages into a clean runner.
+    - cron: "0 6 * * 1"
+
+jobs:
+  install-linux:
+    name: Clean-environment install + idempotency (non-GUI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run installer (fresh, --no-pwa)
+        run: ./install.sh --no-pwa
+      - name: Run installer again (idempotency)
+        run: ./install.sh --no-pwa
+      - name: Assert no duplicate package entries
+        run: |
+          node -e "
+          const s = require(process.env.HOME + '/.pi/agent/settings.json');
+          const pk = s.packages || [];
+          const dup = pk.filter((x, i) => pk.indexOf(x) !== i);
+          if (dup.length) { console.error('duplicates:', dup); process.exit(1); }
+          console.log('packages:', JSON.stringify(pk));
+          "
+      - name: Assert single playwright MCP entry
+        run: |
+          node -e "
+          const m = require(process.env.HOME + '/.config/mcp/mcp.json');
+          const keys = Object.keys(m.mcpServers || {}).filter(k => k === 'playwright');
+          if (keys.length !== 1) { console.error('unexpected playwright entries'); process.exit(1); }
+          "

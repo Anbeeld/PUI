@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# PUI diagnostics for native macOS and Linux. Reports facts; does not mutate by default.
+set -uo pipefail
+if [ "$#" -gt 0 ]; then echo "Unknown argument: $1" >&2; exit 64; fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB="$SCRIPT_DIR/lib/pui-config.js"
+STACK="$SCRIPT_DIR/stack.json"
+STACK_READER="$SCRIPT_DIR/lib/pui-stack.js"
+expand_path() { echo "${1/#\~/$HOME}"; }
+jget() { node "$STACK_READER" "$STACK" "$1"; }
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+status_line() { printf "  %-30s %-22s %s\n" "$1" "$2" "$3"; [ "$2" = "FAIL" ] && FAILS=$((FAILS+1)); return 0; }
+# Exit 0 when node version string $1 >= semver $2.
+node_version_ok() {
+  node -e 'const a=process.argv[1].replace(/^v/,"").split(".").map(Number);const b=process.argv[2].split(".").map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))process.exit((a[i]||0)>(b[i]||0)?0:1)}process.exit(0)' "$1" "$2"
+}
+
+FAILS=0
+MIN_NODE="$(jget minimumNode)"
+PIWEB_URL="$(jget piWeb.url)"
+
+# ---- OS detection ----
+OS_TYPE="$(uname -s)"
+case "$OS_TYPE" in
+  Darwin) OS_NAME="macOS"; OS_PRETTY="$(sw_vers -productName) $(sw_vers -productVersion 2>/dev/null || echo Darwin)" ;;
+  Linux)  OS_NAME="Linux";  OS_PRETTY="Linux $(cut -d= -f2 /etc/os-release 2>/dev/null | head -1 || echo unknown)" ;;
+  *) OS_NAME="unknown"; OS_PRETTY="$OS_TYPE" ;;
+esac
+
+echo "=== PUI doctor ($OS_NAME) ==="
+status_line "OS" "PASS" "$OS_PRETTY"
+
+if has_cmd node; then
+  if node_version_ok "$(node --version)" "$MIN_NODE"; then status_line "Node" "PASS" "$(node --version)"
+  else status_line "Node" "FAIL" "$(node --version) (min $MIN_NODE)"; fi
+else
+  status_line "Node" "FAIL" "not found"
+fi
+has_cmd npm && status_line "npm" "PASS" "$(npm --version)" || status_line "npm" "FAIL" "absent"
+has_cmd git && status_line "Git" "PASS" "$(git --version)" || status_line "Git" "FAIL" "absent"
+
+has_cmd pi && status_line "Pi version" "PASS" "$(pi --version 2>/dev/null)" || status_line "Pi version" "FAIL" "pi not on PATH"
+if has_cmd pi-web; then
+  GLOBAL_ROOT="$(npm root -g)"
+  PIWEB_PKG="$GLOBAL_ROOT/@agegr/pi-web/package.json"
+  [ -f "$PIWEB_PKG" ] && status_line "Pi Web version" "PASS" "$(node -e "console.log(require('$PIWEB_PKG').version)")" || status_line "Pi Web version" "WARN" "unknown"
+  PW_CA="$(node -e "const p=require('$PIWEB_PKG');const d=p.dependencies&&p.dependencies['@earendil-works/pi-coding-agent'];if(d)process.stdout.write(d.replace(/[^0-9.]/g,''))" 2>/dev/null)"
+  status_line "Pi Web-resolved Pi" "PASS" "$PW_CA"
+  PI_VER="$(pi --version 2>/dev/null | sed 's/[^0-9.]//g')"
+  [ "$PI_VER" = "$PW_CA" ] && status_line "runtime parity" "PASS" "$PI_VER" || status_line "runtime parity" "WARN" "pi=$PI_VER piweb=$PW_CA"
+else
+  status_line "Pi Web version" "FAIL" "not on PATH"
+fi
+
+PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
+PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
+MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
+
+pi list 2>&1 | grep -q pi-subagents && status_line "package: pi-subagents" "PASS" "" || status_line "package: pi-subagents" "FAIL" ""
+pi list 2>&1 | grep -q pi-web-access && status_line "package: pi-web-access" "PASS" "" || status_line "package: pi-web-access" "FAIL" ""
+pi list 2>&1 | grep -q pi-mcp-adapter && status_line "package: pi-mcp-adapter" "PASS" "" || status_line "package: pi-mcp-adapter" "FAIL" ""
+pi list 2>&1 | grep -q pi-goal && status_line "package: pi-goal" "PASS" "" || status_line "package: pi-goal" "FAIL" ""
+
+[ -f "$PI_SETTINGS" ] && node -e "const s=require('$PI_SETTINGS');const r=['read','bash','edit','write','grep','find','ls'];for(const t of r)if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf(t)<0)process.exit(1)" && status_line "default tool set" "PASS" "" || status_line "default tool set" "WARN" "missing"
+[ -f "$PI_WEB_ACCESS" ] && node -e "const w=require('$PI_WEB_ACCESS');if(w.searchRouting.providers.indexOf('duckduckgo')<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)" && status_line "web routing" "PASS" "duckduckgo+http" || status_line "web routing" "WARN" "missing"
+[ -f "$MCP_SHARED" ] && node -e "const m=require('$MCP_SHARED');if(!m.mcpServers||!m.mcpServers.playwright)process.exit(1)" && status_line "Playwright MCP" "PASS" "" || status_line "Playwright MCP" "WARN" "missing"
+
+AUTOSTART_REGISTERED=0
+if [ "$OS_NAME" = "macOS" ]; then
+  PLIST_LABEL="com.pui.piweb"
+  if LAUNCH_INFO="$(launchctl print "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null)"; then
+    AUTOSTART_REGISTERED=1
+    status_line "autostart registration" "PASS" "$PLIST_LABEL loaded"
+    if printf '%s\n' "$LAUNCH_INFO" | grep -q "state = running"; then
+      status_line "autostart runtime" "PASS" "state=running"
+    else
+      LAUNCH_STATE="$(printf '%s\n' "$LAUNCH_INFO" | sed -n 's/^[[:space:]]*state = //p' | head -1)"
+      LAST_EXIT="$(printf '%s\n' "$LAUNCH_INFO" | sed -n 's/^[[:space:]]*last exit code = //p' | head -1)"
+      status_line "autostart runtime" "FAIL" "state=${LAUNCH_STATE:-not running}; last-exit=${LAST_EXIT:-unknown}"
+    fi
+  else
+    status_line "autostart registration" "WARN" "no $PLIST_LABEL"
+    status_line "autostart runtime" "NOT CHECKED" "not registered"
+  fi
+elif [ "$OS_NAME" = "Linux" ]; then
+  SERVICE_NAME="pui-piweb"
+  if systemctl --user is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
+    AUTOSTART_REGISTERED=1
+    status_line "autostart registration" "PASS" "$SERVICE_NAME.service enabled"
+    if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+      status_line "autostart runtime" "PASS" "active"
+    else
+      ACTIVE_STATE="$(systemctl --user is-active "$SERVICE_NAME" 2>/dev/null || true)"
+      status_line "autostart runtime" "FAIL" "${ACTIVE_STATE:-inactive}"
+    fi
+  else
+    status_line "autostart registration" "WARN" "no $SERVICE_NAME.service"
+    status_line "autostart runtime" "NOT CHECKED" "not registered"
+  fi
+else
+  status_line "autostart registration" "NOT CHECKED" ""
+  status_line "autostart runtime" "NOT CHECKED" ""
+fi
+
+if curl -sf --max-time 5 "$PIWEB_URL" >/dev/null 2>&1; then
+  status_line "Pi Web health" "PASS" "HTTP 200"
+elif [ "$AUTOSTART_REGISTERED" -eq 1 ]; then
+  status_line "Pi Web health" "FAIL" "managed service did not answer on $PIWEB_URL"
+else
+  status_line "Pi Web health" "WARN" "not running on $PIWEB_URL"
+fi
+
+status_line "PWA status" "USER ACTION REQUIRED" "verify browser install manually"
+if [ "$FAILS" -gt 0 ]; then exit 1; fi
+exit 0

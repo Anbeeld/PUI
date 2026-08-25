@@ -1,0 +1,75 @@
+{
+  "name": "PUI",
+  "description": "Opinionated batteries-included composition profile for vanilla Pi. Setup-time scripts and repository metadata only; no runtime component.",
+  "platforms": ["windows", "macos", "linux"],
+  "upstream": {
+    "agentRuntime": {
+      "npm": "@earendil-works/pi-coding-agent",
+      "repository": "https://github.com/earendil-works/pi"
+    },
+    "gui": {
+      "npm": "@agegr/pi-web",
+      "repository": "https://github.com/agegr/pi-web"
+    },
+    "subagents": {
+      "npm": "@gotgenes/pi-subagents",
+      "repository": "https://github.com/gotgenes/pi-packages"
+    },
+    "webAccess": {
+      "npm": "pi-web-access",
+      "repository": "https://github.com/nicobailon/pi-web-access"
+    },
+    "mcpAdapter": {
+      "npm": "pi-mcp-adapter",
+      "repository": "https://github.com/nicobailon/pi-mcp-adapter"
+    },
+    "browserAutomation": {
+      "npm": "@playwright/mcp",
+      "repository": "https://github.com/microsoft/playwright-mcp"
+    },
+    "goal": {
+      "npm": "@narumitw/pi-goal",
+      "repository": "https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal"
+    }
+  },
+  "piPackages": [
+    "npm:@gotgenes/pi-subagents",
+    "npm:pi-web-access",
+    "npm:pi-mcp-adapter",
+    "npm:@narumitw/pi-goal"
+  ],
+  "retiredPiPackages": ["npm:@sting8k/pi-vcc"],
+  "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  "piWeb": {
+    "host": "127.0.0.1",
+    "port": 30141,
+    "url": "http://127.0.0.1:30141",
+    "noOpenFlag": "--no-open"
+  },
+  "mcp": {
+    "serverName": "playwright",
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@latest", "--headless", "--browser", "chrome"],
+    "lifecycle": "lazy"
+  },
+  "webAccess": {
+    "configPath": "~/.pi/web-search.json",
+    "searchRouting": {
+      "providers": ["exa", "duckduckgo"],
+      "useCurrentModel": false,
+      "fallbackOn": ["quota", "transient", "network", "invalid-response", "unsupported"]
+    },
+    "fetchRouting": {
+      "providers": ["http"],
+      "allowRemoteHostedProviders": false
+    },
+    "workflow": "none"
+  },
+  "configPaths": {
+    "piSettings": "~/.pi/agent/settings.json",
+    "piAgentDir": "~/.pi/agent",
+    "piWebAccess": "~/.pi/web-search.json",
+    "mcpShared": "~/.config/mcp/mcp.json"
+  },
+  "minimumNode": "22.19.0"
+}
