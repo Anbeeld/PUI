@@ -12,8 +12,10 @@ Pi is a great harness, one of the most efficient on the market. But it's minimal
 
 - **Use Pi from a browser.** [Pi Web](https://github.com/agegr/pi-web) provides the local GUI. PUI configures it at `http://127.0.0.1:30141` and can start it automatically for the current user.
 - **App-like use via PWA.** To use PUI as an application, open it in a browser and install is as a PWA. This requires user action, so the installer can't do this automatically.
-- **Research the web without API keys.** [`pi-web-access`](https://github.com/nicobailon/pi-web-access) routes `web_search` through anonymous Exa and DuckDuckGo, while `fetch_content` uses direct HTTP requests. [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) connects Pi to MCP servers, including [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) for lazy, headless Chrome automation.
-- **Split work and drive it toward a goal.** [`@gotgenes/pi-subagents`](https://github.com/gotgenes/pi-packages) adds in-process subagents for parallel work, and [`@narumitw/pi-goal`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal) adds a session-scoped `/goal` mode.
+- **Research the web without API keys.** [`pi-web-access`](https://github.com/nicobailon/pi-web-access) routes `web_search` through anonymous Exa and DuckDuckGo, while `fetch_content` uses direct HTTP requests.
+- **Split work with subagents.** [`@gotgenes/pi-subagents`](https://github.com/gotgenes/pi-packages) adds in-process subagents for parallel work.
+- **Drive the session toward a goal.** [`@narumitw/pi-goal`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal) adds a session-scoped `/goal` mode.
+- **Automate the browser with Playwright.** PUI configures [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) through [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) for lazy, headless Chrome automation.
 - **Keep the CLI and browser in the same Pi environment.** PUI aligns standalone Pi with the agent runtime bundled by Pi Web, uses Pi's normal `~/.pi/agent` configuration, and enables Pi's standard local tools by default.
 - **Install and maintain the composition as one profile.** The lifecycle scripts back up JSON before changing it, structurally merge only PUI-owned settings, reconcile managed packages, reapply branding after updates, and preserve user-owned configuration during uninstall.
 
