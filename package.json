@@ -1,6 +1,6 @@
 {
   "name": "pui",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Opinionated batteries-included composition profile for vanilla Pi. Setup-time scripts and repository metadata only.",
   "license": "MIT",

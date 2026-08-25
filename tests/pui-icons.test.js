@@ -95,6 +95,11 @@ test("apply installs every icon in its browser, PWA, or Apple context", (t) => {
     ".next/server/app/index.rsc",
     '[["$","link","8",{"rel":"icon","href":"/favicon.ico?hash","type":"image/x-icon","sizes":"512x512"}],["$","link","9",{"rel":"icon","href":"/icons/icon-192.png","sizes":"192x192","type":"image/png"}],["$","link","10",{"rel":"apple-touch-icon","href":"/icons/apple-touch-icon.png","sizes":"180x180","type":"image/png"}]]',
   );
+  const serviceWorker = write(
+    piWeb,
+    "public/sw.js",
+    'const PRECACHE_URLS=["/offline.html","/manifest.webmanifest","/icons/icon-192.png","/icons/icon-512.png","/icons/apple-touch-icon.png"];',
+  );
   const manifestBody = write(
     piWeb,
     ".next/server/app/manifest.webmanifest.body",
@@ -128,13 +133,13 @@ test("apply installs every icon in its browser, PWA, or Apple context", (t) => {
     manifest.icons.map(({ src, sizes, type, purpose }) => ({ src, sizes, type, purpose })),
     [
       ...pwaSizes.map((size) => ({
-        src: `/icons/icon-${size}.png`,
+        src: `/icons/icon-${size}.png?v=2`,
         sizes: `${size}x${size}`,
         type: "image/png",
         purpose: "any",
       })),
       ...maskableSizes.map((size) => ({
-        src: `/icons/maskable-${size}.png`,
+        src: `/icons/maskable-${size}.png?v=2`,
         sizes: `${size}x${size}`,
         type: "image/png",
         purpose: "maskable",
@@ -146,6 +151,8 @@ test("apply installs every icon in its browser, PWA, or Apple context", (t) => {
   for (const size of browserSizes) assert.match(pageText, new RegExp(`icon-${size}\\.png`));
   for (const [name] of appleIcons) assert.match(pageText, new RegExp(name.replace(".", "\\.")));
   assert.doesNotMatch(pageText, /icon-72\.png/);
+  for (const size of browserSizes) assert.match(pageText, new RegExp(`icon-${size}\\.png\\?v=2`));
+  for (const [name] of appleIcons) assert.match(pageText, new RegExp(`${name.replace(".", "\\.")}\\?v=2`));
 
   for (const output of [html, rsc]) {
     const content = fs.readFileSync(output, output.endsWith(".rsc") ? "latin1" : "utf8");
@@ -153,11 +160,19 @@ test("apply installs every icon in its browser, PWA, or Apple context", (t) => {
     for (const [name] of appleIcons) assert.match(content, new RegExp(name.replace(".", "\\.")));
     assert.match(content, /favicon\.ico\?hash/);
     assert.doesNotMatch(content, /image\/x-icon|512x512[^\n]*favicon/);
+    for (const size of browserSizes) assert.match(content, new RegExp(`icon-${size}\\.png\\?v=2`));
+    for (const [name] of appleIcons) assert.match(content, new RegExp(`${name.replace(".", "\\.")}\\?v=2`));
+    assert.match(content, /favicon\.ico\?hash&v=2/);
   }
   for (const size of pwaSizes) assert.match(fs.readFileSync(manifestRoute, "utf8"), new RegExp(`icon-${size}\\.png`));
+  for (const size of pwaSizes) assert.match(fs.readFileSync(manifestRoute, "utf8"), new RegExp(`icon-${size}\\.png\\?v=2`));
   for (const size of maskableSizes) {
     assert.match(fs.readFileSync(manifestRoute, "utf8"), new RegExp(`maskable-${size}\\.png`));
+    assert.match(fs.readFileSync(manifestRoute, "utf8"), new RegExp(`maskable-${size}\\.png\\?v=2`));
   }
+  assert.match(fs.readFileSync(serviceWorker, "utf8"), /icon-192\.png\?v=2/);
+  assert.match(fs.readFileSync(serviceWorker, "utf8"), /icon-512\.png\?v=2/);
+  assert.match(fs.readFileSync(serviceWorker, "utf8"), /apple-touch-icon\.png\?v=2/);
 });
 
 test("every install and update entry point uses the shared icon helper", () => {
