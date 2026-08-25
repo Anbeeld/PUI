@@ -2,12 +2,34 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const repoRoot = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(repoRoot, file), "utf8");
+const unixEntryPoints = ["install.sh", "update.sh", "uninstall.sh", "doctor.sh"];
+
+test("Unix entry points are executable in Git", () => {
+  const result = spawnSync("git", ["ls-files", "--stage", "--", ...unixEntryPoints], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+
+  const modes = new Map(
+    result.stdout
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [mode, , , file] = line.split(/\s+/);
+        return [file, mode];
+      }),
+  );
+  for (const file of unixEntryPoints) assert.equal(modes.get(file), "100755", file);
+});
 
 test("all Unix entry points use the shared stack reader", () => {
-  for (const file of ["install.sh", "update.sh", "uninstall.sh", "doctor.sh"]) {
+  for (const file of unixEntryPoints) {
     const content = read(file);
     assert.match(content, /lib\/pui-stack\.js/);
     assert.doesNotMatch(content, /process\.stdout\.write\(JSON\.stringify\(v\)\)/);

@@ -3,10 +3,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
+const vm = require("node:vm");
 
 const repoRoot = path.resolve(__dirname, "..");
 const brandingScript = path.join(repoRoot, "lib", "pui-branding.js");
+const { replaceBranding } = require(brandingScript);
 
 function writeFixture(root, relativePath, content) {
   const target = path.join(root, relativePath);
@@ -14,6 +17,36 @@ function writeFixture(root, relativePath, content) {
   fs.writeFileSync(target, content);
   return target;
 }
+
+test("dynamic titles use PUI-first ordering in every display mode", () => {
+  const source = replaceBranding(
+    'function makeTitle(project){return project?`${project} - Pi Web`:"Pi Web";} makeTitle("anbeeld-com");',
+  );
+
+  assert.doesNotMatch(source, /display-mode/);
+  const serverTitle = vm.runInNewContext(source);
+  const browserTitle = vm.runInNewContext(source, {
+    window: { matchMedia: () => ({ matches: false }) },
+  });
+  const pwaTitle = vm.runInNewContext(source, {
+    window: { matchMedia: () => ({ matches: true }) },
+  });
+  const pwaPuiProjectTitle = vm.runInNewContext(source.replace("anbeeld-com", "PUI"), {
+    window: { matchMedia: () => ({ matches: true }) },
+  });
+
+  assert.equal(serverTitle, "PUI - anbeeld-com");
+  assert.equal(browserTitle, "PUI - anbeeld-com");
+  assert.equal(pwaTitle, "PUI - anbeeld-com");
+  assert.equal(pwaPuiProjectTitle, "PUI - PUI");
+});
+
+test("branding migrates the previous display-mode title expression", () => {
+  const previous =
+    'const tab=project?typeof window !== "undefined"&&window.matchMedia("(display-mode: standalone)").matches?`PUI - ${project}`:`${project} - PUI`:"PUI";';
+
+  assert.equal(replaceBranding(previous), 'const tab=project?`PUI - ${project}`:"PUI";');
+});
 
 test("apply changes only top-level Pi Web branding surfaces to PUI", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-branding-"));
@@ -32,7 +65,7 @@ test("apply changes only top-level Pi Web branding surfaces to PUI", (t) => {
   const html = writeFixture(
     root,
     ".next/server/app/index.html",
-    '<title>Pi Web</title><meta name="description" content="Pi Web interface for the pi coding agent"/><meta name="application-name" content="Pi Web"/><meta name="apple-mobile-web-app-title" content="Pi Web"/>\n[[\\"$\\",\\"title\\",\\"0\\",{\\"children\\":\\"Pi Web\\"}],[\\"$\\",\\"meta\\",\\"1\\",{\\"name\\":\\"description\\",\\"content\\":\\"Pi Web interface for the pi coding agent\\"}],[\\"$\\",\\"meta\\",\\"2\\",{\\"name\\":\\"application-name\\",\\"content\\":\\"Pi Web\\"}],[\\"$\\",\\"meta\\",\\"6\\",{\\"name\\":\\"apple-mobile-web-app-title\\",\\"content\\":\\"Pi Web\\"}]]',
+    '<title>Pi Web</title><script src="/_next/static/chunks/app/page-buildhash.js"></script><meta name="description" content="Pi Web interface for the pi coding agent"/><meta name="application-name" content="Pi Web"/><meta name="apple-mobile-web-app-title" content="Pi Web"/>\n[[\\"$\\",\\"title\\",\\"0\\",{\\"children\\":\\"Pi Web\\"}],[\\"$\\",\\"meta\\",\\"1\\",{\\"name\\":\\"description\\",\\"content\\":\\"Pi Web interface for the pi coding agent\\"}],[\\"$\\",\\"meta\\",\\"2\\",{\\"name\\":\\"application-name\\",\\"content\\":\\"Pi Web\\"}],[\\"$\\",\\"meta\\",\\"6\\",{\\"name\\":\\"apple-mobile-web-app-title\\",\\"content\\":\\"Pi Web\\"}]]',
   );
   const manifestBody = writeFixture(
     root,
@@ -47,7 +80,12 @@ test("apply changes only top-level Pi Web branding surfaces to PUI", (t) => {
   const rsc = writeFixture(
     root,
     ".next/server/app/index.rsc",
-    '[["$","title","0",{"children":"Pi Web"}],["$","meta","1",{"name":"description","content":"Pi Web interface for the pi coding agent"}],["$","meta","2",{"name":"application-name","content":"Pi Web"}],["$","meta","6",{"name":"apple-mobile-web-app-title","content":"Pi Web"}]]',
+    '[["$","title","0",{"children":"Pi Web"}],["$","meta","1",{"name":"description","content":"Pi Web interface for the pi coding agent"}],["$","meta","2",{"name":"application-name","content":"Pi Web"}],["$","meta","6",{"name":"apple-mobile-web-app-title","content":"Pi Web"}],["chunk","static/chunks/app/page-buildhash.js"]]',
+  );
+  const clientReferenceManifest = writeFixture(
+    root,
+    ".next/server/app/page_client-reference-manifest.js",
+    'self.__RSC_MANIFEST={entryJSFiles:{"app/page":["static/chunks/app/page-buildhash.js"]}};',
   );
   const clientPage = writeFixture(
     root,
@@ -72,7 +110,7 @@ test("apply changes only top-level Pi Web branding surfaces to PUI", (t) => {
 
   assert.equal(
     fs.readFileSync(serverPage, "utf8"),
-    'let m={title:"PUI",description:"PUI - opinionated Pi setup",applicationName:"PUI",appleWebApp:{title:"PUI"}};const release="Pi Web v{version} is available. View release notes";const splash=expanded?"0.8.9p0.84.2":"PUI";const sidebar={children:"PUI"};const tab=project?`${project} - PUI`:"PUI";',
+    'let m={title:"PUI",description:"PUI - opinionated Pi setup",applicationName:"PUI",appleWebApp:{title:"PUI"}};const release="Pi Web v{version} is available. View release notes";const splash=expanded?"0.8.9p0.84.2":"PUI";const sidebar={children:"PUI"};const tab=project?`PUI - ${project}`:"PUI";',
   );
   assert.doesNotMatch(fs.readFileSync(notFoundPage, "utf8"), /Pi Web/);
   assert.match(fs.readFileSync(html, "utf8"), /<title>PUI<\/title>/);
@@ -88,7 +126,17 @@ test("apply changes only top-level Pi Web branding surfaces to PUI", (t) => {
   assert.match(fs.readFileSync(clientPage, "utf8"), /Pi Web v\{version\} is available/);
   assert.match(fs.readFileSync(clientPage, "utf8"), /"0\.8\.9p0\.84\.2":"PUI",animate/);
   assert.match(fs.readFileSync(clientPage, "utf8"), /children:"PUI"/);
-  assert.match(fs.readFileSync(clientPage, "utf8"), /`\$\{project\} - PUI`:"PUI"/);
+  assert.doesNotMatch(fs.readFileSync(clientPage, "utf8"), /display-mode/);
+  assert.match(fs.readFileSync(clientPage, "utf8"), /`PUI - \$\{project\}`/);
+  const clientHash = crypto
+    .createHash("sha256")
+    .update(fs.readFileSync(clientPage))
+    .digest("hex")
+    .slice(0, 12);
+  const versionedChunk = `page-buildhash.js?pui=${clientHash}`;
+  assert.ok(fs.readFileSync(html, "utf8").includes(versionedChunk));
+  assert.ok(fs.readFileSync(rsc, "latin1").includes(versionedChunk));
+  assert.ok(fs.readFileSync(clientReferenceManifest, "utf8").includes(versionedChunk));
   assert.equal(
     fs.readFileSync(componentDiagnostic, "utf8"),
     'console.error("Failed to register the Pi Web service worker:", error);',
