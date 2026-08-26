@@ -17,12 +17,25 @@ test("PUI manages pi-goal and retires pi-vcc", () => {
     "npm:pi-web-access@0.25.0",
     "npm:pi-mcp-adapter@2.27.0",
     "npm:@narumitw/pi-goal@0.54.0",
+    "npm:@narumitw/pi-accounts@0.49.10",
     "npm:@juicesharp/rpiv-ask-user-question@2.7.1",
     "npm:pi-fff@0.1.12",
   ]);
   assert.deepEqual(stack.retiredPiPackages, ["npm:@sting8k/pi-vcc"]);
   assert.equal("compaction" in stack.upstream, false);
   assert.equal("piVcc" in stack.configPaths, false);
+});
+
+test("PUI manages named OAuth accounts", () => {
+  assert.deepEqual(stack.upstream.accounts, {
+    npm: "@narumitw/pi-accounts",
+    version: "0.49.10",
+    repository: "https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-accounts",
+  });
+  for (const script of ["install.ps1", "install.sh", "doctor.ps1", "doctor.sh"]) {
+    const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
+    assert.match(content, /pi-accounts/, `${script}: pi-accounts`);
+  }
 });
 
 test("PUI manages structured questions and fuzzy file search", () => {

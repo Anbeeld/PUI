@@ -4,7 +4,7 @@ This file records the upstream interfaces and live behaviors that PUI relies on.
 
 ## npm registry check (2026-08-26)
 
-All 9 upstream packages exist and publish `latest` distribution tags:
+All 10 upstream packages exist and publish `latest` distribution tags:
 
 | Package | Latest |
 |---|---:|
@@ -15,6 +15,7 @@ All 9 upstream packages exist and publish `latest` distribution tags:
 | `pi-mcp-adapter` | 2.27.0 |
 | `@playwright/mcp` | 0.0.79 |
 | `@narumitw/pi-goal` | 0.54.0 |
+| `@narumitw/pi-accounts` | 0.49.10 |
 | `@juicesharp/rpiv-ask-user-question` | 2.7.1 |
 | `pi-fff` | 0.1.12 |
 
@@ -33,6 +34,7 @@ All 9 upstream packages exist and publish `latest` distribution tags:
 | `pi update --models` retains its current model-catalog refresh semantics | update scripts | `pi update --help` and a test installation |
 | `pi install npm:<spec>` remains idempotent | install scripts | Install twice and inspect `settings.json` |
 | Installed Pi packages remain represented in `settings.json` `packages[]` | install and pin handling | Inspect settings after `pi install` |
+| `@narumitw/pi-accounts` switches named accounts without PUI owning extension account state | `piPackages` | Add two test accounts and switch between them in CLI and Pi Web sessions |
 | `@juicesharp/rpiv-ask-user-question` registers `ask_user_question` in supported interactive hosts | `piPackages` | Start CLI and Pi Web sessions and complete a structured question |
 | `pi-fff` loads its native FFF dependency and indexes the active project on every supported platform | `piPackages` | Run `/fff-status`, fuzzy file resolution, and indexed search on Windows, macOS, and Linux |
 | Pi Web build outputs still contain the targeted branding and icon metadata files | branding and icon helpers | Run helper tests and inspect the installed package |
@@ -54,6 +56,7 @@ These checks require a live model session, upstream service, or desktop browser 
 7. Complete a structured `ask_user_question` flow in both the terminal and Pi Web.
 8. Run `/fff-status`, fuzzy path resolution, and indexed content search on each supported platform.
 9. Confirm the six managed Playwright tools register directly while a non-direct tool remains discoverable and callable through the `mcp` proxy.
+10. Add two supported OAuth accounts with `pi-accounts` and switch between them in both the terminal and Pi Web.
 
 Record the results in the release notes.
 

@@ -335,7 +335,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension install failed" -F
 $r = Invoke-Pi -PiArgs @("list")
 if ($r.exit -eq 0) {
   Write-Host "  pi list:"; $r.out -split "`n" | ForEach-Object { if ($_) { Write-Host "    $_" } }
-  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","rpiv-ask-user-question","pi-fff")) {
+  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","rpiv-ask-user-question","pi-fff")) {
     if ($r.out -notmatch $p) { Write-Host "  package not visible: $p" -ForegroundColor Yellow }
   }
 } else { Write-Host "  pi list failed: $($r.out)" -ForegroundColor Yellow }
@@ -551,7 +551,7 @@ $piListStr = ""
 if ($r.exit -eq 0) {
   $piListStr = $r.out
   $allPkg = $true
-  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","rpiv-ask-user-question","pi-fff")) { if ($r.out -notmatch $p) { $allPkg = $false } }
+  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","rpiv-ask-user-question","pi-fff")) { if ($r.out -notmatch $p) { $allPkg = $false } }
   if ($allPkg) { $smoke += "[PASS] 4. all required packages visible" } else { $smoke += "[FAIL] 4. missing packages"; $g9 = $false }
 } else { $smoke += "[FAIL] 4. pi list failed"; $g9 = $false }
 

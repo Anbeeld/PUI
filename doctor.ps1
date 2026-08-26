@@ -65,10 +65,10 @@ $mcpShared = Expand-Path $Stack.configPaths.mcpShared
 try {
   $piList = & pi list 2>&1
   $piListStr = $piList -join "`n"
-  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","rpiv-ask-user-question","pi-fff")) {
+  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","rpiv-ask-user-question","pi-fff")) {
     Status "package: $p" $(if ($piListStr -match $p) { "PASS" } else { "FAIL" }) ""
   }
-} catch { foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","rpiv-ask-user-question","pi-fff")) { Status "package: $p" "NOT CHECKED" "" } }
+} catch { foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","rpiv-ask-user-question","pi-fff")) { Status "package: $p" "NOT CHECKED" "" } }
 
 # default tool set
 if (Test-Path $piSettings) {

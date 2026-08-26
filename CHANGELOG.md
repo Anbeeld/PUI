@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.6
+
+- Added the exact managed `@narumitw/pi-accounts` pin across install, update, diagnostics, full uninstall, and documentation.
+
 ## v1.0.5
 
 - Fixed Windows updates by passing the managed Playwright MCP definition through a temporary file that Windows PowerShell 5.1 preserves correctly.

@@ -61,6 +61,7 @@ pi list 2>&1 | grep -q pi-subagents && status_line "package: pi-subagents" "PASS
 pi list 2>&1 | grep -q pi-web-access && status_line "package: pi-web-access" "PASS" "" || status_line "package: pi-web-access" "FAIL" ""
 pi list 2>&1 | grep -q pi-mcp-adapter && status_line "package: pi-mcp-adapter" "PASS" "" || status_line "package: pi-mcp-adapter" "FAIL" ""
 pi list 2>&1 | grep -q pi-goal && status_line "package: pi-goal" "PASS" "" || status_line "package: pi-goal" "FAIL" ""
+pi list 2>&1 | grep -q pi-accounts && status_line "package: pi-accounts" "PASS" "" || status_line "package: pi-accounts" "FAIL" ""
 pi list 2>&1 | grep -q rpiv-ask-user-question && status_line "package: rpiv-ask-user-question" "PASS" "" || status_line "package: rpiv-ask-user-question" "FAIL" ""
 pi list 2>&1 | grep -q pi-fff && status_line "package: pi-fff" "PASS" "" || status_line "package: pi-fff" "FAIL" ""
 

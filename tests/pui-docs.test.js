@@ -31,6 +31,7 @@ test("documented upstream versions match stack package count", () => {
   const stack = require(path.join(repoRoot, "stack.json"));
   assert.match(content, new RegExp(`All ${Object.keys(stack.upstream).length} upstream packages`));
   assert.match(content, /`@narumitw\/pi-goal` \| 0\.54\.0/);
+  assert.match(content, /`@narumitw\/pi-accounts` \| 0\.49\.10/);
   assert.match(content, /`@juicesharp\/rpiv-ask-user-question` \| 2\.7\.1/);
   assert.match(content, /`pi-fff` \| 0\.1\.12/);
 });
@@ -46,8 +47,15 @@ test("v1.0.4 documentation describes every added managed extension", () => {
     assert.match(changelog, new RegExp(packageName.replace("/", "\\/")), `CHANGELOG.md: ${packageName}`);
   }
   for (const content of [readme, components, changelog]) assert.doesNotMatch(content, /pi-permission-system/);
-  assert.match(changelog, /^# Changelog\s+## v1\.0\.5/m);
+  assert.match(changelog, /^# Changelog\s+## v1\.0\.6/m);
   assert.match(changelog, /^## v1\.0\.4$/m);
+});
+
+test("documentation describes managed account switching", () => {
+  for (const file of ["README.md", "docs/components.md", "CHANGELOG.md"]) {
+    const content = fs.readFileSync(path.join(repoRoot, file), "utf8");
+    assert.match(content, /@narumitw\/pi-accounts/, file);
+  }
 });
 
 test("documentation describes the hybrid Playwright MCP policy", () => {
