@@ -300,7 +300,7 @@ if [ "$G6" != "1" ]; then exit 1; fi
 
 # ---- Phase 7: MCP + Playwright (G7) ----
 write_phase 7 "MCP + Playwright"
-MCP_DEF="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({command:s.mcp.command,args:s.mcp.args,lifecycle:s.mcp.lifecycle}))' "$STACK")"
+MCP_DEF="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({command:s.mcp.command,args:s.mcp.args,lifecycle:s.mcp.lifecycle,directTools:s.mcp.directTools}))' "$STACK")"
 set +e
 node_config set-server "$MCP_SHARED" "$(jget mcp.serverName)" "$MCP_DEF"
 RC=$?
@@ -310,7 +310,8 @@ if [ "$RC" -eq 2 ]; then
   gate G7 "mcp" 0; exit 1
 elif [ "$RC" -ne 0 ]; then gate G7 "mcp" 0; exit 1; fi
 G7=1
-node -e 'const m=require(process.argv[1]);if(!m.mcpServers||!m.mcpServers.playwright)process.exit(1)' "$MCP_SHARED" || G7=0
+node -e 'const m=require(process.argv[1]),s=require(process.argv[2]);const p=m.mcpServers&&m.mcpServers.playwright;process.exit(p&&JSON.stringify(p.directTools)===JSON.stringify(s.mcp.directTools)&&m.settings?.disableProxyTool!==true?0:1)' "$MCP_SHARED" "$STACK" || G7=0
+[ "$(node -e 'const m=require(process.argv[1]);process.stdout.write(m.settings?.disableProxyTool===true?"1":"0")' "$MCP_SHARED")" = "1" ] && echo "  MCP proxy is disabled by settings.disableProxyTool; PUI requires it for non-direct tools." >&2
 gate G7 "mcp (config)" "$G7"
 if [ "$G7" != "1" ]; then exit 1; fi
 
@@ -454,7 +455,7 @@ PI_VER="$(pi --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
 PW_CA="$(resolve_piweb_ca_ver)"
 if [ -n "$PW_CA" ] && [ "$PI_VER" = "$PW_CA" ]; then SMOKE+=("[PASS] 3. runtime parity ($PI_VER)"); else SMOKE+=("[WARN] 3. runtime parity pi=$PI_VER piweb=${PW_CA:-unresolved}"); fi
 PI_LIST="$(pi list 2>&1 || true)"
-echo "$PI_LIST" | grep -q pi-subagents && echo "$PI_LIST" | grep -q pi-web-access && echo "$PI_LIST" | grep -q pi-mcp-adapter && echo "$PI_LIST" | grep -q pi-goal && SMOKE+=("[PASS] 4. all packages visible") || { SMOKE+=("[FAIL] 4. missing packages"); G9=0; }
+echo "$PI_LIST" | grep -q pi-subagents && echo "$PI_LIST" | grep -q pi-web-access && echo "$PI_LIST" | grep -q pi-mcp-adapter && echo "$PI_LIST" | grep -q pi-goal && echo "$PI_LIST" | grep -q rpiv-ask-user-question && echo "$PI_LIST" | grep -q pi-fff && SMOKE+=("[PASS] 4. all packages visible") || { SMOKE+=("[FAIL] 4. missing packages"); G9=0; }
 node -e 'const s=require(process.argv[1]);const r=["read","bash","edit","write","grep","find","ls"];for(const t of r)if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf(t)<0)process.exit(1)' "$PI_SETTINGS" && SMOKE+=("[PASS] 5/6. defaultTools present") || { SMOKE+=("[FAIL] 5/6. missing defaultTools"); G9=0; }
 node -e 'const w=require(process.argv[1]);if(w.searchRouting.providers.indexOf("duckduckgo")<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)' "$PI_WEB_ACCESS" && SMOKE+=("[PASS] 7/8. keyless web configured") || { SMOKE+=("[FAIL] 7/8. keyless web"); G9=0; }
 node -e 'const m=require(process.argv[1]);if(!m.mcpServers||!m.mcpServers.playwright)process.exit(1)' "$MCP_SHARED" && SMOKE+=("[PASS] 11. playwright MCP present") || { SMOKE+=("[FAIL] 11. playwright MCP"); G9=0; }

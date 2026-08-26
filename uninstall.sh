@@ -49,13 +49,13 @@ echo "  PWA browser app: remove manually from browser settings if installed."
 
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
 if [ -f "$MCP_SHARED" ]; then
-  # Exact-shape ownership check: command AND full args must equal the
+  # Exact-shape ownership check: command, args, lifecycle, and direct tools must equal the
   # PUI-managed definition; anything else is user-owned and preserved.
   if node -e '
 const s=require(process.argv[1]);
 const m=require(process.argv[2]);
 const p=m.mcpServers&&m.mcpServers.playwright;
-const ok=p&&p.command===s.mcp.command&&JSON.stringify(p.args||null)===JSON.stringify(s.mcp.args)&&p.lifecycle===s.mcp.lifecycle;
+const ok=p&&p.command===s.mcp.command&&JSON.stringify(p.args||null)===JSON.stringify(s.mcp.args)&&p.lifecycle===s.mcp.lifecycle&&JSON.stringify(p.directTools||null)===JSON.stringify(s.mcp.directTools);
 process.exit(ok?0:1)' "$STACK" "$MCP_SHARED" 2>/dev/null; then
     echo "  removing PUI-managed 'playwright' MCP entry from $MCP_SHARED"
     node "$LIB" remove-server "$MCP_SHARED" playwright >/dev/null

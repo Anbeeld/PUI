@@ -10,9 +10,11 @@ PUI is a composition profile with no separate runtime process, daemon, persisten
 | GUI | `@agegr/pi-web` | Pi Web build | Loopback `127.0.0.1:30141`; `--no-open` for autostart |
 | Subagents | `@gotgenes/pi-subagents` | Pi package entry | In-process subagent extension |
 | Web search and fetch | `pi-web-access` | `~/.pi/web-search.json` | Anonymous Exa, DuckDuckGo fallback, direct HTTP fetch |
-| MCP adapter | `pi-mcp-adapter` | `~/.config/mcp/mcp.json` | Lazy MCP proxy |
-| Browser automation | `@playwright/mcp` | `~/.config/mcp/mcp.json` | Lazy, headless Chrome server |
+| MCP adapter | `pi-mcp-adapter` | `~/.config/mcp/mcp.json` | Proxy-first MCP layer with selected direct tools |
+| Browser automation | `@playwright/mcp` | `~/.config/mcp/mcp.json` | Lazy, headless Chrome; `browser_navigate` and five other common tools direct, long tail proxied |
 | Goal completion | `@narumitw/pi-goal` | Pi package entry | Session-scoped `/goal` mode |
+| Structured questions | `@juicesharp/rpiv-ask-user-question` | Optional extension-owned config | Typed `ask_user_question` choices and free-form answers |
+| Fuzzy file navigation | `pi-fff` | Extension-owned feature state | Fuzzy references, path resolution, and indexed content search |
 | PUI update identity | PUI-owned `pui-update` extension | `~/.pi/agent/extensions/pui-update/manifest.json` | Inert unless invoked; no polling or daemon |
 
 ## Managed files and fields
@@ -21,8 +23,12 @@ PUI structurally merges these JSON files after making timestamped backups:
 
 - `~/.pi/agent/settings.json`: `defaultTools` and managed package entries
 - `~/.pi/web-search.json`: `searchRouting`, `fetchRouting`, and `workflow`
-- `~/.config/mcp/mcp.json`: `mcpServers.playwright`
+- `~/.config/mcp/mcp.json`: `mcpServers.playwright.command`, `args`, and the six-tool `directTools` policy
 - `~/.pi/agent/extensions/pui-update/`: installed PUI identity and detached transaction worker
+
+PUI owns the exact package pins for the two added extensions, but it does not manage their optional configuration, feature state, or logs.
+
+PUI's MCP policy is proxy-first: servers stay available through the `mcp` tool, and only frequently used operations are promoted through a server's `directTools` list. PUI does not set `settings.disableProxyTool`, overwrite global adapter settings, or apply its Playwright policy to unrelated MCP servers.
 
 It may also write one per-user autostart file:
 

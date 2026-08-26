@@ -15,6 +15,8 @@ Pi is a great harness, one of the most efficient on the market. But it's minimal
 - **Research the web without API keys.** [`pi-web-access`](https://github.com/nicobailon/pi-web-access) routes `web_search` through anonymous Exa and DuckDuckGo, while `fetch_content` uses direct HTTP requests.
 - **Split work with subagents.** [`@gotgenes/pi-subagents`](https://github.com/gotgenes/pi-packages) adds in-process subagents for parallel work.
 - **Drive the session toward a goal.** [`@narumitw/pi-goal`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal) adds a session-scoped `/goal` mode.
+- **Ask before guessing.** [`@juicesharp/rpiv-ask-user-question`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-ask-user-question) gives the model a structured questionnaire with typed choices and optional free-form answers.
+- **Find files and code fuzzily.** [`pi-fff`](https://github.com/ShpetimA/pi-fff) adds fuzzy file references, path resolution, and indexed content search.
 - **Automate the browser with Playwright.** PUI configures [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) through [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) for lazy, headless Chrome automation.
 - **Keep the CLI and browser in the same Pi environment.** PUI aligns standalone Pi with the agent runtime bundled by Pi Web, uses Pi's normal `~/.pi/agent` configuration, and enables Pi's standard local tools by default.
 - **Install and maintain the composition as one profile.** Each PUI release pins the direct managed components. The app can discover a stable release once per launch, but it applies one only after you select **Install**. Failed mutations restore and validate the previous certified composition.
@@ -96,6 +98,8 @@ PUI is a setup and composition layer built on the work of other open-source proj
 | [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | MCP configuration and proxy integration |
 | [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) | Browser automation through headless Chrome |
 | [`@narumitw/pi-goal`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal) | Session-scoped goal mode |
+| [`@juicesharp/rpiv-ask-user-question`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-ask-user-question) | Structured questions and typed user choices |
+| [`pi-fff`](https://github.com/ShpetimA/pi-fff) | Fuzzy file navigation and indexed content search |
 
 Please see each upstream repository for its license, contribution history, and project-specific terms.
 

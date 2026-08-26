@@ -66,6 +66,15 @@ test("detached updater starts outside the replaceable Pi Web package tree", () =
   assert.equal(options.windowsHide, true);
 });
 
+test("update lock identifies the active transaction", (t) => {
+  const { LOCK_FILE, acquireLock } = require(path.join(repoRoot, "lib", "pui-updater.js"));
+  const release = acquireLock();
+  t.after(release);
+  const lock = JSON.parse(fs.readFileSync(LOCK_FILE, "utf8"));
+  assert.equal(lock.pid, process.pid);
+  assert.match(lock.id, /^\d+-\d+$/);
+});
+
 test("discovery offers only a newer stable release and honors one exact skip", () => {
   assert.equal(chooseStableUpdate("1.0.0", { tag_name: "v1.1.0", draft: false, prerelease: false }, null), "1.1.0");
   assert.equal(chooseStableUpdate("1.1.0", { tag_name: "v1.1.0", draft: false, prerelease: false }, null), null);

@@ -17,10 +17,33 @@ test("PUI manages pi-goal and retires pi-vcc", () => {
     "npm:pi-web-access@0.25.0",
     "npm:pi-mcp-adapter@2.27.0",
     "npm:@narumitw/pi-goal@0.54.0",
+    "npm:@juicesharp/rpiv-ask-user-question@2.7.1",
+    "npm:pi-fff@0.1.12",
   ]);
   assert.deepEqual(stack.retiredPiPackages, ["npm:@sting8k/pi-vcc"]);
   assert.equal("compaction" in stack.upstream, false);
   assert.equal("piVcc" in stack.configPaths, false);
+});
+
+test("PUI manages structured questions and fuzzy file search", () => {
+  assert.deepEqual(stack.upstream.askUserQuestion, {
+    npm: "@juicesharp/rpiv-ask-user-question",
+    version: "2.7.1",
+    repository: "https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-ask-user-question",
+  });
+  assert.deepEqual(stack.upstream.fuzzyFileFinder, {
+    npm: "pi-fff",
+    version: "0.1.12",
+    repository: "https://github.com/ShpetimA/pi-fff",
+  });
+  for (const script of ["install.ps1", "install.sh", "doctor.ps1", "doctor.sh"]) {
+    const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
+    for (const packageName of ["rpiv-ask-user-question", "pi-fff"]) {
+      assert.match(content, new RegExp(packageName), `${script}: ${packageName}`);
+    }
+    assert.doesNotMatch(content, /pi-permission-system/, `${script}: removed package`);
+  }
+  assert.equal(Object.hasOwn(stack.upstream, "permissionSystem"), false);
 });
 
 test("managed packages are exact and lifecycle scripts do not roll them forward", () => {
@@ -33,6 +56,18 @@ test("managed packages are exact and lifecycle scripts do not roll them forward"
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
     assert.doesNotMatch(content, /pi update --extensions/);
   }
+});
+
+test("Playwright exposes six common tools directly and keeps proxy discovery enabled", () => {
+  assert.deepEqual(stack.mcp.directTools, [
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_wait_for",
+    "browser_take_screenshot",
+  ]);
+  assert.equal(Object.hasOwn(stack.mcp, "disableProxyTool"), false);
 });
 
 test("all lifecycle entry points manage installed identity and Pi Web integration", () => {

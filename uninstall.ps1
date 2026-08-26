@@ -56,12 +56,14 @@ if (Test-Path $mcpShared) {
   $mcp = Get-Content $mcpShared -Raw | ConvertFrom-Json
   $pw = $mcp.mcpServers.playwright
   if ($pw) {
-    # structural ownership check: exact command, args, and lifecycle against
+    # structural ownership check: exact command, args, lifecycle, and direct tools against
     # the PUI-managed definition; anything else is user-owned and preserved.
     $puiArgs = ConvertTo-Json -InputObject @($Stack.mcp.args) -Compress
     $exArgs = "null"
     if ($pw.args) { $exArgs = ConvertTo-Json -InputObject @($pw.args) -Compress }
-    $pkgMatch = ($pw.command -eq [string]$Stack.mcp.command) -and ($exArgs -eq $puiArgs) -and ($pw.lifecycle -eq [string]$Stack.mcp.lifecycle)
+    $puiDirectTools = ConvertTo-Json -InputObject @($Stack.mcp.directTools) -Compress
+    $exDirectTools = ConvertTo-Json -InputObject @($pw.directTools) -Compress
+    $pkgMatch = ($pw.command -eq [string]$Stack.mcp.command) -and ($exArgs -eq $puiArgs) -and ($pw.lifecycle -eq [string]$Stack.mcp.lifecycle) -and ($exDirectTools -eq $puiDirectTools)
     if ($pkgMatch) {
       Write-Host "  removing PUI-managed 'playwright' MCP entry from $mcpShared"
       & node $Lib "remove-server" $mcpShared "playwright" | Out-Null

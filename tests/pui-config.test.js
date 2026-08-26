@@ -187,6 +187,45 @@ test("setMcpServer replaces a compatible rolling package token with the exact ma
   assert.deepEqual(cfg.mcpServers.playwright.env, { USER_SETTING: "preserved" });
 });
 
+test("CLI set-server replaces managed direct tools and preserves unrelated MCP fields", () => {
+  const d = tmpdir(); const f = path.join(d, "mcp.json");
+  w(d, "mcp.json", JSON.stringify({
+    settings: { disableProxyTool: false },
+    mcpServers: {
+      other: { command: "other" },
+      playwright: {
+        command: "npx",
+        args: ["-y", "@playwright/mcp@0.0.79", "--headless", "--browser", "chrome"],
+        lifecycle: "lazy",
+        directTools: ["browser_navigate", "browser_evaluate"],
+        env: { USER_SETTING: "preserved" },
+      },
+    },
+  }));
+  const directTools = [
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_wait_for",
+    "browser_take_screenshot",
+  ];
+  const def = {
+    command: "npx",
+    args: ["-y", "@playwright/mcp@0.0.79", "--headless", "--browser", "chrome"],
+    lifecycle: "lazy",
+    directTools,
+  };
+
+  const res = runCli(["set-server", f, "playwright", JSON.stringify(def)]);
+  assert.equal(res.exit, 0);
+  const out = rj(d, "mcp.json");
+  assert.deepEqual(out.mcpServers.playwright.directTools, directTools);
+  assert.deepEqual(out.mcpServers.playwright.env, { USER_SETTING: "preserved" });
+  assert.deepEqual(out.mcpServers.other, { command: "other" });
+  assert.equal(out.settings.disableProxyTool, false);
+});
+
 // ---------- CLI end-to-end fixtures ----------
 function runCli(args, expectExit) {
   try {

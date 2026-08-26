@@ -37,13 +37,25 @@
       "npm": "@narumitw/pi-goal",
       "version": "0.54.0",
       "repository": "https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal"
+    },
+    "askUserQuestion": {
+      "npm": "@juicesharp/rpiv-ask-user-question",
+      "version": "2.7.1",
+      "repository": "https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-ask-user-question"
+    },
+    "fuzzyFileFinder": {
+      "npm": "pi-fff",
+      "version": "0.1.12",
+      "repository": "https://github.com/ShpetimA/pi-fff"
     }
   },
   "piPackages": [
     "npm:@gotgenes/pi-subagents@19.3.5",
     "npm:pi-web-access@0.25.0",
     "npm:pi-mcp-adapter@2.27.0",
-    "npm:@narumitw/pi-goal@0.54.0"
+    "npm:@narumitw/pi-goal@0.54.0",
+    "npm:@juicesharp/rpiv-ask-user-question@2.7.1",
+    "npm:pi-fff@0.1.12"
   ],
   "retiredPiPackages": ["npm:@sting8k/pi-vcc"],
   "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
@@ -57,7 +69,15 @@
     "serverName": "playwright",
     "command": "npx",
     "args": ["-y", "@playwright/mcp@0.0.79", "--headless", "--browser", "chrome"],
-    "lifecycle": "lazy"
+    "lifecycle": "lazy",
+    "directTools": [
+      "browser_navigate",
+      "browser_snapshot",
+      "browser_click",
+      "browser_type",
+      "browser_wait_for",
+      "browser_take_screenshot"
+    ]
   },
   "webAccess": {
     "configPath": "~/.pi/web-search.json",

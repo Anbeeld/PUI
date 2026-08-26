@@ -60,6 +60,19 @@ test("updaters delegate to the shared transaction worker and retain only model r
   assert.match(powershell, /modelsExit/);
 });
 
+test("updaters reconcile the exact managed Playwright MCP definition before validation", () => {
+  for (const file of ["update.ps1", "update.sh"]) {
+    const content = read(file);
+    const reconciliation = content.indexOf("set-server");
+    const migrationBoundary = content.indexOf("config-migration");
+
+    assert.notEqual(reconciliation, -1, `${file}: missing MCP reconciliation`);
+    assert.ok(reconciliation < migrationBoundary, `${file}: MCP reconciliation must precede the migration boundary`);
+    assert.match(content, /mcpShared|MCP_SHARED/, `${file}: shared MCP config path`);
+    assert.match(content, /mcp\.serverName/, `${file}: managed MCP server name`);
+  }
+});
+
 test("installer completion text names the retained PUI integration", () => {
   for (const file of ["install.ps1", "install.sh"]) {
     const content = read(file);
@@ -111,10 +124,21 @@ test("staged apply rechecks standalone Pi after stopping Pi Web and before packa
   }
 });
 
-test("uninstall preserves a Playwright entry with user-modified lifecycle", () => {
+test("uninstall preserves a Playwright entry with user-modified lifecycle or direct tools", () => {
   for (const file of ["uninstall.ps1", "uninstall.sh"]) {
     const content = read(file);
     assert.match(content, /lifecycle/);
+    assert.match(content, /directTools/);
+  }
+});
+
+test("MCP lifecycle paths apply and verify the hybrid Playwright tool policy", () => {
+  for (const file of ["install.ps1", "install.sh", "update.ps1", "update.sh", "doctor.ps1", "doctor.sh"]) {
+    const content = read(file);
+    assert.match(content, /directTools/, `${file}: direct tools`);
+  }
+  for (const file of ["install.ps1", "install.sh", "doctor.ps1", "doctor.sh"]) {
+    assert.match(read(file), /disableProxyTool/, `${file}: disabled proxy detection`);
   }
 });
 

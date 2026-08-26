@@ -335,7 +335,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension install failed" -F
 $r = Invoke-Pi -PiArgs @("list")
 if ($r.exit -eq 0) {
   Write-Host "  pi list:"; $r.out -split "`n" | ForEach-Object { if ($_) { Write-Host "    $_" } }
-  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal")) {
+  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","rpiv-ask-user-question","pi-fff")) {
     if ($r.out -notmatch $p) { Write-Host "  package not visible: $p" -ForegroundColor Yellow }
   }
 } else { Write-Host "  pi list failed: $($r.out)" -ForegroundColor Yellow }
@@ -423,6 +423,7 @@ $mcpDef = @{
   command = $Stack.mcp.command
   args = $Stack.mcp.args
   lifecycle = $Stack.mcp.lifecycle
+  directTools = @($Stack.mcp.directTools)
 } | ConvertTo-Json -Depth 10 -Compress
 $mcpDefFile = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllText($mcpDefFile, $mcpDef, [System.Text.UTF8Encoding]::new($false))
@@ -438,7 +439,11 @@ if ($r.exit -ne 0) { Write-Host "  $($r.out)"; Write-Gate G7 "mcp" $false; exit 
 Write-Host "  $($r.out)"
 $g7 = $true
 $mcp = Get-Content $mcpShared -Raw | ConvertFrom-Json
-if (-not $mcp.mcpServers.playwright) { $g7 = $false }
+$expectedDirectTools = ConvertTo-Json -InputObject @($Stack.mcp.directTools) -Compress
+$actualDirectTools = ConvertTo-Json -InputObject @($mcp.mcpServers.playwright.directTools) -Compress
+$proxyDisabled = $mcp.settings -and $mcp.settings.disableProxyTool -eq $true
+if (-not $mcp.mcpServers.playwright -or $actualDirectTools -ne $expectedDirectTools -or $proxyDisabled) { $g7 = $false }
+if ($proxyDisabled) { Write-Host "  MCP proxy is disabled by settings.disableProxyTool; PUI requires it for non-direct tools." -ForegroundColor Red }
 Write-Gate G7 "mcp (config)" $g7
 if (-not $g7) { exit 1 }
 
@@ -546,7 +551,7 @@ $piListStr = ""
 if ($r.exit -eq 0) {
   $piListStr = $r.out
   $allPkg = $true
-  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal")) { if ($r.out -notmatch $p) { $allPkg = $false } }
+  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","rpiv-ask-user-question","pi-fff")) { if ($r.out -notmatch $p) { $allPkg = $false } }
   if ($allPkg) { $smoke += "[PASS] 4. all required packages visible" } else { $smoke += "[FAIL] 4. missing packages"; $g9 = $false }
 } else { $smoke += "[FAIL] 4. pi list failed"; $g9 = $false }
 

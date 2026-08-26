@@ -153,6 +153,21 @@ for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPacka
   node "$SCRIPT_DIR/lib/pui-config.js" set-package "$PI_SETTINGS" "$spec" >/dev/null || { echo "  failed to set exact managed pin for $spec" >&2; exit 1; }
 done
 pui_fail package-reconciliation
+
+echo "  reconciling managed Playwright MCP..."
+MCP_DEF="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({command:s.mcp.command,args:s.mcp.args,lifecycle:s.mcp.lifecycle,directTools:s.mcp.directTools}))' "$STACK")"
+set +e
+node "$LIB" set-server "$MCP_SHARED" "$(jget mcp.serverName)" "$MCP_DEF" >/dev/null
+MCP_EXIT=$?
+set -e
+if [ "$MCP_EXIT" -eq 2 ]; then
+  echo "  existing Playwright MCP has a materially different configuration; update aborted" >&2
+  exit 1
+fi
+if [ "$MCP_EXIT" -ne 0 ]; then
+  echo "  failed to reconcile Playwright MCP" >&2
+  exit 1
+fi
 pui_fail config-migration
 node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI update extension replacement failed" >&2; exit 1; }
 pui_fail extension-replacement

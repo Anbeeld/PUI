@@ -65,10 +65,10 @@ $mcpShared = Expand-Path $Stack.configPaths.mcpShared
 try {
   $piList = & pi list 2>&1
   $piListStr = $piList -join "`n"
-  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal")) {
+  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","rpiv-ask-user-question","pi-fff")) {
     Status "package: $p" $(if ($piListStr -match $p) { "PASS" } else { "FAIL" }) ""
   }
-} catch { foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal")) { Status "package: $p" "NOT CHECKED" "" } }
+} catch { foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","rpiv-ask-user-question","pi-fff")) { Status "package: $p" "NOT CHECKED" "" } }
 
 # default tool set
 if (Test-Path $piSettings) {
@@ -92,7 +92,10 @@ if (Test-Path $mcpShared) {
   $mcp = Get-Content $mcpShared -Raw | ConvertFrom-Json
   $expectedMcp = ConvertTo-Json -Compress -InputObject @($Stack.mcp.args)
   $actualMcp = ConvertTo-Json -Compress -InputObject @($mcp.mcpServers.playwright.args)
-  Status "Playwright MCP" $(if ($mcp.mcpServers.playwright -and $expectedMcp -eq $actualMcp) { "PASS" } else { "FAIL" }) "exact managed version"
+  $expectedDirectTools = ConvertTo-Json -Compress -InputObject @($Stack.mcp.directTools)
+  $actualDirectTools = ConvertTo-Json -Compress -InputObject @($mcp.mcpServers.playwright.directTools)
+  $proxyEnabled = -not ($mcp.settings -and $mcp.settings.disableProxyTool -eq $true)
+  Status "Playwright MCP" $(if ($mcp.mcpServers.playwright -and $expectedMcp -eq $actualMcp -and $expectedDirectTools -eq $actualDirectTools -and $proxyEnabled) { "PASS" } else { "FAIL" }) $(if ($proxyEnabled) { "exact version; 6 direct tools; proxy preserved" } else { "settings.disableProxyTool=true" })
 } else { Status "Playwright MCP" "WARN" "mcp.json missing" }
 
 # Pi Web health

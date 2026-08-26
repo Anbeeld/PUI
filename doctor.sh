@@ -61,13 +61,15 @@ pi list 2>&1 | grep -q pi-subagents && status_line "package: pi-subagents" "PASS
 pi list 2>&1 | grep -q pi-web-access && status_line "package: pi-web-access" "PASS" "" || status_line "package: pi-web-access" "FAIL" ""
 pi list 2>&1 | grep -q pi-mcp-adapter && status_line "package: pi-mcp-adapter" "PASS" "" || status_line "package: pi-mcp-adapter" "FAIL" ""
 pi list 2>&1 | grep -q pi-goal && status_line "package: pi-goal" "PASS" "" || status_line "package: pi-goal" "FAIL" ""
+pi list 2>&1 | grep -q rpiv-ask-user-question && status_line "package: rpiv-ask-user-question" "PASS" "" || status_line "package: rpiv-ask-user-question" "FAIL" ""
+pi list 2>&1 | grep -q pi-fff && status_line "package: pi-fff" "PASS" "" || status_line "package: pi-fff" "FAIL" ""
 
 [ -f "$PI_SETTINGS" ] && node -e 'const s=require(process.argv[1]);const r=["read","bash","edit","write","grep","find","ls"];for(const t of r)if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf(t)<0)process.exit(1)' "$PI_SETTINGS" && status_line "default tool set" "PASS" "" || status_line "default tool set" "WARN" "missing"
 for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPackages)console.log(p)' "$STACK"); do
   node -e 'const s=require(process.argv[1]);process.exit(Array.isArray(s.packages)&&s.packages.includes(process.argv[2])?0:1)' "$PI_SETTINGS" "$spec" 2>/dev/null && status_line "managed pin: $spec" "PASS" "" || status_line "managed pin: $spec" "FAIL" ""
 done
 [ -f "$PI_WEB_ACCESS" ] && node -e 'const w=require(process.argv[1]);if(w.searchRouting.providers.indexOf("duckduckgo")<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)' "$PI_WEB_ACCESS" && status_line "web routing" "PASS" "duckduckgo+http" || status_line "web routing" "WARN" "missing"
-[ -f "$MCP_SHARED" ] && node -e 'const m=require(process.argv[1]),s=require(process.argv[2]);process.exit(m.mcpServers&&m.mcpServers.playwright&&JSON.stringify(m.mcpServers.playwright.args)===JSON.stringify(s.mcp.args)?0:1)' "$MCP_SHARED" "$STACK" && status_line "Playwright MCP" "PASS" "exact managed version" || status_line "Playwright MCP" "FAIL" "missing or mismatched"
+[ -f "$MCP_SHARED" ] && node -e 'const m=require(process.argv[1]),s=require(process.argv[2]);const p=m.mcpServers&&m.mcpServers.playwright;process.exit(p&&JSON.stringify(p.args)===JSON.stringify(s.mcp.args)&&JSON.stringify(p.directTools)===JSON.stringify(s.mcp.directTools)&&m.settings?.disableProxyTool!==true?0:1)' "$MCP_SHARED" "$STACK" && status_line "Playwright MCP" "PASS" "exact version; 6 direct tools; proxy preserved" || status_line "Playwright MCP" "FAIL" "missing, mismatched, or proxy disabled"
 node "$SCRIPT_DIR/lib/pui-update-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI installed identity" "PASS" "extension manifest" || status_line "PUI installed identity" "FAIL" "missing or mismatched"
 PIWEB_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web"
 node "$SCRIPT_DIR/lib/pui-web-integration.js" verify "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null 2>&1 && status_line "PUI update bridge" "PASS" "Pi Web $(jget upstream.gui.version)" || status_line "PUI update bridge" "FAIL" "missing or mismatched"

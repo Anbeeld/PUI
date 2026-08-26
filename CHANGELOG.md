@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.4
+
+- Added exact managed pins for `@juicesharp/rpiv-ask-user-question` and `pi-fff` across install, update, diagnostics, and full uninstall workflows.
+- Documented structured questions, fuzzy file navigation, ownership boundaries, and required cross-platform compatibility checks.
+- Prevented stale successful update records from showing the wrong installed version on first load.
+- Made updates reconcile compatible Playwright MCP entries to the exact managed version before validation.
+- Promoted six common Playwright operations, starting with `browser_navigate`, to direct Pi tools while keeping the remaining MCP surface proxied on demand.
+
 ## v1.0.3
 
 - Pinned every PUI-managed direct component, including Playwright MCP, to an exact release version.

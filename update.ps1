@@ -165,6 +165,27 @@ foreach ($spec in @($Stack.piPackages)) {
   if ($LASTEXITCODE -ne 0) { Write-Host "  failed to set exact managed pin for $spec" -ForegroundColor Red; exit 1 }
 }
 Assert-NoInjectedFailure "package-reconciliation"
+
+Write-Host "  reconciling managed Playwright MCP..."
+$mcpDef = [ordered]@{
+  command = [string]$Stack.mcp.command
+  args = @($Stack.mcp.args)
+  lifecycle = [string]$Stack.mcp.lifecycle
+  directTools = @($Stack.mcp.directTools)
+} | ConvertTo-Json -Compress
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try {
+  & node $Lib "set-server" $mcpShared ([string]$Stack.mcp.serverName) $mcpDef 2>&1 | Out-Null
+  $mcpExit = $LASTEXITCODE
+} finally { $ErrorActionPreference = $prev }
+if ($mcpExit -eq 2) {
+  Write-Host "  existing Playwright MCP has a materially different configuration; update aborted" -ForegroundColor Red
+  exit 1
+}
+if ($mcpExit -ne 0) {
+  Write-Host "  failed to reconcile Playwright MCP" -ForegroundColor Red
+  exit 1
+}
 Assert-NoInjectedFailure "config-migration"
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") install $ScriptDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension replacement failed" -ForegroundColor Red; exit 1 }

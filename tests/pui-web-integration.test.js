@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -65,6 +66,82 @@ test("bridge integration verification checks the exact pinned Pi Web version", (
   const stack = require(path.join(repoRoot, "stack.json"));
   assert.equal(stack.upstream.gui.version, "0.8.10");
   assert.equal(typeof verifyIntegration, "function");
+});
+
+function bridgeStatusFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-update-stale-"));
+  const extensionRoot = path.join(root, "pui-update");
+  const statusFile = path.join(root, "status.json");
+  const lockFile = path.join(root, "lock.json");
+  fs.mkdirSync(extensionRoot);
+  const core = { owner: "PUI", schemaVersion: 1, puiVersion: "1.0.4", managed: {}, files: {} };
+  const manifest = {
+    ...core,
+    identityHash: crypto.createHash("sha256").update(JSON.stringify(core)).digest("hex"),
+  };
+  fs.writeFileSync(path.join(extensionRoot, "manifest.json"), JSON.stringify(manifest));
+  fs.writeFileSync(path.join(extensionRoot, "updater.js"), `module.exports = { STATUS_FILE: ${JSON.stringify(statusFile)}, LOCK_FILE: ${JSON.stringify(lockFile)}, chooseStableUpdate: () => null };\n`);
+
+  const bridgePath = path.join(repoRoot, "lib", "pui-update-bridge.cjs");
+  const previousExtensionRoot = process.env.PUI_UPDATE_EXTENSION_DIR;
+  const previousFetch = global.fetch;
+  process.env.PUI_UPDATE_EXTENSION_DIR = extensionRoot;
+  global.fetch = async () => ({ ok: true, json: async () => ({ tag_name: "v1.0.4" }) });
+  delete require.cache[require.resolve(bridgePath)];
+  t.after(() => {
+    if (previousExtensionRoot === undefined) delete process.env.PUI_UPDATE_EXTENSION_DIR;
+    else process.env.PUI_UPDATE_EXTENSION_DIR = previousExtensionRoot;
+    global.fetch = previousFetch;
+    delete require.cache[require.resolve(bridgePath)];
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  return { bridgePath, lockFile, statusFile };
+}
+
+test("bridge discards stale terminal statuses for a different installed version", async (t) => {
+  const { bridgePath, statusFile } = bridgeStatusFixture(t);
+  for (const status of [
+    { id: "old-success", target: "1.0.3", phase: "complete", result: "success" },
+    { id: "old-rollback", target: "1.0.3", restored: "1.0.3", phase: "complete", result: "rolled-back" },
+    { id: "old-abort", target: "1.0.3", phase: "failed", result: "aborted" },
+  ]) {
+    fs.writeFileSync(statusFile, JSON.stringify(status));
+    const result = await require(bridgePath).getUpdate();
+    assert.equal(result.currentVersion, "1.0.4");
+    assert.equal(result.updateAvailable, false);
+    assert.equal(result.result, undefined);
+    assert.equal(fs.existsSync(statusFile), false);
+  }
+});
+
+test("bridge discards orphaned progress but retains the active transaction", async (t) => {
+  const { bridgePath, lockFile, statusFile } = bridgeStatusFixture(t);
+  const progress = { id: "active", target: "1.0.5", phase: "installing", result: null };
+
+  fs.writeFileSync(statusFile, JSON.stringify(progress));
+  let result = await require(bridgePath).getUpdate();
+  assert.equal(result.updateAvailable, false);
+  assert.equal(result.phase, undefined);
+  assert.equal(fs.existsSync(statusFile), false);
+
+  fs.writeFileSync(statusFile, JSON.stringify(progress));
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, id: progress.id }));
+  result = await require(bridgePath).getUpdate();
+  assert.equal(result.currentVersion, "1.0.4");
+  assert.equal(result.target, "1.0.5");
+  assert.equal(result.phase, "installing");
+  assert.equal(fs.existsSync(statusFile), true);
+});
+
+test("bridge retains terminal status that matches the installed identity", async (t) => {
+  const { bridgePath, statusFile } = bridgeStatusFixture(t);
+  fs.writeFileSync(statusFile, JSON.stringify({ id: "rollback", target: "1.0.5", restored: "1.0.4", phase: "complete", result: "rolled-back" }));
+
+  const result = await require(bridgePath).getUpdate();
+  assert.equal(result.currentVersion, "1.0.4");
+  assert.equal(result.result, "rolled-back");
+  assert.equal(result.restored, "1.0.4");
+  assert.equal(fs.existsSync(statusFile), true);
 });
 
 test("uninstall preserves a Pi Web integration whose ownership manifest changed", (t) => {
