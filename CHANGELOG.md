@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.5
+
+- Fixed Windows updates by passing the managed Playwright MCP definition through a temporary file that Windows PowerShell 5.1 preserves correctly.
+
 ## v1.0.4
 
 - Added exact managed pins for `@juicesharp/rpiv-ask-user-question` and `pi-fff` across install, update, diagnostics, and full uninstall workflows.

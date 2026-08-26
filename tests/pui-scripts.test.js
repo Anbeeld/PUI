@@ -73,6 +73,13 @@ test("updaters reconcile the exact managed Playwright MCP definition before vali
   }
 });
 
+test("Windows updater passes MCP JSON through a file for Windows PowerShell compatibility", () => {
+  const content = read("update.ps1");
+  assert.match(content, /WriteAllText\(\$mcpDefFile, \$mcpDef/);
+  assert.match(content, /"@\$mcpDefFile"/);
+  assert.doesNotMatch(content, /"set-server"[^\r\n]*\$mcpDef(?:\s|$)/);
+});
+
 test("installer completion text names the retained PUI integration", () => {
   for (const file of ["install.ps1", "install.sh"]) {
     const content = read(file);

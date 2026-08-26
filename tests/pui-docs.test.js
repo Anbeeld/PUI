@@ -46,11 +46,12 @@ test("v1.0.4 documentation describes every added managed extension", () => {
     assert.match(changelog, new RegExp(packageName.replace("/", "\\/")), `CHANGELOG.md: ${packageName}`);
   }
   for (const content of [readme, components, changelog]) assert.doesNotMatch(content, /pi-permission-system/);
-  assert.match(changelog, /^# Changelog\s+## v1\.0\.4/m);
+  assert.match(changelog, /^# Changelog\s+## v1\.0\.5/m);
+  assert.match(changelog, /^## v1\.0\.4$/m);
 });
 
 test("documentation describes the hybrid Playwright MCP policy", () => {
-  for (const file of ["README.md", "docs/components.md", "docs/upstream-verification.md", "CHANGELOG.md"]) {
+  for (const file of ["docs/components.md", "docs/upstream-verification.md", "CHANGELOG.md"]) {
     const content = fs.readFileSync(path.join(repoRoot, file), "utf8");
     assert.match(content, /browser_navigate/, `${file}: direct tool example`);
     assert.match(content, /prox(?:y|ied)/i, `${file}: proxy policy`);

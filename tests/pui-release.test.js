@@ -14,7 +14,7 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.0.4");
+  assert.equal(release.version, "1.0.5");
   for (const spec of Object.values(release.managed)) {
     assert.match(spec, /@\d+\.\d+\.\d+$/);
     assert.doesNotMatch(spec, /@latest$/);

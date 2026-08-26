@@ -172,12 +172,17 @@ $mcpDef = [ordered]@{
   args = @($Stack.mcp.args)
   lifecycle = [string]$Stack.mcp.lifecycle
   directTools = @($Stack.mcp.directTools)
-} | ConvertTo-Json -Compress
+} | ConvertTo-Json -Depth 10 -Compress
+$mcpDefFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($mcpDefFile, $mcpDef, [System.Text.UTF8Encoding]::new($false))
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try {
-  & node $Lib "set-server" $mcpShared ([string]$Stack.mcp.serverName) $mcpDef 2>&1 | Out-Null
+  & node $Lib "set-server" $mcpShared ([string]$Stack.mcp.serverName) "@$mcpDefFile" 2>&1 | Out-Null
   $mcpExit = $LASTEXITCODE
-} finally { $ErrorActionPreference = $prev }
+} finally {
+  Remove-Item $mcpDefFile -Force -ErrorAction SilentlyContinue
+  $ErrorActionPreference = $prev
+}
 if ($mcpExit -eq 2) {
   Write-Host "  existing Playwright MCP has a materially different configuration; update aborted" -ForegroundColor Red
   exit 1
