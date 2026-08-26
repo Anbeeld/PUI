@@ -3,6 +3,7 @@ name: tests
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -17,6 +18,16 @@ jobs:
         with:
           node-version: "22"
       - run: npm test
+      - run: npm run release:validate
+      - name: Verify release tag matches package version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME must equal v$VERSION" >&2
+            exit 1
+          fi
+      - name: Verify exact Pi Web integration fixture
+        run: npm run release:verify-pi-web
 
   windows-static:
     name: Windows static checks

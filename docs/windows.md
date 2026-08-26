@@ -15,7 +15,7 @@ From this repository in PowerShell:
 ./install.ps1
 ```
 
-The installer verifies prerequisites, backs up existing configuration, installs Pi Web and the packages in `stack.json`, aligns standalone Pi to Pi Web's bundled version, merges PUI-owned configuration, applies PUI branding and icons, configures Playwright MCP, and runs smoke checks.
+The installer verifies prerequisites, backs up existing configuration, installs the exact versions in `stack.json`, merges PUI-owned configuration, applies branding and the update bridge, installs the PUI identity extension, configures Playwright MCP, and runs smoke checks.
 
 ## Autostart and PWA
 
@@ -32,6 +32,6 @@ After installation, use the browser's install-app action at `http://127.0.0.1:30
 ./uninstall.ps1 -Full
 ```
 
-Update refreshes the managed components and reapplies branding and icons. Doctor is read-only. Standard uninstall removes PUI-owned integration; `-Full` also removes managed packages, Pi Web, and standalone Pi while preserving user projects, sessions, authentication, skills, and unrelated settings.
+Update uses the shared transactional worker, waits for managed work to become idle, and restores the previous certified release after a failed mutation. Doctor verifies exact identity and bridge state without writing. Standard uninstall removes only intact PUI-owned integration; `-Full` also removes managed packages, Pi Web, and standalone Pi while preserving user projects, sessions, authentication, skills, and unrelated settings.
 
 See the main [README](../README.md) for install options and ownership details.

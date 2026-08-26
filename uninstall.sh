@@ -51,12 +51,12 @@ MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
 if [ -f "$MCP_SHARED" ]; then
   # Exact-shape ownership check: command AND full args must equal the
   # PUI-managed definition; anything else is user-owned and preserved.
-  if node -e "
-const s=require('$STACK');
-const m=require('$MCP_SHARED');
+  if node -e '
+const s=require(process.argv[1]);
+const m=require(process.argv[2]);
 const p=m.mcpServers&&m.mcpServers.playwright;
 const ok=p&&p.command===s.mcp.command&&JSON.stringify(p.args||null)===JSON.stringify(s.mcp.args)&&p.lifecycle===s.mcp.lifecycle;
-process.exit(ok?0:1)" 2>/dev/null; then
+process.exit(ok?0:1)' "$STACK" "$MCP_SHARED" 2>/dev/null; then
     echo "  removing PUI-managed 'playwright' MCP entry from $MCP_SHARED"
     node "$LIB" remove-server "$MCP_SHARED" playwright >/dev/null
   else
@@ -68,6 +68,7 @@ fi
 if command -v npm >/dev/null 2>&1; then
   PIWEB_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web" || true
   if [ -d "$PIWEB_ROOT" ]; then
+    node "$SCRIPT_DIR/lib/pui-web-integration.js" remove "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null || echo "  PUI update integration differs from its owned shape; preserving."
     find "$PIWEB_ROOT" -name "*.pui-created" -type f | while read -r marker; do
       created="${marker%.pui-created}"
       rm -f "$created" "$marker"
@@ -81,10 +82,11 @@ if command -v npm >/dev/null 2>&1; then
     done
   fi
 fi
+node "$SCRIPT_DIR/lib/pui-update-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI update extension differs from its owned shape; preserving."
 
 if [ "$FULL" -eq 1 ]; then
   echo "  --full: removing PUI-selected Pi packages..."
-  for spec in $(node -e "const s=require('$STACK');for(const p of new Set([...s.piPackages,...(s.retiredPiPackages||[])]))console.log(p)"); do
+  for spec in $(node -e 'const s=require(process.argv[1]);for(const p of new Set([...s.piPackages,...(s.retiredPiPackages||[])]))console.log(p.replace(/@\d+\.\d+\.\d+$/,""))' "$STACK"); do
     echo "    pi remove $spec"
     pi remove "$spec" 2>&1 | sed 's/^/      /' || true
   done

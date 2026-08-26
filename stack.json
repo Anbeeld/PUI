@@ -1,42 +1,49 @@
 {
   "name": "PUI",
-  "description": "Opinionated batteries-included composition profile for vanilla Pi. Setup-time scripts and repository metadata only; no runtime component.",
+  "description": "Opinionated batteries-included composition profile for vanilla Pi with a small update extension and Pi Web integration.",
   "platforms": ["windows", "macos", "linux"],
   "upstream": {
     "agentRuntime": {
       "npm": "@earendil-works/pi-coding-agent",
+      "version": "0.84.3",
       "repository": "https://github.com/earendil-works/pi"
     },
     "gui": {
       "npm": "@agegr/pi-web",
+      "version": "0.8.10",
       "repository": "https://github.com/agegr/pi-web"
     },
     "subagents": {
       "npm": "@gotgenes/pi-subagents",
+      "version": "19.3.5",
       "repository": "https://github.com/gotgenes/pi-packages"
     },
     "webAccess": {
       "npm": "pi-web-access",
+      "version": "0.25.0",
       "repository": "https://github.com/nicobailon/pi-web-access"
     },
     "mcpAdapter": {
       "npm": "pi-mcp-adapter",
+      "version": "2.27.0",
       "repository": "https://github.com/nicobailon/pi-mcp-adapter"
     },
     "browserAutomation": {
       "npm": "@playwright/mcp",
+      "version": "0.0.79",
       "repository": "https://github.com/microsoft/playwright-mcp"
     },
     "goal": {
       "npm": "@narumitw/pi-goal",
+      "version": "0.54.0",
       "repository": "https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal"
     }
   },
   "piPackages": [
-    "npm:@gotgenes/pi-subagents",
-    "npm:pi-web-access",
-    "npm:pi-mcp-adapter",
-    "npm:@narumitw/pi-goal"
+    "npm:@gotgenes/pi-subagents@19.3.5",
+    "npm:pi-web-access@0.25.0",
+    "npm:pi-mcp-adapter@2.27.0",
+    "npm:@narumitw/pi-goal@0.54.0"
   ],
   "retiredPiPackages": ["npm:@sting8k/pi-vcc"],
   "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
@@ -49,7 +56,7 @@
   "mcp": {
     "serverName": "playwright",
     "command": "npx",
-    "args": ["-y", "@playwright/mcp@latest", "--headless", "--browser", "chrome"],
+    "args": ["-y", "@playwright/mcp@0.0.79", "--headless", "--browser", "chrome"],
     "lifecycle": "lazy"
   },
   "webAccess": {

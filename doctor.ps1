@@ -49,12 +49,12 @@ if (Test-Command pi) { Status "Pi version" "PASS" (& pi --version 2>$null) } els
 if (Test-Command pi-web) {
   $pwPkg = Join-Path (Join-Path (Join-Path (& npm root -g) "@agegr") "pi-web") "package.json"
   $pwv = if (Test-Path $pwPkg) { (Get-Content $pwPkg -Raw | ConvertFrom-Json).version } else { "unknown" }
-  Status "Pi Web version" "PASS" $pwv
+  Status "Pi Web version" $(if ($pwv -eq [string]$Stack.upstream.gui.version) { "PASS" } else { "FAIL" }) "$pwv (expected $($Stack.upstream.gui.version))"
   $pwCA = if (Test-Path $pwPkg) { (Get-Content $pwPkg -Raw | ConvertFrom-Json).dependencies.'@earendil-works/pi-coding-agent' } else { $null }
   Status "Pi Web-resolved Pi" "PASS" $pwCA
   $piVer = (& pi --version 2>$null) -replace '[^0-9.]',''
   $pwCAN = ($pwCA -replace '[^0-9.]','')
-  Status "runtime parity" $(if ($piVer -eq $pwCAN) { "PASS" } else { "WARN" }) "pi=$piVer pi-web=$pwCAN"
+  Status "runtime parity" $(if ($piVer -eq [string]$Stack.upstream.agentRuntime.version -and $pwCAN -eq [string]$Stack.upstream.agentRuntime.version) { "PASS" } else { "FAIL" }) "pi=$piVer pi-web=$pwCAN expected=$($Stack.upstream.agentRuntime.version)"
 } else { Status "Pi Web version" "FAIL" "pi-web not on PATH"; Status "Pi Web-resolved Pi" "NOT CHECKED" ""; Status "runtime parity" "NOT CHECKED" "" }
 
 # Pi package presence
@@ -76,6 +76,7 @@ if (Test-Path $piSettings) {
   $dt = $st.defaultTools
   $missing = $Stack.defaultTools | Where-Object { $dt -notcontains $_ }
   Status "default tool set" $(if ($missing.Count -eq 0) { "PASS" } else { "WARN" }) "missing: $($missing -join ', ')"
+  foreach ($spec in @($Stack.piPackages)) { Status "managed pin: $spec" $(if (@($st.packages) -contains $spec) { "PASS" } else { "FAIL" }) "" }
 } else { Status "default tool set" "WARN" "settings.json missing" }
 
 # web routing
@@ -89,12 +90,22 @@ if (Test-Path $piWebAccess) {
 # MCP adapter + Playwright
 if (Test-Path $mcpShared) {
   $mcp = Get-Content $mcpShared -Raw | ConvertFrom-Json
-  Status "Playwright MCP" $(if ($mcp.mcpServers.playwright) { "PASS" } else { "WARN" }) ""
+  $expectedMcp = ConvertTo-Json -Compress -InputObject @($Stack.mcp.args)
+  $actualMcp = ConvertTo-Json -Compress -InputObject @($mcp.mcpServers.playwright.args)
+  Status "Playwright MCP" $(if ($mcp.mcpServers.playwright -and $expectedMcp -eq $actualMcp) { "PASS" } else { "FAIL" }) "exact managed version"
 } else { Status "Playwright MCP" "WARN" "mcp.json missing" }
 
 # Pi Web health
 try { $r = Invoke-WebRequest $piWebUrl -TimeoutSec 5 -UseBasicParsing; Status "Pi Web health" "PASS" "HTTP $($r.StatusCode)" }
 catch { Status "Pi Web health" "WARN" "not running on $piWebUrl" }
+
+& node (Join-Path $ScriptDir "lib\pui-update-extension.js") verify $ScriptDir 2>$null | Out-Null
+Status "PUI installed identity" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "extension manifest"
+if (Test-Command npm) {
+  $piWebRoot = Join-Path (Join-Path (& npm root -g) "@agegr") "pi-web"
+  & node (Join-Path $ScriptDir "lib\pui-web-integration.js") verify $ScriptDir $piWebRoot 2>$null | Out-Null
+  Status "PUI update bridge" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "Pi Web $($Stack.upstream.gui.version)"
+}
 
 # autostart registration
 $launcherVbs = Join-Path ([Environment]::GetFolderPath("Startup")) "pui-piweb.vbs"

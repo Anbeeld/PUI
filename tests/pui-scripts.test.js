@@ -36,19 +36,79 @@ test("all Unix entry points use the shared stack reader", () => {
   }
 });
 
+test("Unix lifecycle JavaScript snippets pass filesystem paths as arguments", () => {
+  for (const file of unixEntryPoints) {
+    assert.doesNotMatch(read(file), /require\(['"]\$(?:STACK|PIWEB_PKG|PI_SETTINGS|PI_WEB_ACCESS|MCP_SHARED|nested|hoisted|pw_pkg)/, file);
+  }
+});
+
 test("Unix branding does not depend on platform-specific sed -i", () => {
   for (const file of ["install.sh", "update.sh"]) {
     assert.doesNotMatch(read(file), /sed -i/);
   }
 });
 
-test("updaters propagate extension and model update failures", () => {
+test("updaters delegate to the shared transaction worker and retain only model refresh", () => {
   const shell = read("update.sh");
-  assert.doesNotMatch(shell, /pi update --(?:extensions|models)[^\n]*\|\| true/);
+  assert.match(shell, /lib\/pui-updater\.js/);
+  assert.doesNotMatch(shell, /pi update --extensions/);
+  assert.doesNotMatch(shell, /pi update --models[^\n]*\|\| true/);
 
   const powershell = read("update.ps1");
-  assert.match(powershell, /extensionsExit/);
+  assert.match(powershell, /lib[\\/]pui-updater\.js/);
+  assert.doesNotMatch(powershell, /pi update --extensions/);
   assert.match(powershell, /modelsExit/);
+});
+
+test("installer completion text names the retained PUI integration", () => {
+  for (const file of ["install.ps1", "install.sh"]) {
+    const content = read(file);
+    assert.doesNotMatch(content, /just a normal Pi installation/);
+    assert.match(content, /update extension and Pi Web integration (?:stay|remain) installed/i);
+  }
+});
+
+test("both staged apply paths expose the same material failure-injection boundaries", () => {
+  const boundaries = ["package-reconciliation", "config-migration", "pi-web-integration", "extension-replacement", "restart-health", "target-validation"];
+  for (const file of ["update.ps1", "update.sh"]) {
+    const content = read(file);
+    for (const boundary of boundaries) assert.match(content, new RegExp(boundary), `${file}: ${boundary}`);
+  }
+});
+
+test("staged apply rechecks Pi Web idle immediately before stopping the server", () => {
+  const powershell = read("update.ps1");
+  assert.ok(powershell.indexOf("/api/agent/running") < powershell.indexOf("Stop-Process"));
+
+  const shell = read("update.sh");
+  const idle = shell.indexOf("/api/agent/running");
+  for (const stop of ['launchctl unload "$PLIST"', 'systemctl --user stop "$SERVICE_NAME"', "pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]'"]) {
+    assert.ok(idle < shell.indexOf(stop), `update.sh: idle check must precede ${stop}`);
+  }
+});
+
+test("installers refuse to replace shared runtimes without both idle gates", () => {
+  for (const file of ["install.ps1", "install.sh"]) {
+    const content = read(file);
+    const piWebIdle = content.indexOf("/api/agent/running");
+    const stop = file.endsWith(".ps1") ? content.indexOf("Stop-Process") : content.indexOf("if ! stop_existing_piweb_autostart");
+    const standalone = content.indexOf("standalone-busy");
+    const mutation = file.endsWith(".ps1")
+      ? content.indexOf('Invoke-Npm -NpmArgs @("install"', stop)
+      : content.indexOf("npm install -g", stop);
+    assert.ok(piWebIdle !== -1 && piWebIdle < stop, `${file}: Pi Web idle gate`);
+    assert.ok(standalone !== -1 && stop < standalone && standalone < mutation, `${file}: standalone Pi idle gate`);
+  }
+});
+
+test("staged apply rechecks standalone Pi after stopping Pi Web and before package mutation", () => {
+  for (const file of ["update.ps1", "update.sh"]) {
+    const content = read(file);
+    const stop = file.endsWith(".ps1") ? content.indexOf("Stop-Process") : content.indexOf("pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]'");
+    const standalone = content.indexOf("standalone-busy");
+    const mutation = content.indexOf("npm install -g", stop);
+    assert.ok(stop < standalone && standalone < mutation, file);
+  }
 });
 
 test("uninstall preserves a Playwright entry with user-modified lifecycle", () => {
@@ -140,6 +200,7 @@ test("Linux autostart starts immediately and inherits the Pi Web Node path", () 
   for (const file of ["install.sh", "update.sh"]) {
     const content = read(file);
     assert.match(content, /Environment="PATH=\$PIWEB_PATH"/);
+    assert.match(content, /ExecStart="\$PIWEB_BIN" --no-open/);
   }
 });
 

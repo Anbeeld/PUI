@@ -2,36 +2,16 @@
 # PUI updater for native macOS and Linux. Preserves architecture; runs smoke suite after.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${1:-}" != "--apply-staged" ] && [ "${PUI_APPLY_STAGED:-}" != "1" ]; then
+  exec node "$SCRIPT_DIR/lib/pui-updater.js" manual "$SCRIPT_DIR"
+fi
+if [ "${1:-}" = "--apply-staged" ]; then shift; fi
 LIB="$SCRIPT_DIR/lib/pui-config.js"
 STACK="$SCRIPT_DIR/stack.json"
 STACK_READER="$SCRIPT_DIR/lib/pui-stack.js"
 expand_path() { echo "${1/#\~/$HOME}"; }
 jget() { node "$STACK_READER" "$STACK" "$1"; }
-
-# Resolve the actual @earendil-works/pi-coding-agent version used by installed
-# pi-web: prefer the installed module tree (nested, then hoisted); fall back to
-# extracting an exact semver from the dependency spec. Echoes "" if unknown.
-resolve_piweb_ca_ver() {
-  local root pw_pkg nested hoisted spec ver=""
-  root="$(npm root -g)"
-  pw_pkg="$root/@agegr/pi-web/package.json"
-  [ -f "$pw_pkg" ] || return 0
-  nested="$root/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent/package.json"
-  hoisted="$root/node_modules/@earendil-works/pi-coding-agent/package.json"
-  if [ -f "$nested" ]; then
-    ver="$(node -e "process.stdout.write(String(require('$nested').version||''))" 2>/dev/null || true)"
-  fi
-  if [ -z "$ver" ] && [ -f "$hoisted" ]; then
-    ver="$(node -e "process.stdout.write(String(require('$hoisted').version||''))" 2>/dev/null || true)"
-  fi
-  if [ -z "$ver" ]; then
-    spec="$(node -e "const p=require('$pw_pkg');const d=p.dependencies&&p.dependencies['@earendil-works/pi-coding-agent'];if(typeof d==='string')process.stdout.write(d)" 2>/dev/null || true)"
-    if [ -n "$spec" ]; then
-      ver="$(printf '%s' "$spec" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-    fi
-  fi
-  [ -n "$ver" ] && printf '%s' "$ver"
-}
+pui_fail() { [ "${PUI_FAIL_AT:-}" = "$1" ] && { echo "Injected update failure at $1" >&2; exit 97; }; return 0; }
 
 # ---- OS detection ----
 OS_TYPE="$(uname -s)"
@@ -70,6 +50,18 @@ for f in "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_SETTINGS"; do
   fi
 done
 
+# Final fail-safe idle check must happen while the server can still report its
+# active sessions. If a running Pi Web cannot report activity, fail closed.
+if pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1; then
+  RUNNING_JSON="$(curl -sf --max-time 3 "$PIWEB_URL/api/agent/running" 2>/dev/null)" || { echo "  could not verify Pi Web idle state; update aborted" >&2; exit 1; }
+  set +e
+  node -e 'const s=JSON.parse(process.argv[1]);if(!Array.isArray(s.runningSessionIds))process.exit(2);process.exit(s.runningSessionIds.length?75:0)' "$RUNNING_JSON"
+  RUNNING_EXIT=$?
+  set -e
+  if [ "$RUNNING_EXIT" -eq 75 ]; then echo "  active Pi Web sessions appeared; update deferred without stopping them" >&2; exit 75; fi
+  if [ "$RUNNING_EXIT" -ne 0 ]; then echo "  Pi Web returned an invalid activity response; update aborted" >&2; exit 1; fi
+fi
+
 # Stop the configured service manager before killing any leftover process so
 # restart-on-failure cannot race the global package update.
 AUTOSTART_CONFIGURED=0
@@ -85,12 +77,18 @@ fi
 
 pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]' 2>/dev/null || true
 sleep 1
+set +e
+node "$SCRIPT_DIR/lib/pui-updater.js" standalone-busy
+STANDALONE_EXIT=$?
+set -e
+if [ "$STANDALONE_EXIT" -eq 75 ]; then echo "  standalone Pi became active; update deferred" >&2; exit 75; fi
+if [ "$STANDALONE_EXIT" -ne 0 ]; then echo "  could not verify standalone Pi idle state" >&2; exit 1; fi
 
 echo "  updating @agegr/pi-web..."
-npm install -g --ignore-scripts "@agegr/pi-web@latest" >/dev/null 2>&1 || { echo "  pi-web update failed" >&2; exit 1; }
+npm install -g --ignore-scripts "$(jget upstream.gui.npm)@$(jget upstream.gui.version)" >/dev/null 2>&1 || { echo "  pi-web update failed" >&2; exit 1; }
 
 GLOBAL_ROOT="$(npm root -g)"
-PIWEB_CA_VER="$(resolve_piweb_ca_ver)"
+PIWEB_CA_VER="$(jget upstream.agentRuntime.version)"
 if [ -n "$PIWEB_CA_VER" ]; then
   echo "  pi-web uses pi-coding-agent $PIWEB_CA_VER"
 else
@@ -104,7 +102,7 @@ if command -v pi >/dev/null 2>&1; then
 fi
 if [ -n "$PIWEB_CA_VER" ] && [ "$PI_CUR" != "$PIWEB_CA_VER" ]; then
   echo "  aligning standalone pi to $PIWEB_CA_VER..."
-  npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@$PIWEB_CA_VER" >/dev/null 2>&1 || { echo "  pi update failed" >&2; exit 1; }
+  npm install -g --ignore-scripts "$(jget upstream.agentRuntime.npm)@$PIWEB_CA_VER" >/dev/null 2>&1 || { echo "  pi update failed" >&2; exit 1; }
 elif [ -z "$PIWEB_CA_VER" ]; then
   :
 else
@@ -128,6 +126,8 @@ if [ -d "$PUI_ICONS_DIR" ]; then
       echo "  PUI text branding override failed" >&2
       exit 1
     fi
+    node "$SCRIPT_DIR/lib/pui-web-integration.js" apply "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" || { echo "  Pi Web update integration failed" >&2; exit 1; }
+    pui_fail pi-web-integration
   else
     echo "  Pi Web icon directory missing: $PIWEB_ICONS_DIR" >&2
     exit 1
@@ -141,20 +141,21 @@ fi
 package_installed() {
   node -e 'const fs=require("fs");const f=process.argv[1],spec=process.argv[2];if(!fs.existsSync(f))process.exit(1);const s=JSON.parse(fs.readFileSync(f,"utf8"));const p=Array.isArray(s.packages)?s.packages:[];process.exit(p.some(x=>typeof x==="string"&&(x===spec||x.startsWith(spec+"@")))?0:1)' "$PI_SETTINGS" "$1"
 }
-for spec in $(node -e "const s=require('$STACK');for(const p of s.retiredPiPackages||[])console.log(p)"); do
+for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.retiredPiPackages||[])console.log(p)' "$STACK"); do
   if package_installed "$spec"; then
     echo "  retiring $spec..."
     pi remove "$spec" 2>&1 | sed 's/^/    /' || { echo "  failed to retire $spec" >&2; exit 1; }
   fi
 done
-for spec in $(node -e "const s=require('$STACK');for(const p of s.piPackages)console.log(p)"); do
-  if ! package_installed "$spec"; then
-    echo "  installing newly managed extension $spec..."
-    pi install "$spec" 2>&1 | sed 's/^/    /' || { echo "  failed to install $spec" >&2; exit 1; }
-  fi
+for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPackages)console.log(p)' "$STACK"); do
+  echo "  reconciling managed extension $spec..."
+  pi install "$spec" 2>&1 | sed 's/^/    /' || { echo "  failed to install $spec" >&2; exit 1; }
+  node "$SCRIPT_DIR/lib/pui-config.js" set-package "$PI_SETTINGS" "$spec" >/dev/null || { echo "  failed to set exact managed pin for $spec" >&2; exit 1; }
 done
-echo "  updating Pi extensions..."
-pi update --extensions 2>&1 | sed 's/^/    /' || { echo "  Pi extension update failed" >&2; exit 1; }
+pui_fail package-reconciliation
+pui_fail config-migration
+node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI update extension replacement failed" >&2; exit 1; }
+pui_fail extension-replacement
 echo "  refreshing model catalogs..."
 pi update --models 2>&1 | sed 's/^/    /' || { echo "  model catalog refresh failed" >&2; exit 1; }
 
@@ -209,7 +210,7 @@ After=network-online.target
 Type=simple
 Environment=PI_WEB_SKIP_VERSION_CHECK=1
 Environment="PATH=$PIWEB_PATH"
-ExecStart=$PIWEB_BIN --no-open
+ExecStart="$PIWEB_BIN" --no-open
 Restart=on-failure
 RestartSec=5
 
@@ -244,6 +245,7 @@ fi
 
 echo
 echo "=== running smoke suite ==="
+pui_fail restart-health
 set +e
 bash "$SCRIPT_DIR/doctor.sh"
 DOCTOR_EXIT=$?
@@ -256,11 +258,11 @@ if [ "$DOCTOR_EXIT" -ne 0 ]; then
   command -v pi >/dev/null 2>&1 && echo "    pi: $(pi --version 2>/dev/null)" >&2
   echo "  Backups preserved (restore by copying over the live file):" >&2
   for b in "${BACKUP_FILES[@]}"; do echo "    $b" >&2; done
-  echo "  Rollback hint: npm install -g @agegr/pi-web@<previous-version> and" >&2
-  echo "    npm install -g @earendil-works/pi-coding-agent@<previous-version>" >&2
+  echo "  The transaction worker will restore and validate the previous certified PUI release." >&2
   echo "  Update NOT declared successful." >&2
   exit 1
 fi
+pui_fail target-validation
 
 echo
 echo "Update complete: all doctor checks passed."

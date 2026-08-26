@@ -17,7 +17,7 @@ Pi is a great harness, one of the most efficient on the market. But it's minimal
 - **Drive the session toward a goal.** [`@narumitw/pi-goal`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal) adds a session-scoped `/goal` mode.
 - **Automate the browser with Playwright.** PUI configures [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) through [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) for lazy, headless Chrome automation.
 - **Keep the CLI and browser in the same Pi environment.** PUI aligns standalone Pi with the agent runtime bundled by Pi Web, uses Pi's normal `~/.pi/agent` configuration, and enables Pi's standard local tools by default.
-- **Install and maintain the composition as one profile.** The lifecycle scripts back up JSON before changing it, structurally merge only PUI-owned settings, reconcile managed packages, reapply branding after updates, and preserve user-owned configuration during uninstall.
+- **Install and maintain the composition as one profile.** Each PUI release pins the direct managed components. The app can discover a stable release once per launch, but it applies one only after you select **Install**. Failed mutations restore and validate the previous certified composition.
 
 ![Support my work!](docs/screenshot.jpg)
 
@@ -58,7 +58,6 @@ Before changing an existing JSON configuration file, the installer creates a tim
 | `-NoPwa` / `--no-pwa` | Skip autostart and the browser app-setup page. Pi Web remains installed; start it manually with `pi-web`. |
 | `-NoBrowser` / `--no-browser` | Configure autostart but do not open the app-setup page after installation. |
 | `-KeylessRoute` / `--keyless-route` | Make PUI's keyless route primary when another primary search provider exists. The other provider remains configured after it. Without this option, the conflict stops installation for an explicit choice. |
-| `-UnpinPuiPackages` / `--unpin-pui-packages` | Remove explicit version pins from PUI-managed Pi packages so setup can install current releases. Without this option, existing pins are preserved and reported. |
 
 ## Update, diagnose, and uninstall
 
@@ -78,9 +77,9 @@ macOS or Linux:
 ./uninstall.sh
 ```
 
-- **Update** refreshes Pi Web, aligns standalone Pi to Pi Web's bundled runtime, reconciles managed packages, updates extensions and models, reapplies branding and icons, restarts autostart when configured, and runs diagnostics.
-- **Doctor** reports component, configuration, autostart, and health status without changing the installation.
-- **Uninstall** removes PUI-owned integration and restores original Pi Web assets when available. Add `-Full` / `--full` to also remove managed packages, Pi Web, and standalone Pi. User projects, sessions, authentication, skills, and unrelated settings are preserved. A browser-installed PWA must be removed manually from the browser's app or shortcut settings.
+- **Update** uses the same transaction worker as the in-app **Install** action. It waits for Pi Web and standalone managed Pi work to become idle, applies exact managed versions from the tagged release, validates the result, and restores the previous certified release after a post-mutation failure. Model-catalog data may still refresh independently.
+- **Doctor** reads the installed update-extension identity, exact managed composition, Pi Web bridge, configuration, autostart, and health state without changing the installation.
+- **Uninstall** removes the update extension only while its complete PUI-owned shape is intact, removes the owned Pi Web bridge, and restores original Pi Web assets. Add `-Full` / `--full` to also remove managed packages, Pi Web, and standalone Pi. User projects, sessions, authentication, skills, and unrelated settings are preserved. A browser-installed PWA must be removed manually from the browser's app or shortcut settings.
 
 Platform details are in [Windows](docs/windows.md), [macOS](docs/macos.md), and [Linux](docs/linux.md). The [component reference](docs/components.md) describes ownership boundaries and managed files.
 

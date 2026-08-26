@@ -11,7 +11,6 @@ STACK_READER="$SCRIPT_DIR/lib/pui-stack.js"
 NO_PWA=0
 NO_BROWSER=0
 KEYLESS_ROUTE=0
-UNPIN_PUI_PACKAGES=0
 GATE_RESULTS=()
 FAILURES=()
 
@@ -20,7 +19,6 @@ for arg in "$@"; do
     --no-pwa) NO_PWA=1 ;;
     --no-browser) NO_BROWSER=1 ;;
     --keyless-route) KEYLESS_ROUTE=1 ;;
-    --unpin-pui-packages) UNPIN_PUI_PACKAGES=1 ;;
     *) echo "Unknown argument: $arg"; exit 64 ;;
   esac
 done
@@ -131,13 +129,13 @@ resolve_piweb_ca_ver() {
   nested="$root/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent/package.json"
   hoisted="$root/node_modules/@earendil-works/pi-coding-agent/package.json"
   if [ -f "$nested" ]; then
-    ver="$(node -e "process.stdout.write(String(require('$nested').version||''))" 2>/dev/null || true)"
+    ver="$(node -e 'process.stdout.write(String(require(process.argv[1]).version||""))' "$nested" 2>/dev/null || true)"
   fi
   if [ -z "$ver" ] && [ -f "$hoisted" ]; then
-    ver="$(node -e "process.stdout.write(String(require('$hoisted').version||''))" 2>/dev/null || true)"
+    ver="$(node -e 'process.stdout.write(String(require(process.argv[1]).version||""))' "$hoisted" 2>/dev/null || true)"
   fi
   if [ -z "$ver" ]; then
-    spec="$(node -e "const p=require('$pw_pkg');const d=p.dependencies&&p.dependencies['@earendil-works/pi-coding-agent'];if(typeof d==='string')process.stdout.write(d)" 2>/dev/null || true)"
+    spec="$(node -e 'const p=require(process.argv[1]);const d=p.dependencies&&p.dependencies["@earendil-works/pi-coding-agent"];if(typeof d==="string")process.stdout.write(d)' "$pw_pkg" 2>/dev/null || true)"
     if [ -n "$spec" ]; then
       ver="$(printf '%s' "$spec" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
     fi
@@ -147,6 +145,17 @@ resolve_piweb_ca_ver() {
 
 # ---- Phase 3: Pi Web + Pi core (G3) ----
 write_phase 3 "Pi Web + Pi runtime parity"
+# A reinstall also replaces shared managed runtimes. Check Pi Web while it is
+# still alive so active work is never mistaken for an idle/unreachable server.
+if pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1; then
+  RUNNING_JSON="$(curl -sf --max-time 3 "$PIWEB_URL/api/agent/running" 2>/dev/null)" || { echo "  could not verify Pi Web idle state; install aborted" >&2; exit 1; }
+  set +e
+  node -e 'const s=JSON.parse(process.argv[1]);if(!Array.isArray(s.runningSessionIds))process.exit(2);process.exit(s.runningSessionIds.length?75:0)' "$RUNNING_JSON"
+  RUNNING_EXIT=$?
+  set -e
+  if [ "$RUNNING_EXIT" -eq 75 ]; then echo "  active Pi Web sessions detected; install deferred without stopping them" >&2; exit 75; fi
+  if [ "$RUNNING_EXIT" -ne 0 ]; then echo "  Pi Web returned an invalid activity response; install aborted" >&2; exit 1; fi
+fi
 # Stop the service manager before killing any leftover process so an
 # on-failure policy cannot restart Pi Web during global package mutation.
 if ! stop_existing_piweb_autostart; then
@@ -157,17 +166,19 @@ if has_cmd pi-web; then
   pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]' 2>/dev/null || true
   sleep 1
 fi
+set +e
+node "$SCRIPT_DIR/lib/pui-updater.js" standalone-busy
+STANDALONE_EXIT=$?
+set -e
+if [ "$STANDALONE_EXIT" -eq 75 ]; then echo "  standalone Pi is active; install deferred" >&2; exit 75; fi
+if [ "$STANDALONE_EXIT" -ne 0 ]; then echo "  could not verify standalone Pi idle state" >&2; exit 1; fi
 echo "  installing @agegr/pi-web (global)..."
-npm install -g --ignore-scripts "@agegr/pi-web@latest" >/dev/null 2>&1 || { gate G3 "pi-web install" 0; exit 1; }
+npm install -g --ignore-scripts "$(jget upstream.gui.npm)@$(jget upstream.gui.version)" >/dev/null 2>&1 || { gate G3 "pi-web install" 0; exit 1; }
 
 hash -r 2>/dev/null || true
-PIWEB_CA_VER="$(resolve_piweb_ca_ver)"
-if [ -z "$PIWEB_CA_VER" ]; then
-  echo "  could not resolve pi-coding-agent version from pi-web; installing standalone latest"
-  PI_SPEC="@earendil-works/pi-coding-agent@latest"
-else
-  PI_SPEC="@earendil-works/pi-coding-agent@$PIWEB_CA_VER"
-fi
+PIWEB_CA_VER="$(jget upstream.agentRuntime.version)"
+PI_SPEC="$(jget upstream.agentRuntime.npm)@$PIWEB_CA_VER"
+echo "  PUI pins pi-coding-agent $PIWEB_CA_VER"
 
 # pi-web keeps its runtime dependency private, so a clean install must
 # explicitly provision the standalone `pi` command before PATH validation.
@@ -214,6 +225,7 @@ if [ -d "$PUI_ICONS_DIR" ]; then
       echo "  PUI text branding override failed" >&2
       exit 1
     fi
+    node "$SCRIPT_DIR/lib/pui-web-integration.js" apply "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" || { echo "  Pi Web update integration failed" >&2; exit 1; }
   else
     echo "  Pi Web icon directory missing: $PIWEB_ICONS_DIR" >&2
     exit 1
@@ -227,28 +239,21 @@ fi
 write_phase 4 "Pi packages"
 G4=1
 PI_LIST_BEFORE="$(pi list 2>&1 || true)"
-for spec in $(node -e "const s=require('$STACK');for(const p of s.retiredPiPackages||[])console.log(p)"); do
+for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.retiredPiPackages||[])console.log(p)' "$STACK"); do
   if printf '%s\n' "$PI_LIST_BEFORE" | grep -Fq "$spec"; then
     echo "  retiring $spec"
     if ! pi remove "$spec"; then echo "  FAILED to retire: $spec"; G4=0; fi
   fi
 done
-for spec in $(node -e "const s=require('$STACK');for(const p of s.piPackages)console.log(p)"); do
-  PKG_NAME="${spec#npm:}"
-  PINNED="$(node -e "const s=require('$PI_SETTINGS');const pk=Array.isArray(s.packages)?s.packages:[];const hit=pk.find(x=>typeof x==='string'&&x.startsWith('npm:'+process.argv[1]+'@'));if(hit)process.stdout.write(hit)" "$PKG_NAME" 2>/dev/null || true)"
-  if [ -n "$PINNED" ]; then
-    if [ "$UNPIN_PUI_PACKAGES" -eq 1 ]; then
-      echo "  unpinning $PINNED -> npm:$PKG_NAME"
-      node_config unpin-package "$PI_SETTINGS" "$PKG_NAME" >/dev/null
-    else
-      echo "  SKIPPED (user pin preserved): $PINNED"
-      echo "    PUI cannot rolling-update this component; re-run with --unpin-pui-packages to lift the pin."
-      continue
-    fi
-  fi
+for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPackages)console.log(p)' "$STACK"); do
   echo "  pi install $spec"
-  if ! pi install "$spec"; then echo "  FAILED: $spec"; G4=0; fi
+  if pi install "$spec"; then
+    node_config set-package "$PI_SETTINGS" "$spec" >/dev/null || G4=0
+  else
+    echo "  FAILED: $spec"; G4=0
+  fi
 done
+node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI update extension install failed" >&2; G4=0; }
 pi list 2>&1 | sed 's/^/    /' || true
 gate G4 "packages" "$G4"
 if [ "$G4" != "1" ]; then exit 1; fi
@@ -260,7 +265,7 @@ node_config default-tools-merge "$PI_SETTINGS" "$TOOLS"
 G5=1
 if [ -f "$PI_SETTINGS" ]; then
   for t in read bash edit write grep find ls; do
-    node -e "const s=require('$PI_SETTINGS');if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf('$t')<0)process.exit(1)" || G5=0
+    node -e 'const s=require(process.argv[1]);if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf(process.argv[2])<0)process.exit(1)' "$PI_SETTINGS" "$t" || G5=0
   done
 fi
 gate G5 "filesystem" "$G5"
@@ -268,14 +273,14 @@ if [ "$G5" != "1" ]; then exit 1; fi
 
 # ---- Phase 6: free keyless web (G6) ----
 write_phase 6 "free keyless web"
-WEB_CFG="$(node -e "const s=require('$STACK');process.stdout.write(JSON.stringify({searchRouting:s.webAccess.searchRouting,fetchRouting:s.webAccess.fetchRouting,workflow:s.webAccess.workflow}))")"
+WEB_CFG="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({searchRouting:s.webAccess.searchRouting,fetchRouting:s.webAccess.fetchRouting,workflow:s.webAccess.workflow}))' "$STACK")"
 node_config merge-object "$PI_WEB_ACCESS" "$WEB_CFG"
 G6=1
-node -e "const w=require('$PI_WEB_ACCESS');if(!w.searchRouting||!w.fetchRouting||w.searchRouting.providers.indexOf('duckduckgo')<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)" || G6=0
+node -e 'const w=require(process.argv[1]);if(!w.searchRouting||!w.fetchRouting||w.searchRouting.providers.indexOf("duckduckgo")<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)' "$PI_WEB_ACCESS" || G6=0
 # Deterministic keyless route: the primary search provider must be a verified
 # zero-key provider (exa or duckduckgo). A foreign primary means an existing
 # An existing primary provider would override PUI's keyless route.
-PRIMARY_PROVIDER="$(node -e "const w=require('$PI_WEB_ACCESS');process.stdout.write((w.searchRouting&&w.searchRouting.providers&&w.searchRouting.providers[0])||'')" 2>/dev/null || true)"
+PRIMARY_PROVIDER="$(node -e 'const w=require(process.argv[1]);process.stdout.write((w.searchRouting&&w.searchRouting.providers&&w.searchRouting.providers[0])||"")' "$PI_WEB_ACCESS" 2>/dev/null || true)"
 case "$PRIMARY_PROVIDER" in
   exa|duckduckgo) : ;;
   *)
@@ -295,7 +300,7 @@ if [ "$G6" != "1" ]; then exit 1; fi
 
 # ---- Phase 7: MCP + Playwright (G7) ----
 write_phase 7 "MCP + Playwright"
-MCP_DEF="$(node -e "const s=require('$STACK');process.stdout.write(JSON.stringify({command:s.mcp.command,args:s.mcp.args,lifecycle:s.mcp.lifecycle}))")"
+MCP_DEF="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({command:s.mcp.command,args:s.mcp.args,lifecycle:s.mcp.lifecycle}))' "$STACK")"
 set +e
 node_config set-server "$MCP_SHARED" "$(jget mcp.serverName)" "$MCP_DEF"
 RC=$?
@@ -305,7 +310,7 @@ if [ "$RC" -eq 2 ]; then
   gate G7 "mcp" 0; exit 1
 elif [ "$RC" -ne 0 ]; then gate G7 "mcp" 0; exit 1; fi
 G7=1
-node -e "const m=require('$MCP_SHARED');if(!m.mcpServers||!m.mcpServers.playwright)process.exit(1)" || G7=0
+node -e 'const m=require(process.argv[1]);if(!m.mcpServers||!m.mcpServers.playwright)process.exit(1)' "$MCP_SHARED" || G7=0
 gate G7 "mcp (config)" "$G7"
 if [ "$G7" != "1" ]; then exit 1; fi
 
@@ -369,7 +374,7 @@ After=network-online.target
 Type=simple
 Environment=PI_WEB_SKIP_VERSION_CHECK=1
 Environment="PATH=$PIWEB_PATH"
-ExecStart=$PIWEB_BIN --no-open
+ExecStart="$PIWEB_BIN" --no-open
 Restart=on-failure
 RestartSec=5
 
@@ -450,9 +455,9 @@ PW_CA="$(resolve_piweb_ca_ver)"
 if [ -n "$PW_CA" ] && [ "$PI_VER" = "$PW_CA" ]; then SMOKE+=("[PASS] 3. runtime parity ($PI_VER)"); else SMOKE+=("[WARN] 3. runtime parity pi=$PI_VER piweb=${PW_CA:-unresolved}"); fi
 PI_LIST="$(pi list 2>&1 || true)"
 echo "$PI_LIST" | grep -q pi-subagents && echo "$PI_LIST" | grep -q pi-web-access && echo "$PI_LIST" | grep -q pi-mcp-adapter && echo "$PI_LIST" | grep -q pi-goal && SMOKE+=("[PASS] 4. all packages visible") || { SMOKE+=("[FAIL] 4. missing packages"); G9=0; }
-node -e "const s=require('$PI_SETTINGS');const r=['read','bash','edit','write','grep','find','ls'];for(const t of r)if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf(t)<0)process.exit(1)" && SMOKE+=("[PASS] 5/6. defaultTools present") || { SMOKE+=("[FAIL] 5/6. missing defaultTools"); G9=0; }
-node -e "const w=require('$PI_WEB_ACCESS');if(w.searchRouting.providers.indexOf('duckduckgo')<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)" && SMOKE+=("[PASS] 7/8. keyless web configured") || { SMOKE+=("[FAIL] 7/8. keyless web"); G9=0; }
-node -e "const m=require('$MCP_SHARED');if(!m.mcpServers||!m.mcpServers.playwright)process.exit(1)" && SMOKE+=("[PASS] 11. playwright MCP present") || { SMOKE+=("[FAIL] 11. playwright MCP"); G9=0; }
+node -e 'const s=require(process.argv[1]);const r=["read","bash","edit","write","grep","find","ls"];for(const t of r)if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf(t)<0)process.exit(1)' "$PI_SETTINGS" && SMOKE+=("[PASS] 5/6. defaultTools present") || { SMOKE+=("[FAIL] 5/6. missing defaultTools"); G9=0; }
+node -e 'const w=require(process.argv[1]);if(w.searchRouting.providers.indexOf("duckduckgo")<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)' "$PI_WEB_ACCESS" && SMOKE+=("[PASS] 7/8. keyless web configured") || { SMOKE+=("[FAIL] 7/8. keyless web"); G9=0; }
+node -e 'const m=require(process.argv[1]);if(!m.mcpServers||!m.mcpServers.playwright)process.exit(1)' "$MCP_SHARED" && SMOKE+=("[PASS] 11. playwright MCP present") || { SMOKE+=("[FAIL] 11. playwright MCP"); G9=0; }
 echo "$PI_LIST" | grep -q pi-goal && SMOKE+=("[PASS] 12. pi-goal package visible") || { SMOKE+=("[FAIL] 12. pi-goal not visible"); G9=0; }
 SMOKE+=("[DEFERRED] 9/10. two parallel subagents + retrieval — manual release gate (needs live model)")
 SMOKE+=("[INFO] 13. Pi Web reads ~/.pi/agent by design; same-config verification is part of the manual release gate")
@@ -467,7 +472,7 @@ echo "=== PUI install summary ==="
 for g in "${GATE_RESULTS[@]}"; do echo "  $g"; done
 if [ "${#FAILURES[@]}" -gt 0 ]; then echo "Failed gates: ${FAILURES[*]}"; exit 1; fi
 echo
-echo "PUI setup complete. After setup, PUI is just a normal Pi installation."
+echo "PUI setup complete. Pi remains the runtime; the inert PUI update extension and Pi Web integration stay installed."
 if [ "$NO_PWA" -eq 0 ] && [ "$NO_BROWSER" -eq 0 ]; then
   if [ "$OS_NAME" = "macOS" ]; then
     echo "Complete PWA installation via Safari 'Add to Dock' on the opened page."

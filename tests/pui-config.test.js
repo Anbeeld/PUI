@@ -166,6 +166,27 @@ test("setMcpServer compatible same package different flags updates", () => {
   assert.equal(res.action, "updated");
 });
 
+test("setMcpServer replaces a compatible rolling package token with the exact managed args", () => {
+  const cfg = {
+    mcpServers: {
+      playwright: {
+        command: "npx",
+        args: ["-y", "@playwright/mcp@latest", "--headless"],
+        env: { USER_SETTING: "preserved" },
+      },
+    },
+  };
+  const def = {
+    command: "npx",
+    args: ["-y", "@playwright/mcp@0.0.79", "--headless", "--browser", "chrome"],
+    lifecycle: "lazy",
+  };
+  const res = setMcpServer(cfg, "playwright", def, ["command", "args"]);
+  assert.equal(res.action, "updated");
+  assert.deepEqual(cfg.mcpServers.playwright.args, def.args);
+  assert.deepEqual(cfg.mcpServers.playwright.env, { USER_SETTING: "preserved" });
+});
+
 // ---------- CLI end-to-end fixtures ----------
 function runCli(args, expectExit) {
   try {
@@ -351,6 +372,16 @@ test("CLI unpin-package normalizes pinned entries only", () => {
   const out = rj(d, "settings.json");
   assert.deepEqual(out.packages, ["npm:pi-web-access", "npm:@gotgenes/pi-subagents", "npm:some-other-pkg@2.0.0"]);
   assert.equal(out.unrelated, true);
+});
+
+test("CLI set-package replaces conflicting managed pins and preserves unrelated packages", () => {
+  const d = tmpdir();
+  const f = path.join(d, "settings.json");
+  w(d, "settings.json", JSON.stringify({
+    packages: ["npm:pi-web-access@0.20.0", "npm:unrelated@2.0.0", "npm:pi-web-access@0.21.0"],
+  }));
+  runCli(["set-package", f, "npm:pi-web-access@0.25.0"]);
+  assert.deepEqual(rj(d, "settings.json").packages, ["npm:pi-web-access@0.25.0", "npm:unrelated@2.0.0"]);
 });
 
 test("path-with-spaces fixture: CLI merge works on dirs with spaces", () => {

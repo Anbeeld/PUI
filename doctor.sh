@@ -43,11 +43,12 @@ has_cmd pi && status_line "Pi version" "PASS" "$(pi --version 2>/dev/null)" || s
 if has_cmd pi-web; then
   GLOBAL_ROOT="$(npm root -g)"
   PIWEB_PKG="$GLOBAL_ROOT/@agegr/pi-web/package.json"
-  [ -f "$PIWEB_PKG" ] && status_line "Pi Web version" "PASS" "$(node -e "console.log(require('$PIWEB_PKG').version)")" || status_line "Pi Web version" "WARN" "unknown"
-  PW_CA="$(node -e "const p=require('$PIWEB_PKG');const d=p.dependencies&&p.dependencies['@earendil-works/pi-coding-agent'];if(d)process.stdout.write(d.replace(/[^0-9.]/g,''))" 2>/dev/null)"
+  PIWEB_VERSION="$(node -e 'console.log(require(process.argv[1]).version)' "$PIWEB_PKG" 2>/dev/null || true)"
+  [ "$PIWEB_VERSION" = "$(jget upstream.gui.version)" ] && status_line "Pi Web version" "PASS" "$PIWEB_VERSION" || status_line "Pi Web version" "FAIL" "$PIWEB_VERSION expected $(jget upstream.gui.version)"
+  PW_CA="$(node -e 'const p=require(process.argv[1]);const d=p.dependencies&&p.dependencies["@earendil-works/pi-coding-agent"];if(d)process.stdout.write(d.replace(/[^0-9.]/g,""))' "$PIWEB_PKG" 2>/dev/null)"
   status_line "Pi Web-resolved Pi" "PASS" "$PW_CA"
   PI_VER="$(pi --version 2>/dev/null | sed 's/[^0-9.]//g')"
-  [ "$PI_VER" = "$PW_CA" ] && status_line "runtime parity" "PASS" "$PI_VER" || status_line "runtime parity" "WARN" "pi=$PI_VER piweb=$PW_CA"
+  [ "$PI_VER" = "$(jget upstream.agentRuntime.version)" ] && [ "$PW_CA" = "$(jget upstream.agentRuntime.version)" ] && status_line "runtime parity" "PASS" "$PI_VER" || status_line "runtime parity" "FAIL" "pi=$PI_VER piweb=$PW_CA expected=$(jget upstream.agentRuntime.version)"
 else
   status_line "Pi Web version" "FAIL" "not on PATH"
 fi
@@ -61,9 +62,15 @@ pi list 2>&1 | grep -q pi-web-access && status_line "package: pi-web-access" "PA
 pi list 2>&1 | grep -q pi-mcp-adapter && status_line "package: pi-mcp-adapter" "PASS" "" || status_line "package: pi-mcp-adapter" "FAIL" ""
 pi list 2>&1 | grep -q pi-goal && status_line "package: pi-goal" "PASS" "" || status_line "package: pi-goal" "FAIL" ""
 
-[ -f "$PI_SETTINGS" ] && node -e "const s=require('$PI_SETTINGS');const r=['read','bash','edit','write','grep','find','ls'];for(const t of r)if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf(t)<0)process.exit(1)" && status_line "default tool set" "PASS" "" || status_line "default tool set" "WARN" "missing"
-[ -f "$PI_WEB_ACCESS" ] && node -e "const w=require('$PI_WEB_ACCESS');if(w.searchRouting.providers.indexOf('duckduckgo')<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)" && status_line "web routing" "PASS" "duckduckgo+http" || status_line "web routing" "WARN" "missing"
-[ -f "$MCP_SHARED" ] && node -e "const m=require('$MCP_SHARED');if(!m.mcpServers||!m.mcpServers.playwright)process.exit(1)" && status_line "Playwright MCP" "PASS" "" || status_line "Playwright MCP" "WARN" "missing"
+[ -f "$PI_SETTINGS" ] && node -e 'const s=require(process.argv[1]);const r=["read","bash","edit","write","grep","find","ls"];for(const t of r)if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf(t)<0)process.exit(1)' "$PI_SETTINGS" && status_line "default tool set" "PASS" "" || status_line "default tool set" "WARN" "missing"
+for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPackages)console.log(p)' "$STACK"); do
+  node -e 'const s=require(process.argv[1]);process.exit(Array.isArray(s.packages)&&s.packages.includes(process.argv[2])?0:1)' "$PI_SETTINGS" "$spec" 2>/dev/null && status_line "managed pin: $spec" "PASS" "" || status_line "managed pin: $spec" "FAIL" ""
+done
+[ -f "$PI_WEB_ACCESS" ] && node -e 'const w=require(process.argv[1]);if(w.searchRouting.providers.indexOf("duckduckgo")<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)' "$PI_WEB_ACCESS" && status_line "web routing" "PASS" "duckduckgo+http" || status_line "web routing" "WARN" "missing"
+[ -f "$MCP_SHARED" ] && node -e 'const m=require(process.argv[1]),s=require(process.argv[2]);process.exit(m.mcpServers&&m.mcpServers.playwright&&JSON.stringify(m.mcpServers.playwright.args)===JSON.stringify(s.mcp.args)?0:1)' "$MCP_SHARED" "$STACK" && status_line "Playwright MCP" "PASS" "exact managed version" || status_line "Playwright MCP" "FAIL" "missing or mismatched"
+node "$SCRIPT_DIR/lib/pui-update-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI installed identity" "PASS" "extension manifest" || status_line "PUI installed identity" "FAIL" "missing or mismatched"
+PIWEB_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web"
+node "$SCRIPT_DIR/lib/pui-web-integration.js" verify "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null 2>&1 && status_line "PUI update bridge" "PASS" "Pi Web $(jget upstream.gui.version)" || status_line "PUI update bridge" "FAIL" "missing or mismatched"
 
 AUTOSTART_REGISTERED=0
 if [ "$OS_NAME" = "macOS" ]; then

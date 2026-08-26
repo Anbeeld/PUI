@@ -4,39 +4,23 @@
   PUI updater for native Windows. Preserves architecture; runs smoke suite after.
 #>
 [CmdletBinding()]
-param()
+param([switch]$ApplyStaged)
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+if (-not $ApplyStaged -and $env:PUI_APPLY_STAGED -ne "1") {
+  & node (Join-Path $ScriptDir "lib\pui-updater.js") manual $ScriptDir
+  exit $LASTEXITCODE
+}
+function Assert-NoInjectedFailure([string]$Boundary) {
+  if ($env:PUI_FAIL_AT -eq $Boundary) { throw "Injected update failure at $Boundary" }
+}
+
 Write-Host "=== PUI update (Windows) ===" -ForegroundColor Cyan
 
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-
-# Resolve the actual @earendil-works/pi-coding-agent version used by installed
-# pi-web: prefer the installed module tree (nested, then hoisted); fall back to
-# extracting an exact semver from the dependency spec. Returns $null if unknown.
-function Get-PiWebCodingAgentVersion {
-  $globalRoot = & npm root -g
-  $pwPkg = Join-Path (Join-Path (Join-Path $globalRoot "@agegr") "pi-web") "package.json"
-  if (-not (Test-Path $pwPkg)) { return $null }
-  $nested = Join-Path (Join-Path (Join-Path (Join-Path (Join-Path $globalRoot "@agegr") "pi-web") "node_modules") "@earendil-works") "pi-coding-agent\package.json"
-  $hoisted = Join-Path (Join-Path (Join-Path (Join-Path $globalRoot "node_modules") "@earendil-works") "pi-coding-agent") "package.json"
-  foreach ($caPkg in @($nested, $hoisted)) {
-    if (Test-Path $caPkg) {
-      try {
-        $v = (Get-Content $caPkg -Raw | ConvertFrom-Json).version
-        if ($v) { return [string]$v }
-      } catch { }
-    }
-  }
-  try {
-    $dep = (Get-Content $pwPkg -Raw | ConvertFrom-Json).dependencies.'@earendil-works/pi-coding-agent'
-    if ($dep -and ($dep -match '(\d+\.\d+\.\d+)')) { return $Matches[1] }
-  } catch { }
-  return $null
-}
 
 # 1. back up files PUI may modify
 $Stack = Get-Content (Join-Path $ScriptDir "stack.json") -Raw | ConvertFrom-Json
@@ -56,6 +40,18 @@ foreach ($f in @($piWebAccess, $mcpShared, $piSettings) | Where-Object { Test-Pa
 
 # 2. update pi-web
 # Stop any running pi-web process before npm install (avoids EBUSY on Windows).
+$piWebProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  $_.CommandLine -match '[\\/]node_modules[\\/]@agegr[\\/]pi-web[\\/]'
+})
+if ($piWebProcesses.Count -gt 0) {
+  try { $runningState = Invoke-RestMethod "$($Stack.piWeb.url)/api/agent/running" -TimeoutSec 3 -ErrorAction Stop }
+  catch { Write-Host "  could not verify Pi Web idle state; update aborted" -ForegroundColor Red; exit 1 }
+  if (-not $runningState.PSObject.Properties['runningSessionIds']) { Write-Host "  Pi Web returned an invalid activity response; update aborted" -ForegroundColor Red; exit 1 }
+  if (@($runningState.runningSessionIds).Count -gt 0) {
+    Write-Host "  active Pi Web sessions appeared; update deferred without stopping them" -ForegroundColor Yellow
+    exit 75
+  }
+}
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try {
   Get-Process -Name "node" -ErrorAction SilentlyContinue | Where-Object {
@@ -64,16 +60,20 @@ try {
   Start-Sleep -Seconds 1
 } finally { $ErrorActionPreference = $prev }
 
+& node (Join-Path $ScriptDir "lib\pui-updater.js") standalone-busy
+if ($LASTEXITCODE -eq 75) { Write-Host "  standalone Pi became active; update deferred" -ForegroundColor Yellow; exit 75 }
+if ($LASTEXITCODE -ne 0) { Write-Host "  could not verify standalone Pi idle state" -ForegroundColor Red; exit 1 }
+
 Write-Host "  updating @agegr/pi-web..."
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try {
-  & npm install -g --ignore-scripts "@agegr/pi-web@latest" 2>&1 | Out-Null
+  & npm install -g --ignore-scripts "$($Stack.upstream.gui.npm)@$($Stack.upstream.gui.version)" 2>&1 | Out-Null
   $npmExit = $LASTEXITCODE
 } finally { $ErrorActionPreference = $prev }
 if ($npmExit -ne 0) { Write-Host "  pi-web update failed" -ForegroundColor Red; exit 1 }
 
 # 3. resolve pi version used by newly installed pi-web
-$piWebCodingAgentVer = Get-PiWebCodingAgentVersion
+$piWebCodingAgentVer = [string]$Stack.upstream.agentRuntime.version
 if ($piWebCodingAgentVer) { Write-Host "  pi-web uses pi-coding-agent $piWebCodingAgentVer" }
 
 # 4. install standalone pi at matching version (only when misaligned)
@@ -84,7 +84,7 @@ if ($piWebCodingAgentVer -and $piCur -ne $piWebCodingAgentVer) {
   Write-Host "  aligning standalone pi to $piWebCodingAgentVer..."
   $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
   try {
-    & npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@$piWebCodingAgentVer" 2>&1 | Out-Null
+    & npm install -g --ignore-scripts "$($Stack.upstream.agentRuntime.npm)@$piWebCodingAgentVer" 2>&1 | Out-Null
     $npmExit2 = $LASTEXITCODE
   } finally { $ErrorActionPreference = $prev }
   if ($npmExit2 -ne 0) { Write-Host "  pi update failed" -ForegroundColor Red; exit 1 }
@@ -119,6 +119,9 @@ if (Test-Path $puiIconsDir) {
         $brandingExit = $LASTEXITCODE
       } finally { $ErrorActionPreference = $prev }
       if ($brandingExit -ne 0) { throw "text branding helper exited $brandingExit" }
+      & node (Join-Path $ScriptDir "lib\pui-web-integration.js") apply $ScriptDir $piWebPkgRoot 2>&1 | ForEach-Object { Write-Host "    $_" }
+      if ($LASTEXITCODE -ne 0) { throw "Pi Web update integration failed" }
+      Assert-NoInjectedFailure "pi-web-integration"
     }
   } catch {
     Write-Host "  PUI branding/icon override failed: $_" -ForegroundColor Red
@@ -129,8 +132,7 @@ if (Test-Path $puiIconsDir) {
   exit 1
 }
 
-# 5. reconcile the managed extension set, then update unpinned extensions.
-# Package entries can be either unversioned or pinned (npm:<name>@<version>).
+# 5. reconcile the exact PUI-managed extension set.
 $installedPackages = @()
 if (Test-Path $piSettings) {
   try {
@@ -154,20 +156,19 @@ foreach ($spec in @($Stack.retiredPiPackages)) {
   }
 }
 foreach ($spec in @($Stack.piPackages)) {
-  if (-not (Test-ManagedPackageInstalled $spec $installedPackages)) {
-    Write-Host "  installing newly managed extension $spec..."
-    $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    try { & pi install $spec 2>&1 | ForEach-Object { Write-Host "    $_" }; $piExit = $LASTEXITCODE }
-    finally { $ErrorActionPreference = $prev }
-    if ($piExit -ne 0) { Write-Host "  failed to install $spec" -ForegroundColor Red; exit 1 }
-    $installedPackages += $spec
-  }
+  Write-Host "  reconciling managed extension $spec..."
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & pi install $spec 2>&1 | ForEach-Object { Write-Host "    $_" }; $piExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+  if ($piExit -ne 0) { Write-Host "  failed to install $spec" -ForegroundColor Red; exit 1 }
+  & node (Join-Path $ScriptDir "lib\pui-config.js") set-package $piSettings $spec | Out-Null
+  if ($LASTEXITCODE -ne 0) { Write-Host "  failed to set exact managed pin for $spec" -ForegroundColor Red; exit 1 }
 }
-Write-Host "  updating Pi extensions..."
-$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-try { & pi update --extensions 2>&1 | ForEach-Object { Write-Host "    $_" }; $extensionsExit = $LASTEXITCODE } catch { Write-Host "  pi update --extensions failed: $_" -ForegroundColor Red; $extensionsExit = 1 }
-finally { $ErrorActionPreference = $prev }
-if ($extensionsExit -ne 0) { Write-Host "  Pi extension update failed" -ForegroundColor Red; exit 1 }
+Assert-NoInjectedFailure "package-reconciliation"
+Assert-NoInjectedFailure "config-migration"
+& node (Join-Path $ScriptDir "lib\pui-update-extension.js") install $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension replacement failed" -ForegroundColor Red; exit 1 }
+Assert-NoInjectedFailure "extension-replacement"
 
 # 6. refresh model catalogs
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
@@ -175,7 +176,7 @@ try { & pi update --models 2>&1 | ForEach-Object { Write-Host "    $_" }; $model
 finally { $ErrorActionPreference = $prev }
 if ($modelsExit -ne 0) { Write-Host "  model catalog refresh failed" -ForegroundColor Red; exit 1 }
 
-# 7. explicit user pins are left unchanged (pi update --extensions respects them)
+# 7. managed pins converge to stack.json; unrelated package pins are preserved.
 
 # 8. do not rewrite web/MCP config unless schema migration required (not in v1)
 
@@ -214,6 +215,7 @@ WshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""$piWebCmd"" --no-open", 
 # 10. run smoke suite
 Write-Host "`n=== running smoke suite ===" -ForegroundColor Cyan
 $doctorScript = Join-Path $ScriptDir "doctor.ps1"
+Assert-NoInjectedFailure "restart-health"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & $doctorScript; $doctorExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
 
@@ -224,10 +226,10 @@ if ($doctorExit -ne 0) {
   if (Get-Command pi-web -ErrorAction SilentlyContinue) { Write-Host "    pi-web: $((Get-Command pi-web).Source)" }
   if (Test-Path $piSettings) { Write-Host "  Backups preserved (restore by copying over the live file):" }
   foreach ($b in $backupFiles) { if ($b) { Write-Host "    $b" } }
-  Write-Host "  Rollback hint: npm install -g @agegr/pi-web@<previous-version> and" -ForegroundColor Yellow
-  Write-Host "    npm install -g @earendil-works/pi-coding-agent@<previous-version>" -ForegroundColor Yellow
+  Write-Host "  The transaction worker will restore and validate the previous certified PUI release." -ForegroundColor Yellow
   Write-Host "  Update NOT declared successful." -ForegroundColor Red
   exit 1
 }
+Assert-NoInjectedFailure "target-validation"
 
 Write-Host "`nUpdate complete: all doctor checks passed." -ForegroundColor Green

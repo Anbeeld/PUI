@@ -2,21 +2,21 @@
 
 This file records the upstream interfaces and live behaviors that PUI relies on. Recheck them before a release and whenever an upstream major version changes.
 
-## npm registry check (2026-08-25)
+## npm registry check (2026-08-26)
 
 All 7 upstream packages exist and publish `latest` distribution tags:
 
 | Package | Latest |
 |---|---:|
 | `@earendil-works/pi-coding-agent` | 0.84.3 |
-| `@agegr/pi-web` | 0.8.9 |
+| `@agegr/pi-web` | 0.8.10 |
 | `@gotgenes/pi-subagents` | 19.3.5 |
-| `pi-web-access` | 0.24.2 |
+| `pi-web-access` | 0.25.0 |
 | `pi-mcp-adapter` | 2.27.0 |
 | `@playwright/mcp` | 0.0.79 |
 | `@narumitw/pi-goal` | 0.54.0 |
 
-PUI uses a rolling release policy. The scripts install current releases and must not rely on these recorded versions as pins.
+`stack.json` pins these direct managed versions. Release validation rejects ranges, `latest`, and a Playwright MCP command that differs from its exact managed version. Transitive npm dependencies and model-catalog data are not frozen.
 
 ## Interfaces to recheck
 
@@ -27,10 +27,12 @@ PUI uses a rolling release policy. The scripts install current releases and must
 | `pi-mcp-adapter` reads `~/.config/mcp/mcp.json` and supports `mcpServers.*.lifecycle` | `configPaths.mcpShared`, `mcp` | Adapter schema and default-path source |
 | Pi Web serves loopback port `30141` | `piWeb` | Pi Web documentation and a local health check |
 | `pi-web --no-open` suppresses browser launch | `piWeb.noOpenFlag` | `pi-web --help` and a local run |
-| `pi update --extensions` and `pi update --models` retain their current semantics | update scripts | `pi update --help` and a test installation |
+| `pi update --models` retains its current model-catalog refresh semantics | update scripts | `pi update --help` and a test installation |
 | `pi install npm:<spec>` remains idempotent | install scripts | Install twice and inspect `settings.json` |
 | Installed Pi packages remain represented in `settings.json` `packages[]` | install and pin handling | Inspect settings after `pi install` |
 | Pi Web build outputs still contain the targeted branding and icon metadata files | branding and icon helpers | Run helper tests and inspect the installed package |
+| Pi Web 0.8.10 contains the exact `/api/app-update` route and prerendered app anchors | `pui-web-integration.js` | Run the exact-version integration fixture before release |
+| `/api/agent/running` reports aggregate running Pi Web sessions | updater idle gate | Keep a session streaming, compacting, or running bash and inspect the endpoint |
 
 If an assumption changes, adapt the scripts and tests to the current upstream contract and update this table.
 

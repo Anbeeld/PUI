@@ -6,7 +6,7 @@
   Opinionated batteries-included composition profile for vanilla Pi.
   Installs Pi Web, vanilla Pi runtime, and the Pi packages listed in stack.json,
   configures free keyless web, Playwright MCP, native filesystem tools, and optional PWA autostart.
-  PUI itself disappears from the runtime graph after setup.
+  Installs a small inert update extension and Pi Web bridge; no PUI daemon or fork is added.
 .PARAMETER NoPwa
   Skip PWA/app integration and Pi Web autostart. Pi Web is still installed.
 .PARAMETER NoBrowser
@@ -15,9 +15,6 @@
   Promote PUI's keyless providers (exa, duckduckgo) to primary when an existing
   user provider would otherwise override the keyless route. User providers are
   preserved after them.
-.PARAMETER UnpinPuiPackages
-  Lift existing version pins on PUI-managed Pi packages (normalizes to rolling
-  unversioned specs). Without this flag, pins are preserved with a warning.
 .EXAMPLE
   ./install.ps1
 .EXAMPLE
@@ -29,8 +26,7 @@
 param(
   [switch]$NoPwa,
   [switch]$NoBrowser,
-  [switch]$KeylessRoute,
-  [switch]$UnpinPuiPackages
+  [switch]$KeylessRoute
 )
 
 $ErrorActionPreference = "Stop"
@@ -199,14 +195,28 @@ if (-not $g2) {
 # ----------------------------------------------------------------------------
 Write-Phase 3 "Pi Web + Pi runtime parity"
 
+# A reinstall also replaces shared managed runtimes. Check Pi Web while it is
+# still alive so active work is never mistaken for an idle/unreachable server.
+$piWebProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  $_.CommandLine -match '[\\/]node_modules[\\/]@agegr[\\/]pi-web[\\/]'
+})
+if ($piWebProcesses.Count -gt 0) {
+  try { $runningState = Invoke-RestMethod "$piWebUrl/api/agent/running" -TimeoutSec 3 -ErrorAction Stop }
+  catch { Write-Host "  could not verify Pi Web idle state; install aborted" -ForegroundColor Red; exit 1 }
+  if (-not $runningState.PSObject.Properties['runningSessionIds']) { Write-Host "  Pi Web returned an invalid activity response; install aborted" -ForegroundColor Red; exit 1 }
+  if (@($runningState.runningSessionIds).Count -gt 0) { Write-Host "  active Pi Web sessions detected; install deferred without stopping them" -ForegroundColor Yellow; exit 75 }
+}
+
 # Stop any running pi-web process before npm install (avoids EBUSY on Windows).
-Get-Process -Name "node" -ErrorAction SilentlyContinue | Where-Object {
-  try { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -match '[\\/]node_modules[\\/]@agegr[\\/]pi-web[\\/]' } catch { $false }
-} | ForEach-Object { Write-Host "  stopping running pi-web (PID $($_.Id))"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+$piWebProcesses | ForEach-Object { Write-Host "  stopping running pi-web (PID $($_.ProcessId))"; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 1
 
+& node (Join-Path $ScriptDir "lib\pui-updater.js") standalone-busy
+if ($LASTEXITCODE -eq 75) { Write-Host "  standalone Pi is active; install deferred" -ForegroundColor Yellow; exit 75 }
+if ($LASTEXITCODE -ne 0) { Write-Host "  could not verify standalone Pi idle state" -ForegroundColor Red; exit 1 }
+
 Write-Host "  installing @agegr/pi-web (global)..."
-$piWebSpec = "@agegr/pi-web@latest"
+$piWebSpec = "$($Stack.upstream.gui.npm)@$($Stack.upstream.gui.version)"
 try {
   $r = Invoke-Npm -NpmArgs @("install","-g","--ignore-scripts",$piWebSpec)
 } catch {
@@ -218,19 +228,15 @@ if ($r.exit -ne 0) { Write-Host "  npm output: $($r.out)" -ForegroundColor Red; 
 # Refresh PATH for just-installed globals
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
-$piWebCodingAgentVer = Get-PiWebCodingAgentVersion
-if (-not $piWebCodingAgentVer) {
-  Write-Host "  could not resolve pi-coding-agent version from pi-web; installing standalone latest" -ForegroundColor Yellow
-} else {
-  Write-Host "  pi-web uses pi-coding-agent $piWebCodingAgentVer"
-}
+$piWebCodingAgentVer = [string]$Stack.upstream.agentRuntime.version
+Write-Host "  PUI pins pi-coding-agent $piWebCodingAgentVer"
 
 $g3 = $true
 if (-not (Test-Command pi-web)) { Write-Host "  pi-web not on PATH"; $g3 = $false }
 
 # A fresh machine does not get the standalone `pi` command from pi-web's
 # private dependency tree. Install it first, then verify PATH and parity.
-$piRuntimeSpec = if ($piWebCodingAgentVer) { "@earendil-works/pi-coding-agent@$piWebCodingAgentVer" } else { "@earendil-works/pi-coding-agent@latest" }
+$piRuntimeSpec = "$($Stack.upstream.agentRuntime.npm)@$piWebCodingAgentVer"
 $piVer = $null
 if (Test-Command pi) { $piVer = ((Invoke-Pi -PiArgs @("--version")).out -replace '[^0-9.]','') }
 if (-not $piVer -or ($piWebCodingAgentVer -and $piVer -ne $piWebCodingAgentVer)) {
@@ -280,6 +286,9 @@ if (Test-Path $puiIconsDir) {
         $brandingExit = $LASTEXITCODE
       } finally { $ErrorActionPreference = $prev }
       if ($brandingExit -ne 0) { throw "text branding helper exited $brandingExit" }
+      $integrationScript = Join-Path $ScriptDir "lib\pui-web-integration.js"
+      & node $integrationScript apply $ScriptDir $piWebPkgRoot 2>&1 | ForEach-Object { Write-Host "    $_" }
+      if ($LASTEXITCODE -ne 0) { throw "Pi Web update integration failed" }
       Write-Host "  branding override applied (icons, favicon, SW cache-bust, title/metadata)"
     }
   } catch {
@@ -309,30 +318,19 @@ if ($r.exit -eq 0) {
     }
   }
 }
-# Detect existing user pins on PUI-managed packages in settings.json.
-$settingsPkgs = @()
-if (Test-Path $piSettings) {
-  try { $sp = (Get-Content $piSettings -Raw | ConvertFrom-Json).packages; if ($sp) { $settingsPkgs = @($sp) } } catch { }
-}
 foreach ($spec in $pkgs) {
-  $pkgName = ($spec -replace '^npm:','')
-  $pinned = $settingsPkgs | Where-Object { $_ -is [string] -and $_.StartsWith("npm:$pkgName@") } | Select-Object -First 1
-  if ($pinned) {
-    if ($UnpinPuiPackages) {
-      Write-Host "  unpinning $pinned -> npm:$pkgName"
-      $r = Invoke-NodeConfig -CfgArgs @("unpin-package", $piSettings, $pkgName)
-      if ($r.exit -ne 0) { Write-Host "  unpin failed: $($r.out)" -ForegroundColor Red; $g4 = $false; continue }
-    } else {
-      Write-Host "  SKIPPED (user pin preserved): $pinned" -ForegroundColor Yellow
-      Write-Host "    PUI cannot rolling-update this component; re-run with -UnpinPuiPackages to lift the pin." -ForegroundColor Yellow
-      continue
-    }
-  }
   Write-Host "  pi install $spec"
   $r = Invoke-Pi -PiArgs @("install",$spec)
   if ($r.out) { $r.out -split "`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } }
   if ($r.exit -ne 0) { Write-Host "  FAILED: $spec" -ForegroundColor Red; $g4 = $false }
+  else {
+    $setResult = Invoke-NodeConfig -CfgArgs @("set-package", $piSettings, $spec)
+    if ($setResult.exit -ne 0) { Write-Host "  managed pin reconciliation failed: $($setResult.out)" -ForegroundColor Red; $g4 = $false }
+  }
 }
+$extensionScript = Join-Path $ScriptDir "lib\pui-update-extension.js"
+& node $extensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension install failed" -ForegroundColor Red; $g4 = $false }
 # Verify packages are visible (pi list)
 $r = Invoke-Pi -PiArgs @("list")
 if ($r.exit -eq 0) {
@@ -608,7 +606,7 @@ if ($script:Failures.Count -gt 0) {
   exit 1
 }
 
-Write-Host "`nPUI setup complete. After setup, PUI is just a normal Pi installation." -ForegroundColor Green
+Write-Host "`nPUI setup complete. Pi remains the runtime; the inert PUI update extension and Pi Web integration stay installed." -ForegroundColor Green
 if (-not $NoPwa -and -not $NoBrowser) {
   Write-Host "Complete PWA installation with the browser's 'Install app' action on the page that opened." -ForegroundColor Yellow
 }

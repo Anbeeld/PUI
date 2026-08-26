@@ -75,6 +75,8 @@ if (Test-Path $mcpShared) {
 try {
   $piWebRoot = Join-Path (Join-Path (& npm root -g) "@agegr") "pi-web"
   if (Test-Path $piWebRoot) {
+    & node (Join-Path $ScriptDir "lib\pui-web-integration.js") remove $ScriptDir $piWebRoot | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update integration differs from its owned shape; preserving." -ForegroundColor Yellow }
     Get-ChildItem $piWebRoot -Recurse -Filter "*.pui-created" -File -ErrorAction SilentlyContinue | ForEach-Object {
       $created = $_.FullName -replace '\.pui-created$', ''
       if (Test-Path $created) { Remove-Item $created -Force }
@@ -90,13 +92,17 @@ try {
   }
 } catch { Write-Host "  icon/branding restore skipped: $_" -ForegroundColor Yellow }
 
+& node (Join-Path $ScriptDir "lib\pui-update-extension.js") remove $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension differs from its owned shape; preserving." -ForegroundColor Yellow }
+
 # 4. optionally remove PUI-selected Pi packages
 if ($Full) {
   Write-Host "  -Full: removing PUI-selected Pi packages..."
   $managedPackages = @($Stack.piPackages) + @($Stack.retiredPiPackages) | Select-Object -Unique
   foreach ($spec in $managedPackages) {
-    Write-Host "    pi remove $spec"
-    try { & pi remove $spec 2>&1 | ForEach-Object { Write-Host "      $_" } } catch { Write-Host "      remove failed: $_" -ForegroundColor Yellow }
+    $removeSpec = $spec -replace '@\d+\.\d+\.\d+$',''
+    Write-Host "    pi remove $removeSpec"
+    try { & pi remove $removeSpec 2>&1 | ForEach-Object { Write-Host "      $_" } } catch { Write-Host "      remove failed: $_" -ForegroundColor Yellow }
   }
   Write-Host "  -Full: uninstalling pi-web and pi (npm globals)..."
   & npm uninstall -g "@agegr/pi-web" 2>&1 | Out-Null

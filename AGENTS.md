@@ -2,9 +2,9 @@
 
 ## Purpose and boundaries
 
-PUI is a setup-time composition profile for vanilla Pi. It installs and configures upstream components without introducing a PUI runtime or maintaining a Pi fork.
+PUI is a composition profile for vanilla Pi. It installs exact upstream components without a separate PUI runtime process, persistent service, retained checkout, or Pi fork. A small inert update extension and an exact Pi Web integration remain installed.
 
-- Treat `stack.json` as the source of truth for managed packages, retired packages, paths, tools, MCP configuration, web routing, and the Pi Web endpoint.
+- Treat `stack.json` as the source of truth for exact managed package versions, retired packages, paths, tools, MCP configuration, web routing, and the Pi Web endpoint. `package.json.version` is the source release version; the installed update-extension manifest is the installed identity.
 - Preserve unrelated user configuration. Back up existing JSON before changing it, validate inputs, and use structural merges instead of textual replacement.
 - Perform installation and update mutations through the repository entry points. Do not document or introduce a manual sequence that bypasses `install.*` or `update.*`.
 - Do not modify user projects, sessions, authentication, skills, model/provider configuration, or unrelated MCP entries.
@@ -13,12 +13,13 @@ PUI is a setup-time composition profile for vanilla Pi. It installs and configur
 ## Architecture
 
 - `install.ps1` and `install.sh` perform prerequisite checks, backups, package installation, configuration, branding, icons, optional autostart, and smoke validation.
-- `update.ps1` and `update.sh` refresh the same managed state and reapply build overrides after Pi Web changes.
+- `update.ps1` and `update.sh` delegate normal updates to `lib/pui-updater.js`; staged apply mode reconciles exact state and reapplies build overrides.
 - `doctor.ps1` and `doctor.sh` are read-only diagnostics.
 - `uninstall.ps1` and `uninstall.sh` remove owned integration; full mode also removes managed packages and global Pi executables.
 - `lib/pui-config.js` owns JSON backup and merge operations.
 - `lib/pui-stack.js` returns typed `stack.json` values to shell scripts; string values must remain unquoted.
 - `lib/pui-branding.js` and `lib/pui-icons.js` patch the installed Pi Web build and store originals as `*.pui-original` for restoration.
+- `lib/pui-release.js`, `lib/pui-updater.js`, `lib/pui-update-extension.js`, and `lib/pui-web-integration.js` own release validation, transaction/rollback, installed identity, and the exact Pi Web bridge.
 - `assets/icons/` contains the complete committed icon source set. Do not edit installed copies as the source of truth.
 
 Keep the PowerShell and shell workflows behaviorally equivalent except for platform-specific autostart. When changing a lifecycle phase, inspect and update both implementations and their tests.
@@ -64,6 +65,7 @@ For lifecycle changes, also exercise the relevant repository script on the targe
 
 - Managed package additions and retirements are represented in `stack.json`, both platform implementations, diagnostics, uninstall behavior, and tests.
 - Branding and icon changes survive update and can be restored by uninstall.
+- Installed identity, bridge health, exact versions, idle gating, and rollback to the previous certified composition are verified.
 - Existing unrelated settings remain intact and invalid JSON fails safely after a backup.
 - `npm test`, PowerShell parsing, and shell parsing pass with fresh output.
 - Documentation contains real commands, valid relative links, and no unreplaced planning placeholders.
