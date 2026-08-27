@@ -9,7 +9,7 @@ const vm = require("node:vm");
 
 const repoRoot = path.resolve(__dirname, "..");
 const brandingScript = path.join(repoRoot, "lib", "pui-branding.js");
-const { replaceBranding } = require(brandingScript);
+const { applyBranding, replaceBranding, replaceCssLayout } = require(brandingScript);
 
 function writeFixture(root, relativePath, content) {
   const target = path.join(root, relativePath);
@@ -151,6 +151,46 @@ test("apply changes only top-level Pi Web branding surfaces to PUI", (t) => {
     assert.equal(fs.existsSync(`${changed}.pui-original`), true);
   }
   assert.equal(fs.existsSync(`${componentDiagnostic}.pui-original`), false);
+});
+
+test("widget trigger cell shrinks to content instead of reserving 70% of the shelf", () => {
+  // pi-web stretches the widget trigger cell to 70% of the footer shelf when a
+  // status line is present (flex:0 70%), so a single widget leaves a large
+  // empty gap between the triggers and the status text.
+  const upstreamRule =
+    ".extension-status-shelf.has-widgets.has-status .extension-widget-triggers{border-right:1px solid var(--border);flex:0 70%;max-width:70%}";
+  const result = replaceCssLayout(`.a{color:red}${upstreamRule}.b{color:blue}`);
+
+  assert.ok(result.includes("flex:0 1 auto;max-width:70%"));
+  assert.ok(!result.includes("flex:0 70%"));
+  assert.ok(
+    result.includes(
+      ".extension-status-shelf.has-widgets.has-status .extension-widget-trigger:last-child{border-right:0}",
+    ),
+  );
+  assert.equal(replaceCssLayout(result), result);
+  assert.equal(replaceCssLayout(".a{color:red}"), ".a{color:red}");
+});
+
+test("apply patches the built CSS layout once and keeps the original", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-branding-layout-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  writeFixture(root, ".next/server/app/page.js", "export {};");
+  const upstream =
+    ".x{color:red}.extension-status-shelf.has-widgets.has-status .extension-widget-triggers{border-right:1px solid var(--border);flex:0 70%;max-width:70%}.y{color:blue}";
+  const css = writeFixture(root, ".next/static/css/app-hash.css", upstream);
+
+  applyBranding(root);
+  const patched = fs.readFileSync(css, "utf8");
+  assert.ok(patched.includes("flex:0 1 auto;max-width:70%"));
+  assert.ok(!patched.includes("flex:0 70%"));
+  assert.ok(patched.includes(".extension-widget-trigger:last-child{border-right:0}"));
+  assert.equal(fs.readFileSync(`${css}.pui-original`, "utf8"), upstream);
+
+  applyBranding(root);
+  assert.equal(fs.readFileSync(css, "utf8"), patched);
+  assert.equal(fs.readdirSync(path.dirname(css)).filter((name) => name.endsWith(".pui-original")).length, 1);
 });
 
 test("every install and update entry point applies the shared branding helper", () => {

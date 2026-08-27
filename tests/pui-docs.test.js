@@ -38,7 +38,7 @@ test("documented upstream versions match stack package count", () => {
   assert.match(content, /`@99percentpeople\/pi-background-tasks` \| 2\.1\.1/);
 });
 
-test("v1.1.0 documentation describes every added managed extension", () => {
+test("v1.1.1 documentation describes every added managed extension", () => {
   const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
   const components = fs.readFileSync(path.join(repoRoot, "docs", "components.md"), "utf8");
   const changelog = fs.readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf8");
@@ -49,7 +49,7 @@ test("v1.1.0 documentation describes every added managed extension", () => {
     assert.match(changelog, new RegExp(packageName.replace("/", "\\/")), `CHANGELOG.md: ${packageName}`);
   }
   for (const content of [readme, components, changelog]) assert.doesNotMatch(content, /pi-permission-system/);
-  assert.match(changelog, /^# Changelog\s+## v1\.1\.0/m);
+  assert.match(changelog, /^# Changelog\s+## v1\.1\.1/m);
   assert.match(changelog, /^## v1\.0\.4$/m);
 });
 

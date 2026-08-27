@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1
+
+- Shrunk the Pi Web footer widget-trigger cell from its fixed 70% shelf basis to content width so a single extension widget no longer leaves a large empty gap next to the status text, and removed the now-adjacent duplicate right border on the last trigger.
+
 ## v1.1.0
 
 - Updated all managed upstream components to their latest releases: `@agegr/pi-web` 0.8.11, `pi-mcp-adapter` 2.29.0, `@narumitw/pi-goal` 0.54.3, `@narumitw/pi-accounts` 0.49.11, and `@narumitw/pi-usage` 0.52.3 (`@earendil-works/pi-coding-agent` 0.84.3, `@gotgenes/pi-subagents` 19.3.5, `pi-web-access` 0.25.0, `@playwright/mcp` 0.0.79, `@juicesharp/rpiv-ask-user-question` 2.7.1, and `pi-fff` 0.1.12 were already current). Re-validated the pi-goal `formatStatus` patch and the Pi Web update bridge against the bumped builds.

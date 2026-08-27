@@ -41,7 +41,7 @@ It may also write one per-user autostart file:
 - macOS: `~/Library/LaunchAgents/com.pui.piweb.plist`
 - Linux: `~/.config/systemd/user/pui-piweb.service`
 
-The branding helper patches only Pi Web's top-level title, description, sidebar brand, manifest, favicon, Apple touch icon, and PWA icon metadata. Component-name occurrences such as release text remain “Pi Web.” Original build files are stored as `*.pui-original`, the service-worker cache name receives a PUI suffix, update reapplies the override, and uninstall restores the originals.
+The branding helper patches only Pi Web's top-level title, description, sidebar brand, manifest, favicon, Apple touch icon, and PWA icon metadata. Component-name occurrences such as release text remain “Pi Web.” It also shrinks the footer widget-trigger cell from its fixed 70% shelf basis to content width (keeping the 70% cap and horizontal scroll) so a single extension widget does not leave a large empty gap next to the status text, and drops the now-adjacent duplicate right border on the last trigger. Original build files are stored as `*.pui-original`, the service-worker cache name receives a PUI suffix, update reapplies the override, and uninstall restores the originals.
 
 The update integration is pinned to the exact Pi Web version in `stack.json`. It replaces the existing `/api/app-update` implementation through a narrow expected-pattern check and injects one public client script into the prerendered app document. Its separate ownership manifest and backups allow uninstall to restore it only while the complete installed shape still matches PUI.
 
@@ -71,7 +71,7 @@ PUI/
 |-- lib/
 |   |-- pui-config.js          structural JSON merge helper
 |   |-- pui-stack.js           stack value reader for shell scripts
-|   |-- pui-branding.js        Pi Web text and metadata override
+|   |-- pui-branding.js        Pi Web text, metadata, and footer-layout override
 |   |-- pui-icons.js           icon installer and restorer
 |   |-- pui-release.js         exact release and checkpoint validation
 |   |-- pui-updater.js         shared transaction and rollback worker
