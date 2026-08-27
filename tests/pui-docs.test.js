@@ -30,24 +30,26 @@ test("documented upstream versions match stack package count", () => {
   const content = fs.readFileSync(path.join(repoRoot, "docs", "upstream-verification.md"), "utf8");
   const stack = require(path.join(repoRoot, "stack.json"));
   assert.match(content, new RegExp(`All ${Object.keys(stack.upstream).length} upstream packages`));
-  assert.match(content, /`@narumitw\/pi-goal` \| 0\.54\.0/);
-  assert.match(content, /`@narumitw\/pi-accounts` \| 0\.49\.10/);
+  assert.match(content, /`@narumitw\/pi-goal` \| 0\.54\.3/);
+  assert.match(content, /`@narumitw\/pi-accounts` \| 0\.49\.11/);
+  assert.match(content, /`@narumitw\/pi-usage` \| 0\.52\.3/);
   assert.match(content, /`@juicesharp\/rpiv-ask-user-question` \| 2\.7\.1/);
   assert.match(content, /`pi-fff` \| 0\.1\.12/);
+  assert.match(content, /`@99percentpeople\/pi-background-tasks` \| 2\.1\.1/);
 });
 
-test("v1.0.4 documentation describes every added managed extension", () => {
+test("v1.1.0 documentation describes every added managed extension", () => {
   const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
   const components = fs.readFileSync(path.join(repoRoot, "docs", "components.md"), "utf8");
   const changelog = fs.readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf8");
 
-  for (const packageName of ["@juicesharp/rpiv-ask-user-question", "pi-fff"]) {
+  for (const packageName of ["@juicesharp/rpiv-ask-user-question", "pi-fff", "@99percentpeople/pi-background-tasks"]) {
     assert.match(readme, new RegExp(packageName.replace("/", "\\/")), `README.md: ${packageName}`);
     assert.match(components, new RegExp(packageName.replace("/", "\\/")), `docs/components.md: ${packageName}`);
     assert.match(changelog, new RegExp(packageName.replace("/", "\\/")), `CHANGELOG.md: ${packageName}`);
   }
   for (const content of [readme, components, changelog]) assert.doesNotMatch(content, /pi-permission-system/);
-  assert.match(changelog, /^# Changelog\s+## v1\.0\.6/m);
+  assert.match(changelog, /^# Changelog\s+## v1\.1\.0/m);
   assert.match(changelog, /^## v1\.0\.4$/m);
 });
 
@@ -56,6 +58,22 @@ test("documentation describes managed account switching", () => {
     const content = fs.readFileSync(path.join(repoRoot, file), "utf8");
     assert.match(content, /@narumitw\/pi-accounts/, file);
   }
+});
+
+test("documentation describes usage tracking", () => {
+  for (const file of ["README.md", "docs/components.md", "CHANGELOG.md"]) {
+    const content = fs.readFileSync(path.join(repoRoot, file), "utf8");
+    assert.match(content, /@narumitw\/pi-usage/, file);
+  }
+});
+
+test("documentation describes native background-task recovery", () => {
+  const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
+  const components = fs.readFileSync(path.join(repoRoot, "docs", "components.md"), "utf8");
+  const changelog = fs.readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf8");
+  assert.match(readme, /node-pty.*during install and update/i);
+  assert.match(components, /node-pty.*approve\/rebuild/i);
+  assert.match(changelog, /node-pty.*fail closed/i);
 });
 
 test("documentation describes the hybrid Playwright MCP policy", () => {

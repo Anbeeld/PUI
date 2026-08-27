@@ -10,6 +10,13 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+function Wait-IfInteractive {
+  if ($env:PUI_NONINTERACTIVE) { return }
+  try { Write-Host ""; Read-Host -Prompt "Press Enter to close this window" | Out-Null } catch {}
+}
+
+try {
+
 if (-not $ApplyStaged -and $env:PUI_APPLY_STAGED -ne "1") {
   & node (Join-Path $ScriptDir "lib\pui-updater.js") manual $ScriptDir
   exit $LASTEXITCODE
@@ -26,6 +33,7 @@ $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";"
 $Stack = Get-Content (Join-Path $ScriptDir "stack.json") -Raw | ConvertFrom-Json
 function Expand-Path($p) { if ($p -match '^~') { return (Join-Path $env:USERPROFILE ($p -replace '^~[\\/]?','')) }; return $p }
 $Lib = Join-Path $ScriptDir "lib\pui-config.js"
+$piAgentDir = Expand-Path $Stack.configPaths.piAgentDir
 $piWebAccess = Expand-Path $Stack.configPaths.piWebAccess
 $mcpShared = Expand-Path $Stack.configPaths.mcpShared
 $piSettings = Expand-Path $Stack.configPaths.piSettings
@@ -40,10 +48,49 @@ foreach ($f in @($piWebAccess, $mcpShared, $piSettings) | Where-Object { Test-Pa
 
 # 2. update pi-web
 # Stop any running pi-web process before npm install (avoids EBUSY on Windows).
-$piWebProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-  $_.CommandLine -match '[\\/]node_modules[\\/]@agegr[\\/]pi-web[\\/]'
-})
-if ($piWebProcesses.Count -gt 0) {
+# Detection combines a command-line match with a port-listener fallback so a
+# transient WMI enumeration miss cannot leave a running pi-web unreported.
+function Get-PiWebPid {
+  $pids = @{}
+  foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.CommandLine -match '[\\/]node_modules[\\/]@agegr[\\/]pi-web[\\/]'
+  })) { $pids[[int]$p.ProcessId] = $true }
+  try {
+    foreach ($conn in @(Get-NetTCPConnection -LocalPort $Stack.piWeb.port -State Listen -ErrorAction Stop)) {
+      $ownerPid = [int]$conn.OwningProcess
+      if ($ownerPid -gt 0 -and -not $pids.ContainsKey($ownerPid)) {
+        $owner = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
+        if ($owner -and $owner.Name -match '^node(\.exe)?$') { $pids[$ownerPid] = $true }
+      }
+    }
+  } catch {}
+  return @($pids.Keys)
+}
+function Wait-PiWebStopped {
+  param([int]$Attempts = 15)
+  for ($wait = 0; $wait -lt $Attempts; $wait += 1) {
+    if (@(Get-PiWebPid).Count -eq 0) { return $true }
+    Start-Sleep -Seconds 1
+  }
+  return (@(Get-PiWebPid).Count -eq 0)
+}
+function Wait-PiWebHealthy {
+  param([int]$Attempts = 30, [int]$Consecutive = 2)
+  $healthyCount = 0
+  for ($attempt = 0; $attempt -lt $Attempts; $attempt += 1) {
+    try {
+      $response = Invoke-WebRequest $Stack.piWeb.url -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+      if ([int]$response.StatusCode -eq 200) {
+        $healthyCount += 1
+        if ($healthyCount -ge $Consecutive) { return $true }
+      } else { $healthyCount = 0 }
+    } catch { $healthyCount = 0 }
+    Start-Sleep -Seconds 2
+  }
+  return $false
+}
+
+if (@(Get-PiWebPid).Count -gt 0) {
   try { $runningState = Invoke-RestMethod "$($Stack.piWeb.url)/api/agent/running" -TimeoutSec 3 -ErrorAction Stop }
   catch { Write-Host "  could not verify Pi Web idle state; update aborted" -ForegroundColor Red; exit 1 }
   if (-not $runningState.PSObject.Properties['runningSessionIds']) { Write-Host "  Pi Web returned an invalid activity response; update aborted" -ForegroundColor Red; exit 1 }
@@ -54,10 +101,11 @@ if ($piWebProcesses.Count -gt 0) {
 }
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try {
-  Get-Process -Name "node" -ErrorAction SilentlyContinue | Where-Object {
-    try { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -match '[\\/]node_modules[\\/]@agegr[\\/]pi-web[\\/]' } catch { $false }
-  } | ForEach-Object { Write-Host "  stopping running pi-web (PID $($_.Id))"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
-  Start-Sleep -Seconds 1
+  foreach ($pidToStop in @(Get-PiWebPid)) { Write-Host "  stopping running pi-web (PID $pidToStop)"; Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue }
+  if (-not (Wait-PiWebStopped)) {
+    Write-Host "  could not stop Pi Web before package mutation; update aborted" -ForegroundColor Red
+    exit 1
+  }
 } finally { $ErrorActionPreference = $prev }
 
 & node (Join-Path $ScriptDir "lib\pui-updater.js") standalone-busy
@@ -65,12 +113,23 @@ if ($LASTEXITCODE -eq 75) { Write-Host "  standalone Pi became active; update de
 if ($LASTEXITCODE -ne 0) { Write-Host "  could not verify standalone Pi idle state" -ForegroundColor Red; exit 1 }
 
 Write-Host "  updating @agegr/pi-web..."
+$piWebSpec = "$($Stack.upstream.gui.npm)@$($Stack.upstream.gui.version)"
+$npmExit = 1
+$npmErr = ""
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try {
-  & npm install -g --ignore-scripts "$($Stack.upstream.gui.npm)@$($Stack.upstream.gui.version)" 2>&1 | Out-Null
-  $npmExit = $LASTEXITCODE
+  # npm may report EBUSY briefly after Pi Web stops while Windows releases the directory lock; retry.
+  for ($attempt = 1; $attempt -le 5 -and $npmExit -ne 0; $attempt += 1) {
+    if ($attempt -gt 1) { Write-Host "  retrying pi-web install (attempt $attempt)..." -ForegroundColor Yellow; Start-Sleep -Seconds 2 }
+    $npmErr = (& npm install -g --ignore-scripts $piWebSpec 2>&1 | Out-String)
+    $npmExit = $LASTEXITCODE
+  }
 } finally { $ErrorActionPreference = $prev }
-if ($npmExit -ne 0) { Write-Host "  pi-web update failed" -ForegroundColor Red; exit 1 }
+if ($npmExit -ne 0) {
+  Write-Host "  pi-web update failed" -ForegroundColor Red
+  Write-Host $npmErr -ForegroundColor DarkGray
+  exit 1
+}
 
 # 3. resolve pi version used by newly installed pi-web
 $piWebCodingAgentVer = [string]$Stack.upstream.agentRuntime.version
@@ -166,6 +225,40 @@ foreach ($spec in @($Stack.piPackages)) {
 }
 Assert-NoInjectedFailure "package-reconciliation"
 
+# Reconcile pi-fff feature state: suppress startup notices.
+$piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
+$fffCfg = @{ enabledFeatures = @($Stack.fff.enabledFeatures) } | ConvertTo-Json -Depth 10 -Compress
+$fffCfgFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($fffCfgFile, $fffCfg, [System.Text.UTF8Encoding]::new($false))
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $Lib "merge-object" $piFffFeatures "@$fffCfgFile" 2>&1 | Out-Null; $fffExit = $LASTEXITCODE }
+finally { Remove-Item $fffCfgFile -Force -ErrorAction SilentlyContinue; $ErrorActionPreference = $prev }
+if ($fffExit -ne 0) { Write-Host "  pi-fff feature state reconciliation failed" -ForegroundColor Red; exit 1 }
+Write-Host "  pi-fff feature state reconciled (startup notices disabled)"
+
+# Reconcile pi-goal settings: unlimited automatic turns with a readable status line.
+$piGoalSettings = Expand-Path $Stack.configPaths.piGoal
+$goalCfg = '{"continuationLimits":{"automaticTurns":null,"noProgressTurns":3}}'
+$goalCfgFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($goalCfgFile, $goalCfg, [System.Text.UTF8Encoding]::new($false))
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $Lib "merge-object" $piGoalSettings "@$goalCfgFile" 2>&1 | Out-Null; $goalExit = $LASTEXITCODE }
+finally { Remove-Item $goalCfgFile -Force -ErrorAction SilentlyContinue; $ErrorActionPreference = $prev }
+if ($goalExit -ne 0) { Write-Host "  pi-goal settings reconciliation failed" -ForegroundColor Red; exit 1 }
+$goalPatchScript = Join-Path $ScriptDir "lib\pui-goal-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $goalPatchScript apply 2>&1 | Out-Null; $goalPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($goalPatchExit -ne 0) { Write-Host "  pi-goal status patch could not be applied (version drift); the turn counter may still show 'automatic Unlimited'." -ForegroundColor Yellow }
+else { Write-Host "  pi-goal configured for unlimited turns with a readable status line" }
+
+# Verify the node-pty native binding for @99percentpeople/pi-background-tasks.
+$nativeCheck = Join-Path $ScriptDir "lib\pui-native-check.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $nativeCheck ensure (Join-Path $piAgentDir "npm") 2>&1 | Out-Null; $nativeExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($nativeExit -ne 0) { Write-Host "  pi-background-tasks native (node-pty) binding could not be verified or rebuilt; update aborted. Install the required compiler toolchain and rerun update.ps1." -ForegroundColor Red; exit 1 }
+
 Write-Host "  reconciling managed Playwright MCP..."
 $mcpDef = [ordered]@{
   command = [string]$Stack.mcp.command
@@ -191,6 +284,15 @@ if ($mcpExit -ne 0) {
   Write-Host "  failed to reconcile Playwright MCP" -ForegroundColor Red
   exit 1
 }
+# Reconcile MCP footer status: keep the extension status bar quiet.
+$mcFooterCfg = '{"settings":{"mcpFooterStatus":"off"}}'
+$mcFooterFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($mcFooterFile, $mcFooterCfg, [System.Text.UTF8Encoding]::new($false))
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $Lib "merge-object" $mcpShared "@$mcFooterFile" 2>&1 | Out-Null; $mcFooterExit = $LASTEXITCODE }
+finally { Remove-Item $mcFooterFile -Force -ErrorAction SilentlyContinue; $ErrorActionPreference = $prev }
+if ($mcFooterExit -ne 0) { Write-Host "  MCP footer status reconciliation failed" -ForegroundColor Red; exit 1 }
+Write-Host "  MCP footer status hidden (mcpFooterStatus=off)"
 Assert-NoInjectedFailure "config-migration"
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") install $ScriptDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension replacement failed" -ForegroundColor Red; exit 1 }
@@ -214,11 +316,12 @@ if (Test-Path $launcherVbs) {
   # Stop any running pi-web node process so the new binary is picked up.
   $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
   try {
-    Get-Process -Name "node" -ErrorAction SilentlyContinue | Where-Object {
-      try { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -match '[\\/]node_modules[\\/]@agegr[\\/]pi-web[\\/]' } catch { $false }
-    } | ForEach-Object { Write-Host "    stopping pi-web node (PID $($_.Id))"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 1
-    # Re-launch pi-web hidden via the same cmd shim the installer uses.
+    foreach ($pidToStop in @(Get-PiWebPid)) { Write-Host "    stopping pi-web node (PID $pidToStop)"; Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue }
+    if (-not (Wait-PiWebStopped)) {
+      Write-Host "  could not stop Pi Web before restart; update aborted" -ForegroundColor Red
+      exit 1
+    }
+    # Re-launch pi-web through the same hidden VBS launcher the autostart uses.
     $piWebCmd = "$env:APPDATA\npm\pi-web.cmd"
     if (Test-Path $piWebCmd) {
       # Refresh the VBS launcher so it sets PI_WEB_SKIP_VERSION_CHECK=1
@@ -229,9 +332,12 @@ WshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""$piWebCmd"" --no-open", 
 "@
       # No BOM: Windows Script Host rejects UTF-8 BOM with "Invalid character" (800A0408).
       [System.IO.File]::WriteAllText($launcherVbs, $vbsContent, [System.Text.UTF8Encoding]::new($false))
-      Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set PI_WEB_SKIP_VERSION_CHECK=1&&`"$piWebCmd`" --no-open" -WindowStyle Hidden | Out-Null
-      Start-Sleep -Seconds 5
-      Write-Host "    pi-web restarted"
+      Start-Process -FilePath "wscript.exe" -ArgumentList "`"$launcherVbs`"" | Out-Null
+      Write-Host "    pi-web launch requested via autostart launcher"
+      # Require two consecutive HTTP 200 responses so a stale or short-lived
+      # process cannot pass this gate before the doctor smoke suite runs.
+      if (-not (Wait-PiWebHealthy)) { Write-Host "  pi-web did not reach stable running state with HTTP 200 within 60s" -ForegroundColor Red; exit 1 }
+      Write-Host "    pi-web restarted via autostart launcher and is running and healthy at $($Stack.piWeb.url)"
     }
   } finally { $ErrorActionPreference = $prev }
 } else {
@@ -243,7 +349,12 @@ Write-Host "`n=== running smoke suite ===" -ForegroundColor Cyan
 $doctorScript = Join-Path $ScriptDir "doctor.ps1"
 Assert-NoInjectedFailure "restart-health"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-try { & $doctorScript; $doctorExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+$prevNonInteractive = $env:PUI_NONINTERACTIVE
+$env:PUI_NONINTERACTIVE = "1"
+try { & $doctorScript; $doctorExit = $LASTEXITCODE } finally {
+  $ErrorActionPreference = $prev
+  $env:PUI_NONINTERACTIVE = $prevNonInteractive
+}
 
 if ($doctorExit -ne 0) {
   Write-Host "`n=== UPDATE FAILED VALIDATION ===" -ForegroundColor Red
@@ -259,3 +370,4 @@ if ($doctorExit -ne 0) {
 Assert-NoInjectedFailure "target-validation"
 
 Write-Host "`nUpdate complete: all doctor checks passed." -ForegroundColor Green
+} finally { Wait-IfInteractive }

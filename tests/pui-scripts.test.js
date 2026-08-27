@@ -88,6 +88,19 @@ test("installer completion text names the retained PUI integration", () => {
   }
 });
 
+test("Windows entry points stay open after running unless driven as a non-interactive child", () => {
+  for (const file of ["install.ps1", "update.ps1", "uninstall.ps1", "doctor.ps1"]) {
+    const content = read(file);
+    assert.match(content, /function Wait-IfInteractive/, `${file}: Wait-IfInteractive helper`);
+    assert.match(content, /PUI_NONINTERACTIVE/, `${file}: non-interactive guard`);
+    assert.match(content, /\} finally \{ Wait-IfInteractive \}/, `${file}: finally pause on every exit path`);
+  }
+  const update = read("update.ps1");
+  assert.match(update, /\$env:PUI_NONINTERACTIVE = "1"[\s\S]*& \$doctorScript/, "update.ps1 suppresses the pause for the doctor smoke-suite child");
+  const updater = fs.readFileSync(path.join(repoRoot, "lib", "pui-updater.js"), "utf8");
+  assert.match(updater, /PUI_NONINTERACTIVE: "1"/, "spawned update runs inherit the non-interactive marker");
+});
+
 test("both staged apply paths expose the same material failure-injection boundaries", () => {
   const boundaries = ["package-reconciliation", "config-migration", "pi-web-integration", "extension-replacement", "restart-health", "target-validation"];
   for (const file of ["update.ps1", "update.sh"]) {
@@ -105,6 +118,66 @@ test("staged apply rechecks Pi Web idle immediately before stopping the server",
   for (const stop of ['launchctl unload "$PLIST"', 'systemctl --user stop "$SERVICE_NAME"', "pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]'"]) {
     assert.ok(idle < shell.indexOf(stop), `update.sh: idle check must precede ${stop}`);
   }
+});
+
+test("staged apply verifies Pi Web is actually stopped before mutating the global package", () => {
+  const powershell = read("update.ps1");
+  const psStop = powershell.indexOf("Stop-Process");
+  const psAbort = powershell.indexOf("could not stop Pi Web");
+  const psInstall = powershell.indexOf("updating @agegr/pi-web...");
+  assert.ok(psStop !== -1 && psAbort > psStop, "update.ps1: stop verification must follow the stop attempt");
+  assert.ok(psAbort !== -1 && psAbort < psInstall, "update.ps1: must abort before the pi-web npm install when Pi Web is still running");
+  assert.match(powershell, /Get-NetTCPConnection/, "update.ps1: port-listener fallback covers WMI enumeration misses");
+
+  const shell = read("update.sh");
+  const shStop = shell.indexOf("pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]'");
+  const shAbort = shell.indexOf("could not stop Pi Web");
+  const shInstall = shell.indexOf('echo "  updating @agegr/pi-web..."');
+  assert.ok(shStop !== -1 && shAbort > shStop, "update.sh: stop verification must follow pkill");
+  assert.ok(shAbort !== -1 && shAbort < shInstall, "update.sh: must abort before the pi-web npm install when Pi Web is still running");
+});
+
+test("updater process helpers never spawn visible console windows on Windows", () => {
+  const updater = fs.readFileSync(path.join(repoRoot, "lib", "pui-updater.js"), "utf8");
+  const spawnLines = updater.split(/\r?\n/).filter((line) => line.includes("spawnSync("));
+  assert.ok(spawnLines.length > 0, "expected spawnSync call sites in pui-updater.js");
+  for (const line of spawnLines) assert.match(line, /windowsHide:\s*true/, line.trim());
+});
+
+test("staged apply requires stable Windows Pi Web health after restart", () => {
+  const powershell = read("update.ps1");
+  assert.match(powershell, /function Wait-PiWebStopped/, "update.ps1: restart must verify the old process is gone");
+  assert.match(powershell, /function Wait-PiWebHealthy/, "update.ps1: restart must use a shared health gate");
+  assert.match(powershell, /StatusCode -eq 200/, "update.ps1: health gate must require HTTP 200");
+  assert.match(powershell, /-ErrorAction Stop/, "update.ps1: health failures must be catchable");
+
+  const restart = powershell.indexOf("restarting pi-web");
+  const restartStop = powershell.indexOf("foreach ($pidToStop in @(Get-PiWebPid))", restart);
+  const restartLaunch = powershell.indexOf('Start-Process -FilePath "wscript.exe"', restartStop);
+  const stopGate = powershell.indexOf("Wait-PiWebStopped", restartStop);
+  const healthGate = powershell.indexOf("Wait-PiWebHealthy", restartLaunch);
+  assert.ok(restartStop !== -1 && stopGate > restartStop && stopGate < restartLaunch, "update.ps1: restart must wait for Pi Web to stop before launch");
+  assert.ok(restartLaunch !== -1 && healthGate > restartLaunch, "update.ps1: stable health gate must follow the restart");
+  assert.match(powershell, /pi-web launch requested via autostart launcher/);
+  assert.match(powershell, /pi-web restarted via autostart launcher and is running and healthy/);
+
+  const doctor = read("doctor.ps1");
+  assert.match(doctor, /Invoke-WebRequest \$piWebUrl -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop/, "doctor.ps1: health failures must be terminating and catchable");
+  assert.match(doctor, /StatusCode -eq 200/, "doctor.ps1: health check must require HTTP 200");
+});
+
+test("staged apply restarts Pi Web through the autostart launcher and gates on health", () => {
+  const powershell = read("update.ps1");
+  assert.match(powershell, /wscript\.exe/, "update.ps1: restart must go through the hidden VBS launcher");
+  assert.match(powershell, /Get-PiWebPid/, "update.ps1: restart stop must reuse the hardened pi-web detection");
+  const restart = powershell.indexOf("restarting pi-web");
+  const healthGate = powershell.indexOf("HTTP 200 within 60s");
+  const smokeSuite = powershell.indexOf("running smoke suite");
+  assert.ok(restart !== -1 && restart < healthGate, "update.ps1: health gate must follow the restart");
+  assert.ok(healthGate !== -1 && healthGate < smokeSuite, "update.ps1: health gate must precede the smoke suite");
+
+  const shell = read("update.sh");
+  assert.match(shell, /HTTP 200 within 60s/, "update.sh: restart must stay health-gated");
 });
 
 test("installers refuse to replace shared runtimes without both idle gates", () => {

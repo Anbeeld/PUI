@@ -10,6 +10,8 @@
     restoring: "Restoring previous version…",
   };
   let card;
+  let dismissed = false;
+  let restartButton;
 
   function installStyles() {
     const style = document.createElement("style");
@@ -93,6 +95,32 @@
         background: var(--bg-hover, #eee);
         color: var(--text, #1a1a1a);
       }
+      .pui-restart-button {
+        position: fixed;
+        right: 4px;
+        bottom: 4px;
+        z-index: 2147483646;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: none;
+        border-radius: 7px;
+        background: transparent;
+        color: rgb(128, 136, 150);
+        transition: background 0.3s, color 0.3s;
+      }
+      .pui-restart-button:hover:not(:disabled) {
+        background: var(--bg-hover, #eee);
+        color: rgb(96, 106, 122);
+        border: none;
+      }
+      .pui-restart-button--busy {
+        opacity: .6;
+        cursor: default;
+      }
     `;
     (document.head || document.body).appendChild(style);
   }
@@ -107,12 +135,24 @@
     return card;
   }
 
+  function dismiss() {
+    if (card) { card.remove(); card = null; }
+    dismissed = true;
+  }
+
   function button(label, action, variant = "") {
     const element = document.createElement("button");
     element.className = `pui-update-button${variant ? ` pui-update-${variant}` : ""}`;
     element.textContent = label;
     element.addEventListener("click", action);
     return element;
+  }
+
+  function closeButton() {
+    const close = button("", dismiss);
+    close.className += " pui-update-close";
+    close.setAttribute("aria-label", "Close update notification");
+    return close;
   }
 
   function message(primary, secondary = "", reserveClose = false) {
@@ -132,28 +172,25 @@
   function showAvailable(info) {
     const node = ensureCard();
     node.replaceChildren();
-    const close = button("", () => node.remove());
-    close.className += " pui-update-close";
-    close.setAttribute("aria-label", "Close update notification");
-    node.append(message(`PUI v${info.latestVersion} is available`, "", true), close);
+    node.append(message(`PUI v${info.latestVersion} is available`, "", true), closeButton());
     const actions = actionRow();
     actions.append(button("Install", () => install(info.latestVersion), "primary"));
     actions.append(button("Skip version", () => {
       localStorage.setItem(SKIP_KEY, info.latestVersion);
-      node.remove();
+      dismiss();
     }));
     node.append(actions);
   }
 
   function showProgress(target, phase) {
     const node = ensureCard();
-    node.replaceChildren(message(`Updating PUI to v${target}`, phaseText[phase] || phase));
+    node.replaceChildren(message(`Updating PUI to v${target}`, phaseText[phase] || phase, true), closeButton());
   }
 
   function showTerminal(status) {
     const node = ensureCard();
     if (status.result === "aborted") {
-      node.replaceChildren(message(`Update was not applied. PUI v${status.currentVersion || "current"} remains installed.`));
+      node.replaceChildren(message(`Update was not applied. PUI v${status.currentVersion || "current"} remains installed.`, "", true), closeButton());
       fetch("/api/app-update", { method: "DELETE" }).catch(() => {});
       return;
     }
@@ -161,7 +198,7 @@
       ? `PUI v${status.target} installed`
       : status.result === "rolled-back"
         ? `Update failed. PUI v${status.restored} was restored.`
-        : `Update failed and needs manual recovery: ${status.error || "unknown error"}`));
+        : `Update failed and needs manual recovery: ${status.error || "unknown error"}`, "", true), closeButton());
     if (status.result !== "recovery-required") {
       const actions = actionRow();
       actions.append(button("Reload PUI", async () => {
@@ -174,21 +211,31 @@
 
   async function poll(target) {
     for (;;) {
+      let phase = "restarting";
+      let terminal = null;
       try {
         const response = await fetch("/api/app-update", { cache: "no-store" });
         if (response.ok) {
           const status = await response.json();
-          if (["success", "rolled-back", "recovery-required", "aborted"].includes(status.result)) return showTerminal(status);
-          showProgress(target, status.phase || "restarting");
+          if (["success", "rolled-back", "recovery-required", "aborted"].includes(status.result)) terminal = status;
+          else phase = status.phase || "restarting";
         }
       } catch {
-        showProgress(target, "restarting");
+        phase = "restarting";
       }
+      // A terminal result always (re)appears so the user can act (e.g. reload after success).
+      if (terminal) {
+        dismissed = false;
+        return showTerminal(terminal);
+      }
+      // While dismissed, hide progress updates until a terminal result brings the card back.
+      if (!dismissed) showProgress(target, phase);
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
 
   async function install(target) {
+    dismissed = false;
     showProgress(target, "preparing");
     const response = await fetch("/api/app-update", {
       method: "POST",
@@ -216,7 +263,75 @@
     }
   }
 
+  function showRestartButton() {
+    if (restartButton) return restartButton;
+    restartButton = button("", restartPUI);
+    restartButton.className = "pui-update-button pui-restart-button";
+    // Same rotate glyph as the sidebar refresh button (stroke follows the theme via currentColor).
+    restartButton.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>';
+    restartButton.setAttribute("aria-label", "Restart PUI");
+    restartButton.title = "Restart PUI";
+    document.body.appendChild(restartButton);
+    return restartButton;
+  }
+
+  function setRestartBusy(busy) {
+    if (!restartButton) return;
+    restartButton.disabled = busy;
+    restartButton.className = `${restartButton.className.replace(/\s*pui-restart-button--busy/, "")}${busy ? " pui-restart-button--busy" : ""}`;
+  }
+
+  function showRestartProgress() {
+    ensureCard().replaceChildren(message("Restarting Pi Web…", "The page will reload once Pi Web is healthy again.", true), closeButton());
+  }
+
+  function restartFailed(reason) {
+    setRestartBusy(false);
+    ensureCard().replaceChildren(message(`Pi Web restart did not complete${reason ? `: ${reason}` : ""}`, "", true), closeButton());
+  }
+
+  async function restartPUI() {
+    if (typeof confirm === "function" && !confirm("Restart PUI? This restarts Pi Web and disconnects your current session.")) return;
+    setRestartBusy(true);
+    showRestartProgress();
+    let started = false;
+    try {
+      const response = await fetch("/api/app-update", { method: "PUT" });
+      if (response.ok) started = true;
+      else {
+        const error = await response.json().catch(() => ({}));
+        restartFailed(error.error || "Restart could not be started");
+      }
+    } catch {
+      restartFailed("Restart request did not reach Pi Web");
+    }
+    if (started) pollRestart();
+  }
+
+  // Status-driven: show progress while the restart runs, reload on completion
+  // (restoring a fresh, active button), re-enable the button on failure.
+  async function pollRestart() {
+    let seenDown = false;
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      try {
+        const response = await fetch("/api/app-update", { cache: "no-store" });
+        if (response.ok) {
+          if (seenDown) { location.reload(); return; }
+          const status = await response.json().catch(() => ({}));
+          if (status.phase === "restarting") showRestartProgress();
+          else if (status.result === "restarted") { location.reload(); return; }
+          else if (status.result === "failed" && !status.target) { restartFailed(status.error); return; }
+        }
+      } catch {
+        seenDown = true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    restartFailed("Pi Web did not come back within 90 seconds");
+  }
+
   installStyles();
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", checkOnce, { once: true });
-  else checkOnce();
+  function start() { showRestartButton(); checkOnce(); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
+  else start();
 })();

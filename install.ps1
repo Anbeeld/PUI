@@ -38,6 +38,13 @@ $Stack = Get-Content (Join-Path $ScriptDir "stack.json") -Raw | ConvertFrom-Json
 $script:GateResults = [ordered]@{}
 $script:Failures = @()
 
+function Wait-IfInteractive {
+  if ($env:PUI_NONINTERACTIVE) { return }
+  try { Write-Host ""; Read-Host -Prompt "Press Enter to close this window" | Out-Null } catch {}
+}
+
+try {
+
 function Write-Phase($n, $t) { Write-Host "`n=== Phase $n — $t ===" -ForegroundColor Cyan }
 function Write-Gate($g, $t, $pass) {
   $script:GateResults[$g] = $pass
@@ -331,16 +338,51 @@ foreach ($spec in $pkgs) {
 $extensionScript = Join-Path $ScriptDir "lib\pui-update-extension.js"
 & node $extensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension install failed" -ForegroundColor Red; $g4 = $false }
+
+# PUI opinion: unlimited automatic /goal turns with a readable status line.
+# continuationLimits.automaticTurns = null removes the 25-response ceiling;
+# the dist patch rewrites formatStatus into "Goal: <status> · <reason> · <counter>".
+$piGoalSettings = Expand-Path $Stack.configPaths.piGoal
+$goalCfg = '{"continuationLimits":{"automaticTurns":null,"noProgressTurns":3}}'
+$goalCfgFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($goalCfgFile, $goalCfg, [System.Text.UTF8Encoding]::new($false))
+$r = Invoke-NodeConfig -CfgArgs @("merge-object", $piGoalSettings, "@$goalCfgFile")
+Remove-Item $goalCfgFile -Force -ErrorAction SilentlyContinue
+if ($r.exit -ne 0) { Write-Host "  pi-goal settings merge failed: $($r.out)" -ForegroundColor Red; $g4 = $false }
+$goalPatchScript = Join-Path $ScriptDir "lib\pui-goal-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $goalPatchScript apply 2>&1 | ForEach-Object { Write-Host "    $_" }; $goalPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($goalPatchExit -ne 0) { Write-Host "  pi-goal status patch could not be applied (version drift); the turn counter may still show 'automatic Unlimited'." -ForegroundColor Yellow }
+else { Write-Host "  pi-goal configured for unlimited turns with a readable status line" }
+
+# Verify the node-pty native binding for @99percentpeople/pi-background-tasks.
+# node-pty ships prebuilds, so this usually passes; if not, approve and rebuild it.
+$nativeCheck = Join-Path $ScriptDir "lib\pui-native-check.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $nativeCheck ensure (Join-Path $piAgentDir "npm") 2>&1 | ForEach-Object { Write-Host "    $_" }; $nativeExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($nativeExit -ne 0) { Write-Host "  pi-background-tasks native (node-pty) binding could not be verified or rebuilt; install aborted. Install the required compiler toolchain and rerun install.ps1." -ForegroundColor Red; $g4 = $false }
 # Verify packages are visible (pi list)
 $r = Invoke-Pi -PiArgs @("list")
 if ($r.exit -eq 0) {
   Write-Host "  pi list:"; $r.out -split "`n" | ForEach-Object { if ($_) { Write-Host "    $_" } }
-  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","rpiv-ask-user-question","pi-fff")) {
+  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","pi-usage","rpiv-ask-user-question","pi-fff","pi-background-tasks")) {
     if ($r.out -notmatch $p) { Write-Host "  package not visible: $p" -ForegroundColor Yellow }
   }
 } else { Write-Host "  pi list failed: $($r.out)" -ForegroundColor Yellow }
 Write-Gate G4 "packages" $g4
 if (-not $g4) { exit 1 }
+
+# Configure pi-fff feature state: suppress startup notices while keeping
+# fuzzy path resolution, content search, and autocomplete active.
+$piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
+$fffCfg = @{ enabledFeatures = @($Stack.fff.enabledFeatures) } | ConvertTo-Json -Depth 10 -Compress
+$fffCfgFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($fffCfgFile, $fffCfg, [System.Text.UTF8Encoding]::new($false))
+$r = Invoke-NodeConfig -CfgArgs @("merge-object", $piFffFeatures, "@$fffCfgFile")
+Remove-Item $fffCfgFile -Force -ErrorAction SilentlyContinue
+Write-Host "  pi-fff feature state configured (startup notices disabled)"
 
 # ----------------------------------------------------------------------------
 # Phase 5 — Pi default tools (G5)
@@ -437,6 +479,15 @@ if ($r.exit -eq 2) {
 }
 if ($r.exit -ne 0) { Write-Host "  $($r.out)"; Write-Gate G7 "mcp" $false; exit 1 }
 Write-Host "  $($r.out)"
+# PUI opinion: keep the MCP footer status quiet. mcpFooterStatus="off" clears
+# the "MCP: N server(s) enabled" segment from the extension status bar.
+$mcFooterCfg = '{"settings":{"mcpFooterStatus":"off"}}'
+$mcFooterFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($mcFooterFile, $mcFooterCfg, [System.Text.UTF8Encoding]::new($false))
+$r = Invoke-NodeConfig -CfgArgs @("merge-object", $mcpShared, "@$mcFooterFile")
+Remove-Item $mcFooterFile -Force -ErrorAction SilentlyContinue
+if ($r.exit -ne 0) { Write-Host "  MCP footer status merge failed: $($r.out)" -ForegroundColor Red; Write-Gate G7 "mcp" $false; exit 1 }
+Write-Host "  MCP footer status hidden (mcpFooterStatus=off)"
 $g7 = $true
 $mcp = Get-Content $mcpShared -Raw | ConvertFrom-Json
 $expectedDirectTools = ConvertTo-Json -InputObject @($Stack.mcp.directTools) -Compress
@@ -551,7 +602,7 @@ $piListStr = ""
 if ($r.exit -eq 0) {
   $piListStr = $r.out
   $allPkg = $true
-  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","rpiv-ask-user-question","pi-fff")) { if ($r.out -notmatch $p) { $allPkg = $false } }
+  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","pi-usage","rpiv-ask-user-question","pi-fff","pi-background-tasks")) { if ($r.out -notmatch $p) { $allPkg = $false } }
   if ($allPkg) { $smoke += "[PASS] 4. all required packages visible" } else { $smoke += "[FAIL] 4. missing packages"; $g9 = $false }
 } else { $smoke += "[FAIL] 4. pi list failed"; $g9 = $false }
 
@@ -575,6 +626,8 @@ else { $smoke += "[FAIL] 11. playwright MCP missing"; $g9 = $false }
 # 12. pi-goal extension loaded (structural — package visible)
 if ($piListStr -match "pi-goal") { $smoke += "[PASS] 12. pi-goal package visible" }
 else { $smoke += "[FAIL] 12. pi-goal not visible"; $g9 = $false }
+if ($piListStr -match "pi-background-tasks") { $smoke += "[PASS] 13. pi-background-tasks package visible" }
+else { $smoke += "[FAIL] 13. pi-background-tasks not visible"; $g9 = $false }
 
 # 9/10. subagent smoke — deferred to manual release gate (requires a live model session).
 $smoke += "[DEFERRED] 9/10. two parallel subagents + retrieval — manual release gate (needs live model)"
@@ -616,3 +669,4 @@ if (-not $NoPwa -and -not $NoBrowser) {
   Write-Host "Complete PWA installation with the browser's 'Install app' action on the page that opened." -ForegroundColor Yellow
 }
 Write-Host "Run ./doctor.ps1 anytime for diagnostics." -ForegroundColor Green
+} finally { Wait-IfInteractive }

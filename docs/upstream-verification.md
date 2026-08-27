@@ -2,22 +2,24 @@
 
 This file records the upstream interfaces and live behaviors that PUI relies on. Recheck them before a release and whenever an upstream major version changes.
 
-## npm registry check (2026-08-26)
+## npm registry check (2026-08-27)
 
-All 10 upstream packages exist and publish `latest` distribution tags:
+All 12 upstream packages exist and publish `latest` distribution tags:
 
 | Package | Latest |
 |---|---:|
 | `@earendil-works/pi-coding-agent` | 0.84.3 |
-| `@agegr/pi-web` | 0.8.10 |
+| `@agegr/pi-web` | 0.8.11 |
 | `@gotgenes/pi-subagents` | 19.3.5 |
 | `pi-web-access` | 0.25.0 |
-| `pi-mcp-adapter` | 2.27.0 |
+| `pi-mcp-adapter` | 2.29.0 |
 | `@playwright/mcp` | 0.0.79 |
-| `@narumitw/pi-goal` | 0.54.0 |
-| `@narumitw/pi-accounts` | 0.49.10 |
+| `@narumitw/pi-goal` | 0.54.3 |
+| `@narumitw/pi-accounts` | 0.49.11 |
+| `@narumitw/pi-usage` | 0.52.3 |
 | `@juicesharp/rpiv-ask-user-question` | 2.7.1 |
 | `pi-fff` | 0.1.12 |
+| `@99percentpeople/pi-background-tasks` | 2.1.1 |
 
 `stack.json` pins these direct managed versions. Release validation rejects ranges, `latest`, and a Playwright MCP command that differs from its exact managed version. Transitive npm dependencies and model-catalog data are not frozen.
 
@@ -35,10 +37,13 @@ All 10 upstream packages exist and publish `latest` distribution tags:
 | `pi install npm:<spec>` remains idempotent | install scripts | Install twice and inspect `settings.json` |
 | Installed Pi packages remain represented in `settings.json` `packages[]` | install and pin handling | Inspect settings after `pi install` |
 | `@narumitw/pi-accounts` switches named accounts without PUI owning extension account state | `piPackages` | Add two test accounts and switch between them in CLI and Pi Web sessions |
+| `@narumitw/pi-usage` reports current-account usage and limits for the active provider and toggles Codex Fast mode without PUI owning extension state | `piPackages` | Run `/usage` for the active provider and toggle `/fast` for a supported Codex model in CLI and Pi Web sessions |
 | `@juicesharp/rpiv-ask-user-question` registers `ask_user_question` in supported interactive hosts | `piPackages` | Start CLI and Pi Web sessions and complete a structured question |
 | `pi-fff` loads its native FFF dependency and indexes the active project on every supported platform | `piPackages` | Run `/fff-status`, fuzzy file resolution, and indexed search on Windows, macOS, and Linux |
+| `@narumitw/pi-goal` exposes elapsed goal time and clears its completion status after the upstream eight-second timer | `piPackages`, `lib/pui-goal-patch.js` | Inspect the exact pinned runtime completion path and run the patch regression test |
+| `@99percentpeople/pi-background-tasks` loads `node-pty` from bundled prebuilt binaries on every supported platform, and PUI can approve/rebuild its lifecycle scripts when a prebuild is unavailable | `piPackages`, `lib/pui-native-check.js` | Run the PUI install/update entry point on Windows, macOS, and Linux (x64/arm64); run `node lib/pui-native-check.js verify` afterward and confirm a PTY spawns |
 | Pi Web build outputs still contain the targeted branding and icon metadata files | branding and icon helpers | Run helper tests and inspect the installed package |
-| Pi Web 0.8.10 contains the exact `/api/app-update` route and prerendered app anchors | `pui-web-integration.js` | Run the exact-version integration fixture before release |
+| Pi Web 0.8.11 contains the exact `/api/app-update` route and prerendered app anchors | `pui-web-integration.js` | Run the exact-version integration fixture before release |
 | `/api/agent/running` reports aggregate running Pi Web sessions | updater idle gate | Keep a session streaming, compacting, or running bash and inspect the endpoint |
 
 If an assumption changes, adapt the scripts and tests to the current upstream contract and update this table.
@@ -57,6 +62,8 @@ These checks require a live model session, upstream service, or desktop browser 
 8. Run `/fff-status`, fuzzy path resolution, and indexed content search on each supported platform.
 9. Confirm the six managed Playwright tools register directly while a non-direct tool remains discoverable and callable through the `mcp` proxy.
 10. Add two supported OAuth accounts with `pi-accounts` and switch between them in both the terminal and Pi Web.
+11. Run `/usage` for the active provider and toggle `/fast` for a supported Codex model in both the terminal and Pi Web.
+12. Run a finite `bg_start` task, retrieve it with `bg_wait`, inspect output with `bg_logs`, and attach to a PTY task on each supported platform.
 
 Record the results in the release notes.
 

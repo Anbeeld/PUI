@@ -16,8 +16,10 @@ Pi is a great harness, one of the most efficient on the market. But it's minimal
 - **Split work with subagents.** [`@gotgenes/pi-subagents`](https://github.com/gotgenes/pi-packages) adds in-process subagents for parallel work.
 - **Drive the session toward a goal.** [`@narumitw/pi-goal`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal) adds a session-scoped `/goal` mode.
 - **Switch between named subscription accounts.** [`@narumitw/pi-accounts`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-accounts) adds account switching across supported OAuth providers.
+- **Track token usage.** [`@narumitw/pi-usage`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-usage) shows current-account usage and limits for the active provider through `/usage`, and toggles Codex Fast mode through `/fast`.
 - **Ask before guessing.** [`@juicesharp/rpiv-ask-user-question`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-ask-user-question) gives the model a structured questionnaire with typed choices and optional free-form answers.
 - **Find files and code fuzzily.** [`pi-fff`](https://github.com/ShpetimA/pi-fff) adds fuzzy file references, path resolution, and indexed content search.
+- **Run commands in the background.** [`@99percentpeople/pi-background-tasks`](https://github.com/99percentpeople/pi-extensions/tree/master/extensions/background-tasks) adds pipe and PTY tasks with attachable output. PUI verifies its native `node-pty` binding during install and update, rebuilding it only when necessary.
 - **Automate the browser with Playwright.** PUI configures [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) through [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) for lazy, headless Chrome automation.
 - **Keep the CLI and browser in the same Pi environment.** PUI aligns standalone Pi with the agent runtime bundled by Pi Web, uses Pi's normal `~/.pi/agent` configuration, and enables Pi's standard local tools by default.
 - **Install and maintain the composition as one profile.** Each PUI release pins the direct managed components. The app can discover a stable release once per launch, but it applies one only after you select **Install**. Failed mutations restore and validate the previous certified composition.
@@ -35,6 +37,8 @@ Pi is a great harness, one of the most efficient on the market. But it's minimal
 - systemd on Linux only when using the default autostart setup
 
 PUI does not install Node.js, Git, or Chrome. When PWA integration is enabled, it creates a per-user autostart entry: a Startup-folder launcher on Windows, a LaunchAgent on macOS, or a systemd user service on Linux. The prerequisite check stops before setup if a required command is missing or Node.js is too old.
+
+The background-tasks package includes `node-pty` prebuilt binaries for supported x64 and arm64 Windows, macOS, and Linux systems. If a compatible prebuild is unavailable, PUI's install/update entry point approves only `node-pty`'s lifecycle scripts and attempts a source rebuild; the required Python and C++ toolchain must then be present.
 
 ## Install
 
@@ -100,8 +104,10 @@ PUI is a setup and composition layer built on the work of other open-source proj
 | [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) | Browser automation through headless Chrome |
 | [`@narumitw/pi-goal`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-goal) | Session-scoped goal mode |
 | [`@narumitw/pi-accounts`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-accounts) | Named subscription OAuth account switching |
+| [`@narumitw/pi-usage`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-usage) | Provider usage and limits, and Codex Fast mode |
 | [`@juicesharp/rpiv-ask-user-question`](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-ask-user-question) | Structured questions and typed user choices |
 | [`pi-fff`](https://github.com/ShpetimA/pi-fff) | Fuzzy file navigation and indexed content search |
+| [`@99percentpeople/pi-background-tasks`](https://github.com/99percentpeople/pi-extensions/tree/master/extensions/background-tasks) | Background pipe/PTY tasks with attachable output; native `node-pty` binding |
 
 Please see each upstream repository for its license, contribution history, and project-specific terms.
 

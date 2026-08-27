@@ -16,6 +16,13 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Stack = Get-Content (Join-Path $ScriptDir "stack.json") -Raw | ConvertFrom-Json
 $Lib = Join-Path $ScriptDir "lib\pui-config.js"
 
+function Wait-IfInteractive {
+  if ($env:PUI_NONINTERACTIVE) { return }
+  try { Write-Host ""; Read-Host -Prompt "Press Enter to close this window" | Out-Null } catch {}
+}
+
+try {
+
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
 function Expand-Path($p) { if ($p -match '^~') { return (Join-Path $env:USERPROFILE ($p -replace '^~[\\/]?','')) }; return $p }
@@ -119,3 +126,4 @@ Write-Host "  Preserved: unrelated MCP servers and pi-web-access settings." -For
 Write-Host "  Preserved: pi and pi-web (unless -Full)." -ForegroundColor Green
 
 Write-Host "`nPUI uninstall complete." -ForegroundColor Green
+} finally { Wait-IfInteractive }

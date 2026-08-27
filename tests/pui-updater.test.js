@@ -14,7 +14,10 @@ const {
   runTransaction,
   scriptEnvironment,
   isStandalonePiCommand,
+  isPiWebProcess,
+  manualUpdateGuidance,
   piWebIdle,
+  piWebLaunchSpec,
 } = require(path.join(repoRoot, "lib", "pui-updater.js"));
 
 test("transaction config backups restore pre-update user state", (t) => {
@@ -85,6 +88,14 @@ test("discovery offers only a newer stable release and honors one exact skip", (
   assert.equal(chooseStableUpdate("1.0.0", { tag_name: "v9.0.0", draft: true, prerelease: false }, null), null);
 });
 
+test("manual update guidance names both versions and the staged-apply escape hatch", () => {
+  const message = manualUpdateGuidance("1.1.0", "1.0.5");
+  assert.match(message, /v1\.1\.0 is not a published GitHub release/);
+  assert.match(message, /installed identity is v1\.0\.5/);
+  assert.match(message, /-ApplyStaged/);
+  assert.match(message, /--apply-staged/);
+});
+
 test("busy Pi Web and standalone Pi prevent mutation", async () => {
   let checks = 0;
   let mutated = false;
@@ -115,6 +126,50 @@ test("standalone Pi detection recognizes npm shim process command lines", () => 
   assert.equal(isStandalonePiCommand('node.exe C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js'), true);
   assert.equal(isStandalonePiCommand("node /usr/lib/node_modules/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), false);
   assert.equal(isStandalonePiCommand("node /tmp/pui-updater.js apply 1.0.3"), false);
+});
+test("pi-web process detection matches the managed GUI server and excludes the agent and the restarter", () => {
+  assert.equal(isPiWebProcess("node /usr/lib/node_modules/@agegr/pi-web/node_modules/next/dist/bin/next start -p 30141"), true);
+  assert.equal(isPiWebProcess("node /c/Users/me/AppData/Roaming/npm/node_modules/@agegr/pi-web/bin/pi-web.js --no-open"), true);
+  assert.equal(isPiWebProcess("node /home/me/.npm/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), false);
+  assert.equal(isPiWebProcess("node /home/me/.pi/agent/extensions/pui-update/updater.js restart"), false);
+});
+
+
+test("restart relaunch reuses the Windows autostart VBS launcher when present", () => {
+  const vbs = path.join("appdata", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "pui-piweb.vbs");
+  const spec = piWebLaunchSpec({ platform: "win32", appData: "appdata", env: {}, existsSync: (p) => p === vbs });
+  assert.equal(spec.file, "wscript.exe");
+  assert.deepEqual(spec.args, [vbs]);
+  assert.equal(spec.stopsExisting, false);
+});
+
+test("restart relaunch without autostart falls back to a cmd shim that skips pi-web's version check", () => {
+  const spec = piWebLaunchSpec({ platform: "win32", appData: "appdata", env: {}, existsSync: () => false });
+  assert.equal(spec.file, "cmd.exe");
+  assert.deepEqual(spec.args, ["/d", "/s", "/c", "pi-web --no-open"]);
+  assert.equal(spec.env.PI_WEB_SKIP_VERSION_CHECK, "1");
+  assert.equal(spec.stopsExisting, false);
+});
+
+test("restart relaunch delegates stop+start to the service manager when autostart is managed", () => {
+  const plist = path.join("/home/u", "Library", "LaunchAgents", "com.pui.piweb.plist");
+  const mac = piWebLaunchSpec({ platform: "darwin", home: "/home/u", uid: 501, existsSync: (p) => p === plist });
+  assert.equal(mac.file, "launchctl");
+  assert.deepEqual(mac.args, ["kickstart", "-k", "gui/501/com.pui.piweb"]);
+  assert.equal(mac.stopsExisting, true);
+
+  const unit = path.join("/home/u", ".config", "systemd", "user", "pui-piweb.service");
+  const linux = piWebLaunchSpec({ platform: "linux", home: "/home/u", existsSync: (p) => p === unit });
+  assert.equal(linux.file, "systemctl");
+  assert.deepEqual(linux.args, ["--user", "restart", "pui-piweb"]);
+  assert.equal(linux.stopsExisting, true);
+});
+
+test("restart relaunch falls back to a detached pi-web spawn on unmanaged POSIX installs", () => {
+  const spec = piWebLaunchSpec({ platform: "linux", home: "/home/u", existsSync: () => false });
+  assert.equal(spec.file, "pi-web");
+  assert.deepEqual(spec.args, ["--no-open"]);
+  assert.equal(spec.stopsExisting, false);
 });
 
 test("target apply succeeds only after target validation", async () => {

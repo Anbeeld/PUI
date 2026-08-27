@@ -53,6 +53,7 @@ else
   status_line "Pi Web version" "FAIL" "not on PATH"
 fi
 
+PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
 PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
 PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
@@ -62,8 +63,26 @@ pi list 2>&1 | grep -q pi-web-access && status_line "package: pi-web-access" "PA
 pi list 2>&1 | grep -q pi-mcp-adapter && status_line "package: pi-mcp-adapter" "PASS" "" || status_line "package: pi-mcp-adapter" "FAIL" ""
 pi list 2>&1 | grep -q pi-goal && status_line "package: pi-goal" "PASS" "" || status_line "package: pi-goal" "FAIL" ""
 pi list 2>&1 | grep -q pi-accounts && status_line "package: pi-accounts" "PASS" "" || status_line "package: pi-accounts" "FAIL" ""
+pi list 2>&1 | grep -q pi-usage && status_line "package: pi-usage" "PASS" "" || status_line "package: pi-usage" "FAIL" ""
 pi list 2>&1 | grep -q rpiv-ask-user-question && status_line "package: rpiv-ask-user-question" "PASS" "" || status_line "package: rpiv-ask-user-question" "FAIL" ""
 pi list 2>&1 | grep -q pi-fff && status_line "package: pi-fff" "PASS" "" || status_line "package: pi-fff" "FAIL" ""
+pi list 2>&1 | grep -q pi-background-tasks && status_line "package: pi-background-tasks" "PASS" "" || status_line "package: pi-background-tasks" "FAIL" ""
+
+PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
+[ -f "$PI_FFF_FEATURES" ] && node -e 'const f=require(process.argv[1]),s=require(process.argv[2]);if(!Array.isArray(f.enabledFeatures)||!s.fff.enabledFeatures.every(x=>f.enabledFeatures.includes(x)))process.exit(1)' "$PI_FFF_FEATURES" "$STACK" && status_line "fff feature state" "PASS" "startup notices disabled" || status_line "fff feature state" "WARN" "missing or incomplete"
+
+# pi-goal unlimited-turn configuration + status patch
+PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
+if [ -f "$PI_GOAL" ]; then
+  node -e 'const g=require(process.argv[1]);process.exit(g.continuationLimits&&g.continuationLimits.automaticTurns===null?0:1)' "$PI_GOAL" 2>/dev/null && status_line "pi-goal unlimited turns" "PASS" "automaticTurns=null" || status_line "pi-goal unlimited turns" "WARN" "automaticTurns not null"
+else
+  status_line "pi-goal unlimited turns" "WARN" "pi-goal.json missing"
+fi
+if node "$SCRIPT_DIR/lib/pui-goal-patch.js" verify >/dev/null 2>&1; then
+  status_line "pi-goal status patch" "PASS" "formatStatus null branch hidden"
+else
+  status_line "pi-goal status patch" "WARN" "patch not applied (version drift)"
+fi
 
 [ -f "$PI_SETTINGS" ] && node -e 'const s=require(process.argv[1]);const r=["read","bash","edit","write","grep","find","ls"];for(const t of r)if(!Array.isArray(s.defaultTools)||s.defaultTools.indexOf(t)<0)process.exit(1)' "$PI_SETTINGS" && status_line "default tool set" "PASS" "" || status_line "default tool set" "WARN" "missing"
 for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPackages)console.log(p)' "$STACK"); do
@@ -71,6 +90,16 @@ for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPacka
 done
 [ -f "$PI_WEB_ACCESS" ] && node -e 'const w=require(process.argv[1]);if(w.searchRouting.providers.indexOf("duckduckgo")<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)' "$PI_WEB_ACCESS" && status_line "web routing" "PASS" "duckduckgo+http" || status_line "web routing" "WARN" "missing"
 [ -f "$MCP_SHARED" ] && node -e 'const m=require(process.argv[1]),s=require(process.argv[2]);const p=m.mcpServers&&m.mcpServers.playwright;process.exit(p&&JSON.stringify(p.args)===JSON.stringify(s.mcp.args)&&JSON.stringify(p.directTools)===JSON.stringify(s.mcp.directTools)&&m.settings?.disableProxyTool!==true?0:1)' "$MCP_SHARED" "$STACK" && status_line "Playwright MCP" "PASS" "exact version; 6 direct tools; proxy preserved" || status_line "Playwright MCP" "FAIL" "missing, mismatched, or proxy disabled"
+if [ -f "$MCP_SHARED" ]; then
+  node -e 'const m=require(process.argv[1]);process.exit(m.settings&&m.settings.mcpFooterStatus==="off"?0:1)' "$MCP_SHARED" 2>/dev/null && status_line "MCP footer status" "PASS" "mcpFooterStatus=off" || status_line "MCP footer status" "WARN" "footer status visible"
+fi
+
+# pi-background-tasks native (node-pty) binding
+if node "$SCRIPT_DIR/lib/pui-native-check.js" verify "$PI_AGENT_DIR/npm" >/dev/null 2>&1; then
+  status_line "pi-background-tasks native" "PASS" "node-pty loads"
+else
+  status_line "pi-background-tasks native" "FAIL" "node-pty binding missing"
+fi
 node "$SCRIPT_DIR/lib/pui-update-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI installed identity" "PASS" "extension manifest" || status_line "PUI installed identity" "FAIL" "missing or mismatched"
 PIWEB_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web"
 node "$SCRIPT_DIR/lib/pui-web-integration.js" verify "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null 2>&1 && status_line "PUI update bridge" "PASS" "Pi Web $(jget upstream.gui.version)" || status_line "PUI update bridge" "FAIL" "missing or mismatched"

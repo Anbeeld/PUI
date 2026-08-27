@@ -38,6 +38,7 @@ echo "=== PUI update ($OS_NAME) ==="
 BACKUP_FILES=()
 
 PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
+PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
 PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
 PIWEB_URL="$(jget piWeb.url)"
@@ -76,7 +77,16 @@ elif [ "$OS_NAME" = "Linux" ] && systemctl --user is-enabled "$SERVICE_NAME" >/d
 fi
 
 pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]' 2>/dev/null || true
-sleep 1
+# Wait until the pi-web process is actually gone before npm install (parity with Windows).
+for _ in $(seq 1 15); do
+  pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1 || break
+  sleep 1
+done
+# Fail fast if pi-web is still running: proceeding would make npm hit EBUSY (parity with Windows).
+if pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1; then
+  echo "  could not stop Pi Web (PID $(pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' | tr '\n' ' ')); close Pi Web and rerun the update; update aborted" >&2
+  exit 1
+fi
 set +e
 node "$SCRIPT_DIR/lib/pui-updater.js" standalone-busy
 STANDALONE_EXIT=$?
@@ -85,7 +95,16 @@ if [ "$STANDALONE_EXIT" -eq 75 ]; then echo "  standalone Pi became active; upda
 if [ "$STANDALONE_EXIT" -ne 0 ]; then echo "  could not verify standalone Pi idle state" >&2; exit 1; fi
 
 echo "  updating @agegr/pi-web..."
-npm install -g --ignore-scripts "$(jget upstream.gui.npm)@$(jget upstream.gui.version)" >/dev/null 2>&1 || { echo "  pi-web update failed" >&2; exit 1; }
+PIWEB_SPEC="$(jget upstream.gui.npm)@$(jget upstream.gui.version)"
+NPM_EXIT=1
+ATTEMPT=0
+while [ "$NPM_EXIT" -ne 0 ] && [ "$ATTEMPT" -lt 5 ]; do
+  ATTEMPT=$((ATTEMPT + 1))
+  if [ "$ATTEMPT" -gt 1 ]; then echo "  retrying pi-web install (attempt $ATTEMPT)..."; sleep 2; fi
+  NPM_EXIT=0
+  npm install -g --ignore-scripts "$PIWEB_SPEC" >/dev/null 2>&1 || NPM_EXIT=$?
+done
+if [ "$NPM_EXIT" -ne 0 ]; then echo "  pi-web update failed" >&2; exit 1; fi
 
 GLOBAL_ROOT="$(npm root -g)"
 PIWEB_CA_VER="$(jget upstream.agentRuntime.version)"
@@ -154,6 +173,28 @@ for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPacka
 done
 pui_fail package-reconciliation
 
+# Reconcile pi-fff feature state: suppress startup notices.
+PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
+FFF_CFG="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({enabledFeatures:s.fff.enabledFeatures}))' "$STACK")"
+node "$LIB" merge-object "$PI_FFF_FEATURES" "$FFF_CFG" >/dev/null
+echo "  pi-fff feature state reconciled (startup notices disabled)"
+
+# Reconcile pi-goal settings: unlimited automatic turns with a readable status line.
+PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
+GOAL_CFG='{"continuationLimits":{"automaticTurns":null,"noProgressTurns":3}}'
+node "$LIB" merge-object "$PI_GOAL" "$GOAL_CFG" >/dev/null || { echo "  pi-goal settings reconciliation failed" >&2; exit 1; }
+if ! node "$SCRIPT_DIR/lib/pui-goal-patch.js" apply >/dev/null 2>&1; then
+  echo "  pi-goal status patch could not be applied (version drift); the turn counter may still show 'automatic Unlimited'." >&2
+else
+  echo "  pi-goal configured for unlimited turns with a readable status line"
+fi
+
+# Verify the node-pty native binding for @99percentpeople/pi-background-tasks.
+if ! node "$SCRIPT_DIR/lib/pui-native-check.js" ensure "$PI_AGENT_DIR/npm" >/dev/null 2>&1; then
+  echo "  pi-background-tasks native (node-pty) binding could not be verified or rebuilt; update aborted. Install the required compiler toolchain and rerun update.sh." >&2
+  exit 1
+fi
+
 echo "  reconciling managed Playwright MCP..."
 MCP_DEF="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({command:s.mcp.command,args:s.mcp.args,lifecycle:s.mcp.lifecycle,directTools:s.mcp.directTools}))' "$STACK")"
 set +e
@@ -168,6 +209,9 @@ if [ "$MCP_EXIT" -ne 0 ]; then
   echo "  failed to reconcile Playwright MCP" >&2
   exit 1
 fi
+# Reconcile MCP footer status: keep the extension status bar quiet.
+node "$LIB" merge-object "$MCP_SHARED" '{"settings":{"mcpFooterStatus":"off"}}' >/dev/null || { echo "  MCP footer status reconciliation failed" >&2; exit 1; }
+echo "  MCP footer status hidden (mcpFooterStatus=off)"
 pui_fail config-migration
 node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI update extension replacement failed" >&2; exit 1; }
 pui_fail extension-replacement

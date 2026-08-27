@@ -12,6 +12,13 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Lib = Join-Path $ScriptDir "lib\pui-config.js"
 $Stack = Get-Content (Join-Path $ScriptDir "stack.json") -Raw | ConvertFrom-Json
 
+function Wait-IfInteractive {
+  if ($env:PUI_NONINTERACTIVE) { return }
+  try { Write-Host ""; Read-Host -Prompt "Press Enter to close this window" | Out-Null } catch {}
+}
+
+try {
+
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
 function Expand-Path($p) { if ($p -match '^~') { return (Join-Path $env:USERPROFILE ($p -replace '^~[\\/]?','')) }; return $p }
@@ -58,6 +65,7 @@ if (Test-Command pi-web) {
 } else { Status "Pi Web version" "FAIL" "pi-web not on PATH"; Status "Pi Web-resolved Pi" "NOT CHECKED" ""; Status "runtime parity" "NOT CHECKED" "" }
 
 # Pi package presence
+$piAgentDir = Expand-Path $Stack.configPaths.piAgentDir
 $piSettings = Expand-Path $Stack.configPaths.piSettings
 $piWebAccess = Expand-Path $Stack.configPaths.piWebAccess
 $mcpShared = Expand-Path $Stack.configPaths.mcpShared
@@ -65,10 +73,30 @@ $mcpShared = Expand-Path $Stack.configPaths.mcpShared
 try {
   $piList = & pi list 2>&1
   $piListStr = $piList -join "`n"
-  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","rpiv-ask-user-question","pi-fff")) {
+  foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","pi-usage","rpiv-ask-user-question","pi-fff","pi-background-tasks")) {
     Status "package: $p" $(if ($piListStr -match $p) { "PASS" } else { "FAIL" }) ""
   }
-} catch { foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","rpiv-ask-user-question","pi-fff")) { Status "package: $p" "NOT CHECKED" "" } }
+} catch { foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","pi-usage","rpiv-ask-user-question","pi-fff","pi-background-tasks")) { Status "package: $p" "NOT CHECKED" "" } }
+
+# pi-fff feature state
+$piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
+if (Test-Path $piFffFeatures) {
+  $fff = Get-Content $piFffFeatures -Raw | ConvertFrom-Json
+  $allPresent = ($Stack.fff.enabledFeatures | Where-Object { $fff.enabledFeatures -notcontains $_ }).Count -eq 0
+  Status "fff feature state" $(if ($allPresent) { "PASS" } else { "WARN" }) $(if ($allPresent) { "startup notices disabled" } else { "incomplete" })
+} else { Status "fff feature state" "WARN" "missing" }
+
+# pi-goal unlimited-turn configuration + status patch
+$piGoalSettings = Expand-Path $Stack.configPaths.piGoal
+if (Test-Path $piGoalSettings) {
+  $goal = Get-Content $piGoalSettings -Raw | ConvertFrom-Json
+  $unlimited = $goal.continuationLimits.automaticTurns -eq $null
+  Status "pi-goal unlimited turns" $(if ($unlimited) { "PASS" } else { "WARN" }) $(if ($unlimited) { "automaticTurns=null" } else { "automaticTurns not null" })
+} else { Status "pi-goal unlimited turns" "WARN" "pi-goal.json missing" }
+$goalPatchScript = Join-Path $ScriptDir "lib\pui-goal-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $goalPatchScript verify 2>&1 | Out-Null; $goalPatchExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+Status "pi-goal status patch" $(if ($goalPatchExit -eq 0) { "PASS" } else { "WARN" }) $(if ($goalPatchExit -eq 0) { "formatStatus null branch hidden" } else { "patch not applied (version drift)" })
 
 # default tool set
 if (Test-Path $piSettings) {
@@ -96,11 +124,22 @@ if (Test-Path $mcpShared) {
   $actualDirectTools = ConvertTo-Json -Compress -InputObject @($mcp.mcpServers.playwright.directTools)
   $proxyEnabled = -not ($mcp.settings -and $mcp.settings.disableProxyTool -eq $true)
   Status "Playwright MCP" $(if ($mcp.mcpServers.playwright -and $expectedMcp -eq $actualMcp -and $expectedDirectTools -eq $actualDirectTools -and $proxyEnabled) { "PASS" } else { "FAIL" }) $(if ($proxyEnabled) { "exact version; 6 direct tools; proxy preserved" } else { "settings.disableProxyTool=true" })
+  $footerOff = $mcp.settings.mcpFooterStatus -eq "off"
+  Status "MCP footer status" $(if ($footerOff) { "PASS" } else { "WARN" }) $(if ($footerOff) { "mcpFooterStatus=off" } else { "footer status visible" })
 } else { Status "Playwright MCP" "WARN" "mcp.json missing" }
 
+# pi-background-tasks native (node-pty) binding
+$nativeCheck = Join-Path $ScriptDir "lib\pui-native-check.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $nativeCheck verify (Join-Path $piAgentDir "npm") 2>&1 | Out-Null; $nativeExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+Status "pi-background-tasks native" $(if ($nativeExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($nativeExit -eq 0) { "node-pty loads" } else { "node-pty binding missing" })
+
 # Pi Web health
-try { $r = Invoke-WebRequest $piWebUrl -TimeoutSec 5 -UseBasicParsing; Status "Pi Web health" "PASS" "HTTP $($r.StatusCode)" }
-catch { Status "Pi Web health" "WARN" "not running on $piWebUrl" }
+try {
+  $r = Invoke-WebRequest $piWebUrl -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+  if ([int]$r.StatusCode -eq 200) { Status "Pi Web health" "PASS" "HTTP $($r.StatusCode)" }
+  else { Status "Pi Web health" "WARN" "HTTP $($r.StatusCode) on $piWebUrl" }
+} catch { Status "Pi Web health" "WARN" "not running on $piWebUrl" }
 
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") verify $ScriptDir 2>$null | Out-Null
 Status "PUI installed identity" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "extension manifest"
@@ -118,3 +157,4 @@ Status "autostart registration" $(if (Test-Path $launcherVbs) { "PASS" } else { 
 Status "PWA status" "USER ACTION REQUIRED" "verify browser install manually"
 
 if ($script:Fails -gt 0) { exit 1 }
+} finally { Wait-IfInteractive }

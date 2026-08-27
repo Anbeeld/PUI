@@ -11,21 +11,22 @@ const {
   applyIntegration,
   removeIntegration,
   verifyIntegration,
+  patchRoute,
 } = require(path.join(repoRoot, "lib", "pui-web-integration.js"));
 
 function piWebFixture(root) {
   fs.mkdirSync(path.join(root, ".next", "server", "app", "api", "app-update"), { recursive: true });
   fs.mkdirSync(path.join(root, ".next", "server", "app"), { recursive: true });
   fs.mkdirSync(path.join(root, "public"), { recursive: true });
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@agegr/pi-web", version: "0.8.10" }));
-  fs.writeFileSync(path.join(root, ".next", "server", "app", "api", "app-update", "route.js"), 'x={62445:(a,b,c)=>{"use strict";c.r(b),c.d(b,{GET:()=>l,dynamic:()=>g});let g="force-dynamic",h="0.8.10";let u="registry.npmjs.org/@agegr%2Fpi-web/latest"},63033:a=>{}}');
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@agegr/pi-web", version: "0.8.11" }));
+  fs.writeFileSync(path.join(root, ".next", "server", "app", "api", "app-update", "route.js"), 'x={62445:(a,b,c)=>{"use strict";c.r(b),c.d(b,{GET:()=>l,dynamic:()=>g});let g="force-dynamic",h="0.8.11";let u="registry.npmjs.org/@agegr%2Fpi-web/latest"},63033:a=>{}}');
   fs.writeFileSync(path.join(root, ".next", "server", "app", "index.html"), "<html><body>PUI</body></html>");
 }
 
 test("Pi Web integration fails closed on an unexpected package layout", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-web-invalid-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@agegr/pi-web", version: "0.8.10" }));
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@agegr/pi-web", version: "0.8.11" }));
   assert.throws(() => applyIntegration({ repoRoot, piWebRoot: root }), /expected.*app-update/i);
 });
 
@@ -62,9 +63,29 @@ test("client update card keeps one footprint and distinguishes service restart f
   assert.match(client, /transform:\s*translate\(-50%,\s*-50%\) rotate\(-45deg\)/);
 });
 
+test("restart control mirrors the sidebar refresh button footprint and theming", () => {
+  const client = fs.readFileSync(path.join(repoRoot, "assets", "pui-update-client.js"), "utf8");
+  const block = client.match(/\.pui-restart-button\s*\{([^}]*)\}/s);
+  assert.ok(block, "restart button style block exists");
+  assert.match(block[1], /width:\s*28px/, "compact 28px width");
+  assert.match(block[1], /height:\s*28px/, "compact 28px height");
+  assert.match(block[1], /border-radius:\s*7px/);
+  assert.match(block[1], /right:\s*4px/, "uses the requested right inset");
+  assert.match(block[1], /bottom:\s*4px/, "uses the requested bottom inset");
+  assert.match(block[1], /background:\s*transparent/, "glyph-only resting state");
+  assert.match(block[1], /border:\s*(?:none|0)/, "no resting border");
+  assert.doesNotMatch(block[1], /box-shadow/, "no shadow");
+  assert.match(block[1], /color:\s*rgb\(128,\s*136,\s*150\)/, "resting glyph uses muted RGB color");
+  assert.match(client, /M3 3v5h5/, "same rotate glyph as the sidebar refresh button");
+  assert.doesNotMatch(block[1], /filter/, "glyph brightness uses color rather than a filter");
+  assert.match(block[1], /color:\s*rgb\(128,\s*136,\s*150\)/, "resting glyph uses muted RGB color");
+  assert.match(client, /\.pui-restart-button:hover[^{]*\{[^}]*color:\s*rgb\(96,\s*106,\s*122\)/s, "hover glyph uses a slightly darker muted RGB color");
+  assert.match(client, /\.pui-restart-button:hover[^{]*\{[^}]*var\(--bg-hover/s, "light-grey hover background");
+});
+
 test("bridge integration verification checks the exact pinned Pi Web version", () => {
   const stack = require(path.join(repoRoot, "stack.json"));
-  assert.equal(stack.upstream.gui.version, "0.8.10");
+  assert.equal(stack.upstream.gui.version, "0.8.11");
   assert.equal(typeof verifyIntegration, "function");
 });
 
@@ -80,7 +101,10 @@ function bridgeStatusFixture(t) {
     identityHash: crypto.createHash("sha256").update(JSON.stringify(core)).digest("hex"),
   };
   fs.writeFileSync(path.join(extensionRoot, "manifest.json"), JSON.stringify(manifest));
-  fs.writeFileSync(path.join(extensionRoot, "updater.js"), `module.exports = { STATUS_FILE: ${JSON.stringify(statusFile)}, LOCK_FILE: ${JSON.stringify(lockFile)}, chooseStableUpdate: () => null };\n`);
+  fs.writeFileSync(path.join(extensionRoot, "updater.js"), [
+    `module.exports = { STATUS_FILE: ${JSON.stringify(statusFile)}, LOCK_FILE: ${JSON.stringify(lockFile)}, chooseStableUpdate: () => null, restartPiWeb: () => ({ accepted: true, pid: 123 }),`,
+    `writeStatus: (status) => { require("node:fs").writeFileSync(${JSON.stringify(statusFile)}, JSON.stringify({ id: "fixture", ...status })); } };`,
+  ].join("\n"));
 
   const bridgePath = path.join(repoRoot, "lib", "pui-update-bridge.cjs");
   const previousExtensionRoot = process.env.PUI_UPDATE_EXTENSION_DIR;
@@ -144,6 +168,50 @@ test("bridge retains terminal status that matches the installed identity", async
   assert.equal(fs.existsSync(statusFile), true);
 });
 
+test("bridge restart marks the restarting phase before spawning the restarter", async (t) => {
+  const { bridgePath, statusFile } = bridgeStatusFixture(t);
+  const result = await require(bridgePath).restart();
+  assert.equal(result.accepted, true);
+  const status = JSON.parse(fs.readFileSync(statusFile, "utf8"));
+  assert.equal(status.phase, "restarting");
+  assert.equal(status.result, null);
+  assert.ok(Number.isFinite(status.at), "restart status carries a freshness timestamp");
+});
+
+test("bridge restart refuses to overlap an in-flight restart or update", async (t) => {
+  const { bridgePath, lockFile, statusFile } = bridgeStatusFixture(t);
+
+  fs.writeFileSync(statusFile, JSON.stringify({ id: "fresh", phase: "restarting", result: null, at: Date.now() }));
+  assert.throws(() => require(bridgePath).restart(), /already in progress/);
+
+  fs.writeFileSync(statusFile, JSON.stringify({ id: "active", target: "1.0.5", phase: "installing", result: null }));
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, id: "active" }));
+  assert.throws(() => require(bridgePath).restart(), /already in progress/);
+});
+
+test("bridge restart proceeds over a stale restart status", async (t) => {
+  const { bridgePath, statusFile } = bridgeStatusFixture(t);
+  fs.writeFileSync(statusFile, JSON.stringify({ id: "stale", phase: "restarting", result: null, at: Date.now() - 10 * 60 * 1000 }));
+  const result = await require(bridgePath).restart();
+  assert.equal(result.accepted, true);
+});
+
+test("bridge getUpdate passes through restart statuses", async (t) => {
+  const { bridgePath, statusFile } = bridgeStatusFixture(t);
+  const bridge = require(bridgePath);
+  for (const status of [
+    { id: "r1", phase: "restarting", result: null, at: Date.now() },
+    { id: "r2", phase: "complete", result: "restarted" },
+    { id: "r3", phase: "failed", result: "failed", error: "boom" },
+  ]) {
+    fs.writeFileSync(statusFile, JSON.stringify(status));
+    const result = await bridge.getUpdate();
+    assert.equal(result.currentVersion, "1.0.4");
+    assert.equal(result.phase, status.phase);
+    assert.equal(fs.existsSync(statusFile), true, "restart status must not be discarded");
+  }
+});
+
 test("uninstall preserves a Pi Web integration whose ownership manifest changed", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-web-owned-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -180,7 +248,8 @@ function appHarness(fetchImpl) {
     fetch: fetchImpl,
     localStorage: { getItem: () => null, setItem: () => {} },
     location: { reload: () => { reloads += 1; } },
-    setTimeout: (callback) => { queueMicrotask(callback); return 1; },
+    confirm: () => true,
+    setTimeout: (callback) => { setImmediate(callback); return 1; },
     console,
   };
   vm.runInNewContext(fs.readFileSync(path.join(repoRoot, "assets", "pui-update-client.js"), "utf8"), context);
@@ -192,7 +261,23 @@ function appHarness(fetchImpl) {
     };
     return visit(body);
   };
-  return { body, findButton, reloads: () => reloads };
+  const findClose = () => {
+    const visit = (node) => {
+      if (node instanceof Element && node.tag === "button" && /\bpui-update-close\b/.test(node.className || "")) return node;
+      if (node instanceof Element) for (const child of node.children) { const found = visit(child); if (found) return found; }
+      return null;
+    };
+    return visit(body);
+  };
+  const findRestart = () => {
+    const visit = (node) => {
+      if (node instanceof Element && node.tag === "button" && /\bpui-restart-button\b/.test(node.className || "")) return node;
+      if (node instanceof Element) for (const child of node.children) { const found = visit(child); if (found) return found; }
+      return null;
+    };
+    return visit(body);
+  };
+  return { body, findButton, findClose, findRestart, reloads: () => reloads };
 }
 
 async function settle() {
@@ -236,4 +321,126 @@ test("app update flow reports a validated rollback", async () => {
   await settle();
   assert.match(harness.body.textContent, /PUI v1\.0\.0 was restored/);
   assert.ok(harness.findButton("Reload PUI"));
+});
+
+test("a terminal update notification keeps a close button so a stuck card can be dismissed", async () => {
+  const harness = appHarness(async (_url, options = {}) => {
+    if (options.method === "DELETE") return response({ acknowledged: true });
+    return response({ currentVersion: "1.0.5", result: "aborted", phase: "failed" });
+  });
+  await settle();
+  assert.match(harness.body.textContent, /Update was not applied.*PUI v1\.0\.5 remains installed/);
+  assert.ok(harness.findClose(), "aborted card has a close button");
+});
+
+test("a closed update card re-appears when the update reaches a terminal status", async () => {
+  let getCount = 0;
+  let releaseSuccess = false;
+  const harness = appHarness(async (_url, options = {}) => {
+    if (options.method === "POST") return response({ accepted: true });
+    if (options.method === "DELETE") return response({ acknowledged: true });
+    getCount += 1;
+    if (getCount === 1) return response({ currentVersion: "1.0.0", latestVersion: "1.1.0", updateAvailable: true });
+    if (releaseSuccess) return response({ target: "1.1.0", result: "success", phase: "complete" });
+    return response({ target: "1.1.0", phase: "installing", result: null });
+  });
+  await settle();
+  // Fire Install without awaiting: poll() loops on "installing" until we flip the status,
+  // so awaiting click() (which awaits install() -> poll()) would deadlock.
+  harness.findButton("Install").click();
+  await settle();
+  const close = harness.findClose();
+  assert.ok(close, "progress card has a close button");
+  await close.click();
+  releaseSuccess = true;
+  await settle();
+  assert.match(harness.body.textContent, /PUI v1\.1\.0 installed/);
+  assert.ok(harness.findButton("Reload PUI"), "reload action re-appeared after the status changed to terminal");
+});
+
+test("bridge restart delegates to the updater and returns acceptance", async (t) => {
+  const { bridgePath } = bridgeStatusFixture(t);
+  const result = await require(bridgePath).restart();
+  assert.equal(result.accepted, true);
+});
+
+test("patched app-update route exposes a PUT restart action", () => {
+  const original = 'x={62445:(a,b,c)=>{"use strict";c.r(b),c.d(b,{GET:()=>l,dynamic:()=>g});let g="force-dynamic",h="0.8.11";let u="registry.npmjs.org/@agegr%2Fpi-web/latest"},63033:a=>{}}';
+  const patched = patchRoute(original, "0.8.11");
+  assert.match(patched, /PUT:\(\)=>k/);
+  assert.match(patched, /f\.restart\(\)/);
+});
+
+test("the restart button reuses PUI styling, sits below the update card, and reloads after Pi Web comes back", async () => {
+  const calls = [];
+  let stage = "up-old";
+  const harness = appHarness(async (_url, options = {}) => {
+    const method = options.method || "GET";
+    calls.push(method);
+    if (method === "PUT") { stage = "up-old-brief"; return response({ accepted: true }); }
+    if (stage === "up-old-brief") { stage = "down"; return response({ currentVersion: "1.1.0", updateAvailable: false }); }
+    if (stage === "down") { stage = "up-new"; throw new Error("connection refused"); }
+    return response({ currentVersion: "1.1.0", updateAvailable: false });
+  });
+  await settle();
+  const restart = harness.findRestart();
+  assert.ok(restart, "restart button is always present");
+  assert.match(restart.className, /pui-restart-button/);
+  await restart.click();
+  await settle();
+  assert.ok(calls.includes("PUT"), "PUT restart request sent");
+  assert.equal(harness.reloads(), 1, "page reloaded after Pi Web came back");
+});
+
+test("restart flow shows progress on the card and reloads on completion", async () => {
+  let clicked = false;
+  let restartingReads = 0;
+  const harness = appHarness(async (_url, options = {}) => {
+    const method = options.method || "GET";
+    if (method === "PUT") { clicked = true; return response({ accepted: true }); }
+    if (!clicked) return response({ currentVersion: "1.1.0", updateAvailable: false });
+    if (restartingReads < 2) { restartingReads += 1; return response({ phase: "restarting", result: null }); }
+    return response({ phase: "complete", result: "restarted" });
+  });
+  await settle();
+  const restart = harness.findRestart();
+  await restart.click();
+  await settle();
+  assert.match(harness.body.textContent, /Restarting Pi Web…/, "progress is visible while the restart runs");
+  assert.equal(harness.reloads(), 1, "reload after success restores a fresh, active button");
+});
+
+test("restart flow reports failure and reactivates the button", async () => {
+  let clicked = false;
+  let phase = "restarting";
+  const harness = appHarness(async (_url, options = {}) => {
+    const method = options.method || "GET";
+    if (method === "PUT") { clicked = true; return response({ accepted: true }); }
+    if (!clicked) return response({ currentVersion: "1.1.0", updateAvailable: false });
+    let status;
+    if (phase === "restarting") { phase = "failed"; status = { phase: "restarting", result: null }; }
+    else status = { phase: "failed", result: "failed", error: "Pi Web did not become healthy after restart" };
+    return response(status);
+  });
+  await settle();
+  const restart = harness.findRestart();
+  await restart.click();
+  await settle();
+  assert.match(harness.body.textContent, /restart did not complete.*did not become healthy/i);
+  assert.equal(restart.disabled, false, "button reactivated after a failed restart");
+  assert.ok(harness.findClose(), "restart failure card can be dismissed");
+});
+
+test("a rejected restart request keeps the button usable and explains the conflict", async () => {
+  const harness = appHarness(async (_url, options = {}) => {
+    if ((options.method || "GET") === "PUT") return response({ error: "An update or restart is already in progress" }, false);
+    return response({ currentVersion: "1.1.0", updateAvailable: false });
+  });
+  await settle();
+  const restart = harness.findRestart();
+  await restart.click();
+  await settle();
+  assert.match(harness.body.textContent, /already in progress/);
+  assert.equal(restart.disabled, false, "button reactivated after a rejected restart");
+  assert.equal(harness.reloads(), 0);
 });
