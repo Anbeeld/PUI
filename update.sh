@@ -41,11 +41,60 @@ PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
 PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
 PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
+PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
+PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
+PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
+ASK_USER_CONFIG="$(node "$LIB" resolve-config-path "$(jget configPaths.askUserQuestion)" "$(jget askUserQuestion.configRelativePath)")" || { echo "  ask-user-question config path resolution failed" >&2; exit 1; }
 PIWEB_URL="$(jget piWeb.url)"
 
-for f in "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_SETTINGS"; do
+# The installed transaction worker may predate this patch. Keep a target-script
+# snapshot so an introducing update can still restore these non-JSON artifacts.
+BACKGROUND_PATCH="$SCRIPT_DIR/lib/pui-background-tasks-patch.js"
+BACKGROUND_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-background-task.XXXXXX")"
+BACKGROUND_PATCH_COMMITTED=0
+SUBAGENTS_PATCH="$SCRIPT_DIR/lib/pui-subagents-patch.js"
+SUBAGENTS_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-subagents.XXXXXX")"
+SUBAGENTS_PATCH_COMMITTED=0
+if ! node "$BACKGROUND_PATCH" snapshot "$BACKGROUND_SNAPSHOT" >/dev/null 2>&1; then
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT"
+  echo "  could not snapshot pi-background-tasks prompt artifacts; update aborted" >&2
+  exit 1
+fi
+if ! node "$SUBAGENTS_PATCH" snapshot "$SUBAGENTS_SNAPSHOT" >/dev/null 2>&1; then
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT"
+  echo "  could not snapshot pi-subagents prompt artifacts; update aborted" >&2
+  exit 1
+fi
+restore_background_patch_on_exit() {
+  status=$?
+  trap - EXIT
+  snapshot_resolved=0
+  if [ "$BACKGROUND_PATCH_COMMITTED" -eq 0 ]; then
+    if node "$BACKGROUND_PATCH" restore-snapshot "$BACKGROUND_SNAPSHOT" >/dev/null 2>&1; then
+      snapshot_resolved=1
+    else
+      echo "  FAILED to restore pi-background-tasks prompt artifacts; recovery snapshot retained at $BACKGROUND_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  if [ "$snapshot_resolved" -eq 1 ]; then rm -rf -- "$BACKGROUND_SNAPSHOT"; fi
+  subagents_resolved=0
+  if [ "$SUBAGENTS_PATCH_COMMITTED" -eq 0 ]; then
+    if node "$SUBAGENTS_PATCH" restore-snapshot "$SUBAGENTS_SNAPSHOT" >/dev/null 2>&1; then
+      subagents_resolved=1
+    else
+      echo "  FAILED to restore pi-subagents prompt artifacts; recovery snapshot retained at $SUBAGENTS_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  if [ "$subagents_resolved" -eq 1 ]; then rm -rf -- "$SUBAGENTS_SNAPSHOT"; fi
+  exit "$status"
+}
+trap restore_background_patch_on_exit EXIT
+
+for f in "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_SETTINGS" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG"; do
   if [ -f "$f" ]; then
-    BK="$(node "$LIB" backup "$f" | tail -1)"
+    BK="$(node "$LIB" backup "$f" | tail -1)" || { echo "  backup failed: $f" >&2; exit 1; }
     echo "  backed up: $BK"
     BACKUP_FILES+=("$BK")
   fi
@@ -128,10 +177,19 @@ else
   echo "  standalone pi already at $PIWEB_CA_VER"
 fi
 
+# Apply the temporary exact-version Pi #8782 runtime backport before any
+# restart. This is fatal: an unpatched PUI Pi Web is unsupported.
+PIWEB_PKG_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web"
+if ! node "$SCRIPT_DIR/lib/pui-pi-8782-backport.js" apply "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" >/dev/null; then
+  echo "  Pi #8782 backport could not be applied; update aborted" >&2
+  exit 1
+fi
+pui_fail pi-8782-backport
+echo "  Pi #8782 backport applied to Pi Web runtime"
+
 # Re-apply PUI icon override (npm update overwrites the package files).
 PUI_ICONS_DIR="$SCRIPT_DIR/assets/icons"
 if [ -d "$PUI_ICONS_DIR" ]; then
-  PIWEB_PKG_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web" || true
   PIWEB_ICONS_DIR="$PIWEB_PKG_ROOT/public/icons"
   if [ -d "$PIWEB_ICONS_DIR" ]; then
     echo "  re-applying complete PUI icon set..."
@@ -173,14 +231,23 @@ for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPacka
 done
 pui_fail package-reconciliation
 
-# Reconcile pi-fff feature state: suppress startup notices.
-PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
+ASK_GUIDANCE="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.askUserQuestion.guidance))' "$STACK")"
+node "$LIB" set-owned-fields "$ASK_USER_CONFIG" guidance "$ASK_GUIDANCE" >/dev/null || { echo "  ask-user-question guidance reconciliation failed" >&2; exit 1; }
+echo "  ask-user-question guidance reconciled"
+
+SUBAGENT_DEFAULT_MAPPINGS="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.subagents.modelMappings))' "$STACK")"
+node "$LIB" reconcile-model-mappings "$PUI_SUBAGENTS_CONFIG" "$SUBAGENT_DEFAULT_MAPPINGS" >/dev/null || { echo "  subagent model mapping reconciliation failed" >&2; exit 1; }
+echo "  subagent fuzzy model mappings reconciled: $PUI_SUBAGENTS_CONFIG"
+
+# Reconcile pi-fff feature state: suppress startup notices while keeping
+# PUI's fuzzy features active, and remove retired custom agent tools.
 FFF_CFG="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({enabledFeatures:s.fff.enabledFeatures}))' "$STACK")"
-node "$LIB" merge-object "$PI_FFF_FEATURES" "$FFF_CFG" >/dev/null
-echo "  pi-fff feature state reconciled (startup notices disabled)"
+node "$LIB" merge-object "$PI_FFF_FEATURES" "$FFF_CFG" >/dev/null || { echo "  pi-fff feature state reconciliation failed" >&2; exit 1; }
+FFF_RETIRED="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.fff.retiredFeatures||[]))' "$STACK")"
+node "$LIB" remove-array-items "$PI_FFF_FEATURES" enabledFeatures "$FFF_RETIRED" >/dev/null || { echo "  pi-fff retired feature removal failed" >&2; exit 1; }
+echo "  pi-fff feature state reconciled (startup notices disabled; custom agent tools disabled)"
 
 # Reconcile pi-goal settings: unlimited automatic turns with a readable status line.
-PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
 GOAL_CFG='{"continuationLimits":{"automaticTurns":null,"noProgressTurns":3}}'
 node "$LIB" merge-object "$PI_GOAL" "$GOAL_CFG" >/dev/null || { echo "  pi-goal settings reconciliation failed" >&2; exit 1; }
 if ! node "$SCRIPT_DIR/lib/pui-goal-patch.js" apply >/dev/null 2>&1; then
@@ -194,6 +261,16 @@ if ! node "$SCRIPT_DIR/lib/pui-native-check.js" ensure "$PI_AGENT_DIR/npm" >/dev
   echo "  pi-background-tasks native (node-pty) binding could not be verified or rebuilt; update aborted. Install the required compiler toolchain and rerun update.sh." >&2
   exit 1
 fi
+if ! node "$BACKGROUND_PATCH" apply >/dev/null 2>&1; then
+  echo "  pi-background-tasks compact prompt patch could not be applied (version or metadata drift); update aborted." >&2
+  exit 1
+fi
+echo "  pi-background-tasks compact model guidance applied"
+if ! node "$SUBAGENTS_PATCH" apply >/dev/null 2>&1; then
+  echo "  pi-subagents model policy patch could not be applied (version or metadata drift); update aborted." >&2
+  exit 1
+fi
+echo "  pi-subagents model policy applied"
 
 echo "  reconciling managed Playwright MCP..."
 MCP_DEF="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({command:s.mcp.command,args:s.mcp.args,lifecycle:s.mcp.lifecycle,directTools:s.mcp.directTools}))' "$STACK")"
@@ -322,6 +399,49 @@ if [ "$DOCTOR_EXIT" -ne 0 ]; then
   exit 1
 fi
 pui_fail target-validation
+PUI_VERSION="$(node -p 'require(process.argv[1]).version' "$SCRIPT_DIR/package.json")"
+set +e
+node "$BACKGROUND_PATCH" spawn-guard "$BACKGROUND_SNAPSHOT" "$PUI_VERSION" >/dev/null
+BACKGROUND_GUARD_EXIT=$?
+set -e
+if [ "$BACKGROUND_GUARD_EXIT" -eq 75 ] || [ "$BACKGROUND_GUARD_EXIT" -eq 76 ]; then
+  # A direct staged apply has no outer validation; a checkpoint route already
+  # has one transaction-level guard retaining the original snapshot.
+  BACKGROUND_PATCH_COMMITTED=1
+  rm -rf -- "$BACKGROUND_SNAPSHOT"
+elif [ "$BACKGROUND_GUARD_EXIT" -ne 0 ]; then
+  echo "  could not start the outer-transaction background prompt rollback guard" >&2
+  exit 1
+else
+  BACKGROUND_GUARD_READY="$BACKGROUND_SNAPSHOT/guard-ready"
+  for _ in $(seq 1 50); do
+    [ -f "$BACKGROUND_GUARD_READY" ] && break
+    sleep 0.1
+  done
+  [ -f "$BACKGROUND_GUARD_READY" ] || { echo "  background prompt rollback guard did not become ready" >&2; exit 1; }
+  BACKGROUND_PATCH_COMMITTED=1
+fi
+set +e
+node "$SUBAGENTS_PATCH" spawn-guard "$SUBAGENTS_SNAPSHOT" "$PUI_VERSION" >/dev/null
+SUBAGENTS_GUARD_EXIT=$?
+set -e
+if [ "$SUBAGENTS_GUARD_EXIT" -eq 75 ] || [ "$SUBAGENTS_GUARD_EXIT" -eq 76 ]; then
+  # A direct staged apply has no outer validation; a checkpoint route already
+  # has one transaction-level guard retaining the original snapshot.
+  SUBAGENTS_PATCH_COMMITTED=1
+  rm -rf -- "$SUBAGENTS_SNAPSHOT"
+elif [ "$SUBAGENTS_GUARD_EXIT" -ne 0 ]; then
+  echo "  could not start the outer-transaction subagents prompt rollback guard" >&2
+  exit 1
+else
+  SUBAGENTS_GUARD_READY="$SUBAGENTS_SNAPSHOT/guard-ready"
+  for _ in $(seq 1 50); do
+    [ -f "$SUBAGENTS_GUARD_READY" ] && break
+    sleep 0.1
+  done
+  [ -f "$SUBAGENTS_GUARD_READY" ] || { echo "  subagents prompt rollback guard did not become ready" >&2; exit 1; }
+  SUBAGENTS_PATCH_COMMITTED=1
+fi
 
 echo
 echo "Update complete: all doctor checks passed."

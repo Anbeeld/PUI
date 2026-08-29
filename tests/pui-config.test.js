@@ -11,8 +11,16 @@ const {
   mergeArrayUnique,
   packageToken,
   setMcpServer,
+  removeArrayItemsAtPath,
+  setOwnedFieldsAtPath,
+  removeOwnedFieldsAtPath,
+  ownedFieldsMatchAtPath,
+  configCandidatePaths,
+  resolveConfigPath,
   readJsonSafe,
   backupFile,
+  reconcileModelMappings,
+  validateModelMappingsConfig,
 } = require(LIB);
 
 function tmpdir() {
@@ -20,6 +28,50 @@ function tmpdir() {
 }
 function w(d, f, c) { fs.writeFileSync(path.join(d, f), c); }
 function rj(d, f) { return JSON.parse(fs.readFileSync(path.join(d, f), "utf8")); }
+
+// ---------- subagent model mappings ----------
+test("reconcileModelMappings appends new defaults without resurrecting deleted mappings", () => {
+  const existing = {
+    schemaVersion: 1,
+    modelMappings: { custom: "custom-child" },
+    _pui: { defaultMappings: { sol: "luna" } },
+    unrelated: true,
+  };
+  const out = reconcileModelMappings(existing, { sol: "luna", opus: "sonnet" });
+  assert.deepEqual(out, {
+    schemaVersion: 1,
+    modelMappings: { custom: "custom-child", opus: "sonnet" },
+    _pui: { defaultMappings: { sol: "luna", opus: "sonnet" } },
+    unrelated: true,
+  });
+});
+
+test("reconcileModelMappings updates untouched defaults and preserves user overrides", () => {
+  const defaults = { sol: "new-luna", opus: "new-sonnet" };
+  const out = reconcileModelMappings({
+    schemaVersion: 1,
+    modelMappings: { sol: "old-luna", opus: "custom-sonnet" },
+    _pui: { defaultMappings: { sol: "old-luna", opus: "old-sonnet" } },
+  }, defaults);
+  assert.deepEqual(out.modelMappings, { sol: "new-luna", opus: "custom-sonnet" });
+  assert.deepEqual(out._pui.defaultMappings, defaults);
+});
+
+test("reconcileModelMappings removes retired untouched defaults and keeps changed ones", () => {
+  const out = reconcileModelMappings({
+    schemaVersion: 1,
+    modelMappings: { retired: "child", customized: "user-child" },
+    _pui: { defaultMappings: { retired: "child", customized: "old-child" } },
+  }, {});
+  assert.deepEqual(out.modelMappings, { customized: "user-child" });
+  assert.deepEqual(out._pui.defaultMappings, {});
+});
+
+test("validateModelMappingsConfig accepts fuzzy strings and rejects malformed mappings", () => {
+  assert.equal(validateModelMappingsConfig({ schemaVersion: 1, modelMappings: { sol: "luna" }, _pui: { defaultMappings: { sol: "luna" } } }).ok, true);
+  assert.equal(validateModelMappingsConfig({ schemaVersion: 2, modelMappings: {} }).ok, false);
+  assert.equal(validateModelMappingsConfig({ schemaVersion: 1, modelMappings: { sol: 42 } }).ok, false);
+});
 
 // ---------- deepMerge ----------
 test("deepMerge preserves unrelated existing object keys", () => {
@@ -69,6 +121,93 @@ test("deepMerge defaultTools dedups and preserves", () => {
   const pui = { defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"] };
   const out = deepMerge(base, pui, new Set(["defaultTools"]));
   assert.deepEqual(out.defaultTools, ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"]);
+});
+
+test("removeArrayItemsAtPath removes retired features and preserves other settings", () => {
+  const config = {
+    enabledFeatures: ["autocomplete", "agentTools", "customFeature"],
+    unrelated: { keep: true },
+  };
+  const removed = removeArrayItemsAtPath(config, "enabledFeatures", ["agentTools"]);
+  assert.equal(removed, 1);
+  assert.deepEqual(config.enabledFeatures, ["autocomplete", "customFeature"]);
+  assert.deepEqual(config.unrelated, { keep: true });
+});
+
+test("setOwnedFieldsAtPath replaces managed arrays and preserves unrelated settings", () => {
+  const config = {
+    guidance: { promptGuidelines: ["user value"], futureField: true },
+    collapseKey: "alt+o",
+  };
+  setOwnedFieldsAtPath(config, "guidance", {
+    description: "managed",
+    promptGuidelines: ["compact guidance"],
+  });
+  assert.deepEqual(config, {
+    guidance: {
+      description: "managed",
+      promptGuidelines: ["compact guidance"],
+      futureField: true,
+    },
+    collapseKey: "alt+o",
+  });
+});
+
+test("owned guidance removal is exact and preserves unrelated settings", () => {
+  const managed = { description: "managed", promptGuidelines: ["compact guidance"] };
+  const config = {
+    guidance: { ...managed, futureField: true },
+    collapseKey: "alt+o",
+  };
+  assert.equal(ownedFieldsMatchAtPath(config, "guidance", managed), true);
+  assert.equal(removeOwnedFieldsAtPath(config, "guidance", managed), true);
+  assert.deepEqual(config, { guidance: { futureField: true }, collapseKey: "alt+o" });
+
+  const changed = { guidance: { ...managed, description: "user changed" }, collapseKey: "alt+o" };
+  assert.equal(ownedFieldsMatchAtPath(changed, "guidance", managed), false);
+  assert.equal(removeOwnedFieldsAtPath(changed, "guidance", managed), false);
+  assert.equal(changed.guidance.description, "user changed");
+});
+
+test("configCandidatePaths includes XDG and legacy paths for ownership cleanup", () => {
+  assert.deepEqual(
+    configCandidatePaths("~/.config/rpiv-ask-user-question/config.json", "rpiv-ask-user-question/config.json", {
+      env: { XDG_CONFIG_HOME: "/tmp/custom-config" },
+      home: "/home/example",
+    }),
+    [
+      path.resolve("/tmp/custom-config/rpiv-ask-user-question/config.json"),
+      path.resolve("/home/example/.config/rpiv-ask-user-question/config.json"),
+    ],
+  );
+  assert.deepEqual(
+    configCandidatePaths("~/.config/rpiv-ask-user-question/config.json", "rpiv-ask-user-question/config.json", {
+      env: { XDG_CONFIG_HOME: "relative/config" },
+      home: "/home/example",
+    }),
+    [path.resolve("/home/example/.config/rpiv-ask-user-question/config.json")],
+  );
+});
+
+test("resolveConfigPath uses an existing absolute XDG file and otherwise falls back", () => {
+  assert.equal(
+    resolveConfigPath("~/.config/rpiv-ask-user-question/config.json", "rpiv-ask-user-question/config.json", {
+      env: { XDG_CONFIG_HOME: "/tmp/custom-config" },
+      home: "/home/example",
+      exists: (file) => file === path.resolve("/tmp/custom-config/rpiv-ask-user-question/config.json"),
+    }),
+    path.resolve("/tmp/custom-config/rpiv-ask-user-question/config.json"),
+  );
+  for (const xdg of ["/tmp/missing", "relative/config"]) {
+    assert.equal(
+      resolveConfigPath("~/.config/rpiv-ask-user-question/config.json", "rpiv-ask-user-question/config.json", {
+        env: { XDG_CONFIG_HOME: xdg },
+        home: "/home/example",
+        exists: () => false,
+      }),
+      path.resolve("/home/example/.config/rpiv-ask-user-question/config.json"),
+    );
+  }
 });
 
 // ---------- mergeArrayUnique ----------
@@ -236,6 +375,29 @@ function runCli(args, expectExit) {
   }
 }
 
+test("CLI rejects an existing empty mapping config instead of treating it as missing", () => {
+  const d = tmpdir();
+  const f = path.join(d, "subagents.json");
+  fs.writeFileSync(f, "{}\n");
+  const result = runCli(["reconcile-model-mappings", f, JSON.stringify({ sol: "luna" })]);
+  assert.notEqual(result.exit, 0);
+  assert.match(result.out, /schemaVersion must be 1/);
+  assert.deepEqual(rj(d, "subagents.json"), {});
+});
+
+test("CLI reconciles new mapping defaults without reviving a removed default", () => {
+  const d = tmpdir();
+  const f = path.join(d, "subagents.json");
+  assert.equal(runCli(["reconcile-model-mappings", f, JSON.stringify({ sol: "luna" })]).exit, 0);
+  const initial = rj(d, "subagents.json");
+  assert.deepEqual(initial.modelMappings, { sol: "luna" });
+  delete initial.modelMappings.sol;
+  fs.writeFileSync(f, JSON.stringify(initial));
+  assert.equal(runCli(["reconcile-model-mappings", f, JSON.stringify({ sol: "luna", opus: "sonnet" })]).exit, 0);
+  assert.deepEqual(rj(d, "subagents.json").modelMappings, { opus: "sonnet" });
+  assert.equal(runCli(["validate-model-mappings", f]).exit, 0);
+});
+
 test("CLI merge-object fresh fixture", () => {
   const d = tmpdir();
   const f = path.join(d, "settings.json");
@@ -276,6 +438,53 @@ test("CLI default-tools-merge idempotent on second run", () => {
   assert.deepEqual(out.defaultTools, ["read", "powershell", "bash", "edit", "write", "grep", "find", "ls"]);
 });
 
+test("CLI remove-array-items removes retired FFF features", () => {
+  const d = tmpdir(); const f = path.join(d, "pi-fff.json");
+  w(d, "pi-fff.json", JSON.stringify({
+    enabledFeatures: ["autocomplete", "agentTools", "customFeature"],
+    unrelated: "preserved",
+  }));
+  const res = runCli(["remove-array-items", f, "enabledFeatures", JSON.stringify(["agentTools"])]);
+  assert.equal(res.exit, 0, res.out);
+  const out = rj(d, "pi-fff.json");
+  assert.deepEqual(out.enabledFeatures, ["autocomplete", "customFeature"]);
+  assert.equal(out.unrelated, "preserved");
+});
+
+test("CLI set-owned-fields converges guidance without merging prompt arrays", () => {
+  const d = tmpdir(); const f = path.join(d, "ask-user.json");
+  w(d, "ask-user.json", JSON.stringify({
+    guidance: { promptGuidelines: ["user value"], futureField: true },
+    collapseKey: "alt+o",
+  }));
+  const managed = { description: "managed", promptGuidelines: ["compact guidance"] };
+  const res = runCli(["set-owned-fields", f, "guidance", JSON.stringify(managed)]);
+  assert.equal(res.exit, 0, res.out);
+  assert.deepEqual(rj(d, "ask-user.json"), {
+    guidance: { promptGuidelines: ["compact guidance"], futureField: true, description: "managed" },
+    collapseKey: "alt+o",
+  });
+});
+
+test("CLI remove-owned-fields refuses drift and removes only exact managed leaves", () => {
+  const d = tmpdir(); const f = path.join(d, "ask-user.json");
+  const managed = { description: "managed", promptGuidelines: ["compact guidance"] };
+  w(d, "ask-user.json", JSON.stringify({ guidance: { ...managed, futureField: true }, collapseKey: "alt+o" }));
+  let res = runCli(["remove-owned-fields", f, "guidance", JSON.stringify(managed)]);
+  assert.equal(res.exit, 0, res.out);
+  const removal = JSON.parse(res.out);
+  assert.equal(fs.existsSync(removal.backup), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(removal.backup, "utf8")), {
+    guidance: { ...managed, futureField: true }, collapseKey: "alt+o",
+  });
+  assert.deepEqual(rj(d, "ask-user.json"), { guidance: { futureField: true }, collapseKey: "alt+o" });
+
+  w(d, "ask-user.json", JSON.stringify({ guidance: { ...managed, description: "user changed" }, collapseKey: "alt+o" }));
+  res = runCli(["remove-owned-fields", f, "guidance", JSON.stringify(managed)]);
+  assert.equal(res.exit, 2, res.out);
+  assert.equal(rj(d, "ask-user.json").guidance.description, "user changed");
+});
+
 test("CLI set-server fresh", () => {
   const d = tmpdir(); const f = path.join(d, "mcp.json");
   const def = { command: "npx", args: ["-y", "@playwright/mcp@latest", "--headless", "--browser", "chrome"], lifecycle: "lazy" };
@@ -311,6 +520,24 @@ test("CLI set-server idempotent", () => {
   runCli(["set-server", f, "playwright", JSON.stringify(def)]);
   runCli(["set-server", f, "playwright", JSON.stringify(def)]);
   assert.deepEqual(rj(d, "mcp.json").mcpServers.playwright, def);
+});
+
+test("CLI remove-array-items on a missing file writes nothing", () => {
+  const d = tmpdir();
+  const missing = path.join(d, "absent.json");
+  const res = runCli(["remove-array-items", missing, "enabledFeatures", JSON.stringify(["agentTools"])]);
+  assert.equal(res.exit, 0, res.out);
+  assert.equal(fs.existsSync(missing), false);
+});
+
+test("CLI remove-array-items skips writing when nothing changes", () => {
+  const d = tmpdir();
+  const f = path.join(d, "features.json");
+  const before = JSON.stringify({ enabledFeatures: ["autocomplete"] });
+  fs.writeFileSync(f, before);
+  const res = runCli(["remove-array-items", f, "enabledFeatures", JSON.stringify(["agentTools"])]);
+  assert.equal(res.exit, 0, res.out);
+  assert.equal(fs.readFileSync(f, "utf8"), before);
 });
 
 test("CLI validate invalid file exits 1", () => {

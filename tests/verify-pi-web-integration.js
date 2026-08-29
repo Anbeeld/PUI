@@ -19,7 +19,9 @@ try {
   if (packed.error) throw packed.error;
   if (packed.status !== 0) throw new Error(packed.stderr || "npm pack failed");
   const archive = fs.readdirSync(temp).find((name) => name.endsWith(".tgz"));
-  const extracted = spawnSync("tar", ["-xf", path.join(temp, archive), "-C", temp], { encoding: "utf8" });
+  // Git's Windows tar treats a drive-letter path as a remote archive. Use
+  // the temporary directory as cwd and pass only the archive name.
+  const extracted = spawnSync("tar", ["-xf", archive, "-C", "."], { cwd: temp, encoding: "utf8" });
   if (extracted.status !== 0) throw new Error(extracted.stderr || "tar extraction failed");
   const piWebRoot = path.join(temp, "package");
   const piWebPackage = JSON.parse(fs.readFileSync(path.join(piWebRoot, "package.json"), "utf8"));

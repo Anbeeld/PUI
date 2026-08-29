@@ -80,10 +80,35 @@ if (Test-Path $mcpShared) {
   }
 }
 
+$askUserConfigs = @(& node $Lib "config-candidate-paths" ([string]$Stack.configPaths.askUserQuestion) ([string]$Stack.askUserQuestion.configRelativePath) 2>&1)
+$askGuidance = $Stack.askUserQuestion.guidance | ConvertTo-Json -Depth 10 -Compress
+$askGuidanceFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($askGuidanceFile, $askGuidance, [System.Text.UTF8Encoding]::new($false))
+  foreach ($askUserConfig in @($askUserConfigs | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ } | Select-Object -Unique)) {
+    if (-not (Test-Path $askUserConfig)) { continue }
+    $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $Lib "remove-owned-fields" $askUserConfig "guidance" "@$askGuidanceFile" 2>&1 | Out-Null; $askRemoveExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $prev }
+    if ($askRemoveExit -eq 0) {
+      Write-Host "  backed up and removed PUI-managed ask-user-question guidance from $askUserConfig"
+    } elseif ($askRemoveExit -eq 2) {
+      Write-Host "  ask-user-question guidance differs from the PUI-managed shape; preserving (user-owned)." -ForegroundColor Yellow
+    } else {
+      Write-Host "  could not inspect ask-user-question guidance; preserving $askUserConfig." -ForegroundColor Yellow
+    }
+  }
+} finally { Remove-Item $askGuidanceFile -Force -ErrorAction SilentlyContinue }
+
 # 3b. Restore original pi-web files (undo PUI branding/icon overrides).
 try {
   $piWebRoot = Join-Path (Join-Path (& npm root -g) "@agegr") "pi-web"
   if (Test-Path $piWebRoot) {
+    $backportScript = Join-Path $ScriptDir "lib\pui-pi-8782-backport.js"
+    $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $backportScript remove $piWebRoot 2>&1 | Out-Null; $backportRemoveExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $prev }
+    if ($backportRemoveExit -ne 0) { Write-Host "  Pi #8782 backport differs from its owned shape; preserving." -ForegroundColor Yellow }
     & node (Join-Path $ScriptDir "lib\pui-web-integration.js") remove $ScriptDir $piWebRoot | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update integration differs from its owned shape; preserving." -ForegroundColor Yellow }
     Get-ChildItem $piWebRoot -Recurse -Filter "*.pui-created" -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -100,6 +125,19 @@ try {
     }
   }
 } catch { Write-Host "  icon/branding restore skipped: $_" -ForegroundColor Yellow }
+
+$backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $backgroundPatch remove 2>&1 | Out-Null; $backgroundRemoveExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($backgroundRemoveExit -eq 0) { Write-Host "  removed the PUI-owned pi-background-tasks prompt override when present" }
+else { Write-Host "  pi-background-tasks prompt override differs from its PUI-owned shape; preserving." -ForegroundColor Yellow }
+$subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $subagentsPatch remove 2>&1 | Out-Null; $subagentsRemoveExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($subagentsRemoveExit -eq 0) { Write-Host "  removed the PUI-owned pi-subagents model policy patch when present" }
+else { Write-Host "  pi-subagents model policy patch differs from its PUI-owned shape; preserving." -ForegroundColor Yellow }
 
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") remove $ScriptDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension differs from its owned shape; preserving." -ForegroundColor Yellow }

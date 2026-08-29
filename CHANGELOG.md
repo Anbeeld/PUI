@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.2
+
+- Backported upstream Pi #8782 to PUI's pinned Pi Web runtime so long tool loops compact before the next provider request instead of overrunning the configured context threshold. This is a temporary Pi Web-only compatibility shim until PUI can pin the first released Pi version containing the fix; standalone `pi` remains stock 0.84.3.
+- Added configurable default model and reasoning behavior for `@gotgenes/pi-subagents`. Parent-to-child mappings live in `~/.config/pui/subagents.json`, initially with the exact pair `openai-codex/gpt-5.6-sol` → `openai-codex/gpt-5.6-luna`. Custom entries can use fuzzy model search. New defaults from later PUI updates will be added without restoring mappings the user deleted. When model is omitted, a matching mapping is used, otherwise the subagent inherits the parent model. Omitted `thinking` inherits the parent session's active reasoning level. Explicit `model` or `thinking` arguments still win.
+- Replaced `@99percentpeople/pi-background-tasks`'s 27 overlapping system-prompt guidelines and verbose tool/schema descriptions with an exact compact PUI-owned set.
+- Added compact PUI-managed structured-question guidance for `@juicesharp/rpiv-ask-user-question`.
+- Disabled pi-fff's `agentTools` feature in the PUI defaults while retaining autocomplete, built-in read enhancement, and built-in grep enhancement.
+
 ## v1.1.1
 
 - Shrunk the Pi Web footer widget-trigger cell from its fixed 70% shelf basis to content width so a single extension widget no longer leaves a large empty gap next to the status text, and removed the now-adjacent duplicate right border on the last trigger.

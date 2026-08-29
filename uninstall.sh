@@ -64,10 +64,27 @@ process.exit(ok?0:1)' "$STACK" "$MCP_SHARED" 2>/dev/null; then
   fi
 fi
 
+ASK_GUIDANCE="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.askUserQuestion.guidance))' "$STACK")"
+while IFS= read -r ASK_USER_CONFIG; do
+  [ -f "$ASK_USER_CONFIG" ] || continue
+  set +e
+  node "$LIB" remove-owned-fields "$ASK_USER_CONFIG" guidance "$ASK_GUIDANCE" >/dev/null 2>&1
+  ASK_REMOVE_EXIT=$?
+  set -e
+  if [ "$ASK_REMOVE_EXIT" -eq 0 ]; then
+    echo "  backed up and removed PUI-managed ask-user-question guidance from $ASK_USER_CONFIG"
+  elif [ "$ASK_REMOVE_EXIT" -eq 2 ]; then
+    echo "  ask-user-question guidance differs from the PUI-managed shape; preserving (user-owned)."
+  else
+    echo "  could not inspect ask-user-question guidance; preserving $ASK_USER_CONFIG." >&2
+  fi
+done < <(node "$LIB" config-candidate-paths "$(jget configPaths.askUserQuestion)" "$(jget askUserQuestion.configRelativePath)")
+
 # Restore original pi-web files (undo PUI branding/icon overrides).
 if command -v npm >/dev/null 2>&1; then
   PIWEB_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web" || true
   if [ -d "$PIWEB_ROOT" ]; then
+    node "$SCRIPT_DIR/lib/pui-pi-8782-backport.js" remove "$PIWEB_ROOT" >/dev/null || echo "  Pi #8782 backport differs from its owned shape; preserving."
     node "$SCRIPT_DIR/lib/pui-web-integration.js" remove "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null || echo "  PUI update integration differs from its owned shape; preserving."
     find "$PIWEB_ROOT" -name "*.pui-created" -type f | while read -r marker; do
       created="${marker%.pui-created}"
@@ -81,6 +98,16 @@ if command -v npm >/dev/null 2>&1; then
       echo "  restored original: $(basename "$orig")"
     done
   fi
+fi
+if node "$SCRIPT_DIR/lib/pui-background-tasks-patch.js" remove >/dev/null 2>&1; then
+  echo "  removed the PUI-owned pi-background-tasks prompt override when present"
+else
+  echo "  pi-background-tasks prompt override differs from its PUI-owned shape; preserving."
+fi
+if node "$SCRIPT_DIR/lib/pui-subagents-patch.js" remove >/dev/null 2>&1; then
+  echo "  removed the PUI-owned pi-subagents model policy patch when present"
+else
+  echo "  pi-subagents model policy patch differs from its PUI-owned shape; preserving."
 fi
 node "$SCRIPT_DIR/lib/pui-update-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI update extension differs from its owned shape; preserving."
 

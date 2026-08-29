@@ -68,6 +68,35 @@
       "repository": "https://github.com/99percentpeople/pi-extensions/tree/master/extensions/background-tasks"
     }
   },
+  "subagentsPromptPatch": {
+    "schemaVersion": 1,
+    "revision": 4,
+    "packagePath": "node_modules/@gotgenes/pi-subagents",
+    "files": [
+      "src/tools/agent-tool.ts",
+      "src/config/default-agents.ts",
+      "src/config/invocation-config.ts",
+      "src/tools/spawn-config.ts",
+      "src/runtime.ts",
+      "src/types.ts"
+    ],
+    "backupSuffix": ".pui-original",
+    "manifest": ".pui-subagents-prompt-manifest.json"
+  },
+  "subagents": {
+    "schemaVersion": 1,
+    "modelMappings": {
+      "openai-codex/gpt-5.6-sol": "openai-codex/gpt-5.6-luna"
+    }
+  },
+  "backgroundTasksPromptPatch": {
+    "schemaVersion": 1,
+    "revision": 1,
+    "packagePath": "node_modules/@99percentpeople/pi-background-tasks",
+    "bundle": "index.min.js",
+    "backupSuffix": ".pui-original",
+    "manifestSuffix": ".pui-manifest.json"
+  },
   "piPackages": [
     "npm:@gotgenes/pi-subagents@19.3.5",
     "npm:pi-web-access@0.25.0",
@@ -141,11 +170,23 @@
     },
     "workflow": "none"
   },
+  "askUserQuestion": {
+    "configRelativePath": "rpiv-ask-user-question/config.json",
+    "guidance": {
+      "description": "Ask structured questions and wait for a response. Use when requested, or for a material choice genuinely owned by the user and unresolved by the request or available context. Decide delegated technical judgments and low-risk reversible details without asking. Free-text input is automatic; do not author \"Other\", \"Type something.\", or \"Next\" options. If recommending an option, list it first and append \"(Recommended)\". Use preview only for single-select visual comparisons.",
+      "promptSnippet": "Ask structured questions when requested or for unresolved material user-owned choices",
+      "promptGuidelines": [
+        "When using ask_user_question, combine independent questions into one invocation, up to four questions per call; ask dependent questions only after earlier answers."
+      ]
+    }
+  },
   "fff": {
     "enabledFeatures": [
       "autocomplete",
       "builtInReadEnhancement",
-      "builtInGrepEnhancement",
+      "builtInGrepEnhancement"
+    ],
+    "retiredFeatures": [
       "agentTools"
     ]
   },
@@ -155,7 +196,9 @@
     "piWebAccess": "~/.pi/web-search.json",
     "mcpShared": "~/.config/mcp/mcp.json",
     "piFffFeatures": "~/.pi/agent/extensions/pi-fff.json",
-    "piGoal": "~/.pi/agent/pi-goal.json"
+    "piGoal": "~/.pi/agent/pi-goal.json",
+    "askUserQuestion": "~/.config/rpiv-ask-user-question/config.json",
+    "puiSubagents": "~/.config/pui/subagents.json"
   },
   "minimumNode": "22.19.0"
 }

@@ -71,6 +71,10 @@ PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
 PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
 PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
+PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
+PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
+PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
+ASK_USER_CONFIG="$(node_config resolve-config-path "$(jget configPaths.askUserQuestion)" "$(jget askUserQuestion.configRelativePath)")" || { echo "  ask-user-question config path resolution failed" >&2; exit 1; }
 MIN_NODE="$(jget minimumNode)"
 PIWEB_URL="$(jget piWeb.url)"
 
@@ -103,14 +107,14 @@ fi
 # ---- Phase 2: preserve (G2) ----
 write_phase 2 "preserve existing state"
 G2=1
-for f in "$PI_SETTINGS" "$PI_WEB_ACCESS" "$MCP_SHARED"; do
+for f in "$PI_SETTINGS" "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG"; do
   if [ -f "$f" ]; then
     if ! node_config validate "$f" >/dev/null 2>&1; then
       echo "  INVALID JSON (not overwritten): $f" >&2
       node_config validate "$f" >&2 || true
       G2=0
     else
-      BK="$(node_config backup "$f" | tail -1)"
+      BK="$(node_config backup "$f" | tail -1)" || { echo "  backup failed: $f" >&2; G2=0; continue; }
       echo "  backed up: $BK"
     fi
   fi
@@ -204,12 +208,20 @@ fi
 gate G3 "runtime parity" "$G3"
 if [ "$G3" != "1" ]; then exit 1; fi
 
+# Apply the temporary exact-version Pi #8782 runtime backport before any
+# restart. This is fatal: launching an unpatched PUI Pi Web is unsupported.
+PIWEB_PKG_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web"
+if ! node "$SCRIPT_DIR/lib/pui-pi-8782-backport.js" apply "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" >/dev/null; then
+  echo "  Pi #8782 backport could not be applied; install aborted" >&2
+  exit 1
+fi
+echo "  Pi #8782 backport applied to Pi Web runtime"
+
 # Override pi-web PWA icons with PUI's improved version (white glyph on teal).
 # Setup-time asset override: re-applied on every install/update since npm
 # overwrites the package. Originals are backed up beside the files.
 PUI_ICONS_DIR="$SCRIPT_DIR/assets/icons"
 if [ -d "$PUI_ICONS_DIR" ]; then
-  PIWEB_PKG_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web" || true
   PIWEB_ICONS_DIR="$PIWEB_PKG_ROOT/public/icons"
   if [ -d "$PIWEB_ICONS_DIR" ]; then
     echo "  applying complete PUI icon set..."
@@ -255,10 +267,23 @@ for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPacka
 done
 node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI update extension install failed" >&2; G4=0; }
 
+ASK_GUIDANCE="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.askUserQuestion.guidance))' "$STACK")"
+if node_config set-owned-fields "$ASK_USER_CONFIG" guidance "$ASK_GUIDANCE" >/dev/null; then
+  echo "  ask-user-question guidance configured"
+else
+  echo "  ask-user-question guidance reconciliation failed" >&2; G4=0
+fi
+
+SUBAGENT_DEFAULT_MAPPINGS="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.subagents.modelMappings))' "$STACK")"
+if node_config reconcile-model-mappings "$PUI_SUBAGENTS_CONFIG" "$SUBAGENT_DEFAULT_MAPPINGS" >/dev/null; then
+  echo "  subagent fuzzy model mappings configured: $PUI_SUBAGENTS_CONFIG"
+else
+  echo "  subagent model mapping reconciliation failed" >&2; G4=0
+fi
+
 # PUI opinion: unlimited automatic /goal turns with a readable status line.
 # continuationLimits.automaticTurns = null removes the 25-response ceiling;
 # the dist patch rewrites formatStatus into "Goal: <status> · <reason> · <counter>".
-PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
 GOAL_CFG='{"continuationLimits":{"automaticTurns":null,"noProgressTurns":3}}'
 node_config merge-object "$PI_GOAL" "$GOAL_CFG" >/dev/null || { echo "  pi-goal settings merge failed" >&2; G4=0; }
 if ! node "$SCRIPT_DIR/lib/pui-goal-patch.js" apply >/dev/null 2>&1; then
@@ -273,16 +298,33 @@ if ! node "$SCRIPT_DIR/lib/pui-native-check.js" ensure "$PI_AGENT_DIR/npm" >/dev
   echo "  pi-background-tasks native (node-pty) binding could not be verified or rebuilt; install aborted. Install the required compiler toolchain and rerun install.sh." >&2
   G4=0
 fi
+# Replace the pinned package's verbose, overlapping model guidance with the
+# exact PUI-owned compact descriptions, snippets, schema text, and guidelines.
+if ! node "$SCRIPT_DIR/lib/pui-background-tasks-patch.js" apply >/dev/null 2>&1; then
+  echo "  pi-background-tasks compact prompt patch could not be applied (version or metadata drift); install aborted." >&2
+  G4=0
+else
+  echo "  pi-background-tasks compact model guidance applied"
+fi
+# Apply PUI's mapped subagent model defaults and parent reasoning inheritance.
+if ! node "$SCRIPT_DIR/lib/pui-subagents-patch.js" apply >/dev/null 2>&1; then
+  echo "  pi-subagents model policy patch could not be applied (version or metadata drift); install aborted." >&2
+  G4=0
+else
+  echo "  pi-subagents model policy applied"
+fi
 pi list 2>&1 | sed 's/^/    /' || true
 gate G4 "packages" "$G4"
 if [ "$G4" != "1" ]; then exit 1; fi
 
 # Configure pi-fff feature state: suppress startup notices while keeping
-# fuzzy path resolution, content search, and autocomplete active.
-PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
+# fuzzy path resolution, content search, and autocomplete active. Remove
+# retired custom agent tools from an existing PUI feature configuration.
 FFF_CFG="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({enabledFeatures:s.fff.enabledFeatures}))' "$STACK")"
-node_config merge-object "$PI_FFF_FEATURES" "$FFF_CFG" >/dev/null
-echo "  pi-fff feature state configured (startup notices disabled)"
+node_config merge-object "$PI_FFF_FEATURES" "$FFF_CFG" >/dev/null || { echo "  pi-fff feature state merge failed" >&2; exit 1; }
+FFF_RETIRED="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.fff.retiredFeatures||[]))' "$STACK")"
+node_config remove-array-items "$PI_FFF_FEATURES" enabledFeatures "$FFF_RETIRED" >/dev/null || { echo "  pi-fff retired feature removal failed" >&2; exit 1; }
+echo "  pi-fff feature state configured (startup notices disabled; custom agent tools disabled)"
 
 # ---- Phase 5: default tools (G5) ----
 write_phase 5 "native filesystem tools"

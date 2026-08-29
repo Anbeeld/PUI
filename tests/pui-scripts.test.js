@@ -93,7 +93,9 @@ test("Windows entry points stay open after running unless driven as a non-intera
     const content = read(file);
     assert.match(content, /function Wait-IfInteractive/, `${file}: Wait-IfInteractive helper`);
     assert.match(content, /PUI_NONINTERACTIVE/, `${file}: non-interactive guard`);
-    assert.match(content, /\} finally \{ Wait-IfInteractive \}/, `${file}: finally pause on every exit path`);
+    const lastFinally = content.lastIndexOf("} finally {");
+    assert.notEqual(lastFinally, -1, `${file}: outer finally present`);
+    assert.ok(content.indexOf("Wait-IfInteractive", lastFinally) !== -1, `${file}: finally pause on every exit path`);
   }
   const update = read("update.ps1");
   assert.match(update, /\$env:PUI_NONINTERACTIVE = "1"[\s\S]*& \$doctorScript/, "update.ps1 suppresses the pause for the doctor smoke-suite child");
@@ -102,11 +104,87 @@ test("Windows entry points stay open after running unless driven as a non-intera
 });
 
 test("both staged apply paths expose the same material failure-injection boundaries", () => {
-  const boundaries = ["package-reconciliation", "config-migration", "pi-web-integration", "extension-replacement", "restart-health", "target-validation"];
+  const boundaries = ["package-reconciliation", "config-migration", "pi-web-integration", "pi-8782-backport", "extension-replacement", "restart-health", "target-validation"];
   for (const file of ["update.ps1", "update.sh"]) {
     const content = read(file);
     for (const boundary of boundaries) assert.match(content, new RegExp(boundary), `${file}: ${boundary}`);
   }
+});
+
+test("Pi #8782 backport is applied at the Pi Web runtime seam and is fatal", () => {
+  for (const file of ["install.ps1", "install.sh", "update.ps1", "update.sh"]) {
+    const content = read(file);
+    const npmInstall = content.indexOf(file.endsWith(".ps1")
+      ? (file.startsWith("install") ? "installing @agegr/pi-web" : "updating @agegr/pi-web")
+      : "npm install -g --ignore-scripts");
+    const apply = content.indexOf("pui-pi-8782-backport.js");
+    const restart = content.indexOf(file.endsWith(".ps1") ? "restarting pi-web" : "restarting LaunchAgent");
+    assert.ok(npmInstall !== -1 && apply > npmInstall, `${file}: backport follows Pi Web installation`);
+    assert.ok(restart === -1 || apply < restart, `${file}: backport precedes Pi Web restart`);
+    assert.match(content, /pui-pi-8782-backport\.js/);
+    assert.doesNotMatch(content.slice(apply, apply + 700), /\|\| true|catch \{\s*\}/, `${file}: backport failure is not ignored`);
+  }
+  const shellInstall = read("install.sh");
+  assert.match(shellInstall, /pui-pi-8782-backport\.js" apply "\$SCRIPT_DIR" "\$PIWEB_PKG_ROOT"/);
+  const shellUpdate = read("update.sh");
+  const shellApply = shellUpdate.indexOf("pui-pi-8782-backport.js");
+  assert.match(shellUpdate, /pui-pi-8782-backport\.js" apply "\$SCRIPT_DIR" "\$PIWEB_PKG_ROOT"/);
+  assert.match(shellUpdate, /pui_fail pi-8782-backport/);
+  assert.ok(shellUpdate.indexOf("pui_fail pi-8782-backport") > shellApply, "update.sh: backport failure boundary follows application");
+  const psInstall = read("install.ps1");
+  assert.match(psInstall, /pui-pi-8782-backport\.js[\s\S]*apply \$ScriptDir \$piWebPkgRoot/);
+  const psUpdate = read("update.ps1");
+  const psApply = psUpdate.indexOf("pui-pi-8782-backport.js");
+  assert.match(psUpdate, /pui-pi-8782-backport\.js[\s\S]*apply \$ScriptDir \$piWebPkgRoot/);
+  assert.match(psUpdate, /Assert-NoInjectedFailure "pi-8782-backport"/);
+  assert.ok(psUpdate.indexOf('Assert-NoInjectedFailure "pi-8782-backport"') > psApply, "update.ps1: backport failure boundary follows application");
+});
+
+test("Pi Web artifact verifier extracts archives from its temporary working directory", () => {
+  const verifier = read("tests/verify-pi-web-integration.js");
+  assert.match(verifier, /spawnSync\("tar", \["-xf", archive, "-C", "\."\], \{ cwd: temp/);
+});
+
+test("Pi #8782 backport doctor and uninstall operations are symmetric", () => {
+  assert.match(read("doctor.sh"), /pui-pi-8782-backport\.js.*verify/);
+  assert.match(read("doctor.ps1"), /pui-pi-8782-backport\.js[\s\S]*verify[\s\S]*\$ScriptDir[\s\S]*\$piWebRoot/);
+  assert.match(read("uninstall.sh"), /pui-pi-8782-backport\.js" remove "\$PIWEB_ROOT"/);
+  assert.match(read("uninstall.ps1"), /pui-pi-8782-backport\.js[\s\S]*remove \$piWebRoot/);
+});
+
+test("introducing staged updates locally roll back all managed prompt artifacts", () => {
+  const powershell = read("update.ps1");
+  const psSnapshot = powershell.indexOf("snapshot $backgroundSnapshot");
+  const psPackages = powershell.indexOf("package-reconciliation");
+  const psGuard = powershell.indexOf("spawn-guard");
+  const psCommit = powershell.indexOf("$backgroundPatchCommitted = $true");
+  const psTarget = powershell.indexOf("target-validation");
+  const psSubagentSnapshot = powershell.indexOf("snapshot $subagentsSnapshot");
+  assert.ok(psSnapshot !== -1 && psSnapshot < psPackages, "update.ps1: background snapshot must precede package mutation");
+  assert.ok(psSubagentSnapshot !== -1 && psSubagentSnapshot < psPackages, "update.ps1: subagent snapshot must precede package mutation");
+  assert.ok(psGuard > psTarget && psCommit > psGuard, "update.ps1: outer-transaction guard must own the snapshot after target validation");
+  assert.match(powershell, /backgroundGuardExit -eq 76/, "update.ps1: checkpoint routes reuse one transaction guard");
+  assert.match(powershell, /guard-ready/, "update.ps1: guard startup must be acknowledged before return");
+  assert.match(powershell, /finally \{[\s\S]*restore-snapshot[\s\S]*Wait-IfInteractive\s*\}/, "update.ps1: failure finally restores prompt artifacts");
+
+  const shell = read("update.sh");
+  const shSnapshot = shell.indexOf('snapshot "$BACKGROUND_SNAPSHOT"');
+  const shPackages = shell.indexOf("package-reconciliation");
+  const shGuard = shell.indexOf("spawn-guard");
+  const shCommit = shell.indexOf("BACKGROUND_PATCH_COMMITTED=1");
+  const shTarget = shell.indexOf("target-validation");
+  const shSubagentSnapshot = shell.indexOf('snapshot "$SUBAGENTS_SNAPSHOT"');
+  assert.ok(shSnapshot !== -1 && shSnapshot < shPackages, "update.sh: background snapshot must precede package mutation");
+  assert.ok(shSubagentSnapshot !== -1 && shSubagentSnapshot < shPackages, "update.sh: subagent snapshot must precede package mutation");
+  assert.ok(shGuard > shTarget && shCommit > shGuard, "update.sh: outer-transaction guard must own the snapshot after target validation");
+  assert.match(shell, /BACKGROUND_GUARD_EXIT" -eq 76/, "update.sh: checkpoint routes reuse one transaction guard");
+  assert.match(shell, /guard-ready/, "update.sh: guard startup must be acknowledged before return");
+  assert.match(shell, /trap restore_background_patch_on_exit EXIT/, "update.sh: failure trap restores prompt artifacts");
+  assert.ok(powershell.indexOf("$subagentsPatchCommitted = $true") > psTarget, "update.ps1: subagents guard must own its snapshot after target validation");
+  assert.ok(shell.indexOf("SUBAGENTS_PATCH_COMMITTED=1") > shTarget, "update.sh: subagents guard must own its snapshot after target validation");
+  const subagentsPatch = fs.readFileSync(path.join(repoRoot, "lib", "pui-subagents-patch.js"), "utf8");
+  assert.match(subagentsPatch, /command === "guard-snapshot"/, "subagents guard exposes the guard-snapshot command");
+  assert.match(subagentsPatch, /writeFileSync\(path\.join\(stateDir, "guard-ready"\)/, "subagents guard writes its ready marker");
 });
 
 test("staged apply rechecks Pi Web idle immediately before stopping the server", () => {
@@ -220,6 +298,14 @@ test("MCP lifecycle paths apply and verify the hybrid Playwright tool policy", (
   for (const file of ["install.ps1", "install.sh", "doctor.ps1", "doctor.sh"]) {
     assert.match(read(file), /disableProxyTool/, `${file}: disabled proxy detection`);
   }
+});
+
+test("Windows install and update fail when a JSON backup fails", () => {
+  const install = read("install.ps1");
+  assert.match(install, /Invoke-NodeConfig -CfgArgs @\("backup", \$f\)[\s\S]*?\.exit -ne 0[\s\S]*?\$g2 = \$false/);
+
+  const update = read("update.ps1");
+  assert.match(update, /node \$Lib "backup" \$f[\s\S]*?\$LASTEXITCODE[\s\S]*?-ne 0[\s\S]*?exit 1/);
 });
 
 test("installers and updaters treat branding and icon failures as fatal", () => {

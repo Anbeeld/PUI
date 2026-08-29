@@ -125,6 +125,9 @@ $piAgentDir = Expand-Path $Stack.configPaths.piAgentDir
 $piSettings = Expand-Path $Stack.configPaths.piSettings
 $piWebAccess = Expand-Path $Stack.configPaths.piWebAccess
 $mcpShared = Expand-Path $Stack.configPaths.mcpShared
+$piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
+$piGoalSettings = Expand-Path $Stack.configPaths.piGoal
+$puiSubagentsConfig = Expand-Path $Stack.configPaths.puiSubagents
 
 # ----------------------------------------------------------------------------
 # Phase 1 — prerequisite detection (G1)
@@ -176,7 +179,13 @@ if (-not $g1) {
 # ----------------------------------------------------------------------------
 Write-Phase 2 "preserve existing state"
 $g2 = $true
-$filesToChange = @($piSettings, $piWebAccess, $mcpShared) | Select-Object -Unique
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { $askResolved = (& node $Lib "resolve-config-path" ([string]$Stack.configPaths.askUserQuestion) ([string]$Stack.askUserQuestion.configRelativePath) 2>&1 | Select-Object -Last 1); $askResolveExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+$askUserConfig = [string]($askResolved)
+$askUserConfig = $askUserConfig.Trim()
+if ($askResolveExit -ne 0 -or -not $askUserConfig) { Write-Host "  ask-user-question config path resolution failed: $askUserConfig" -ForegroundColor Red; exit 1 }
+$filesToChange = @($piSettings, $piWebAccess, $mcpShared, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig) | Select-Object -Unique
 foreach ($f in $filesToChange) {
   if (Test-Path $f) {
     # validate parse
@@ -187,13 +196,18 @@ foreach ($f in $filesToChange) {
       $g2 = $false
     } else {
       $bk = Invoke-NodeConfig -CfgArgs @("backup", $f)
-      Write-Host "  backed up: $($bk.out.Trim())"
+      if ($bk.exit -ne 0) {
+        Write-Host "  backup failed: $f — $($bk.out)" -ForegroundColor Red
+        $g2 = $false
+      } else {
+        Write-Host "  backed up: $($bk.out.Trim())"
+      }
     }
   }
 }
 Write-Gate G2 "preservation" $g2
 if (-not $g2) {
-  Write-Host "`nExisting JSON is invalid. Fix the reported files before re-running." -ForegroundColor Yellow
+  Write-Host "`nPreservation failed. Fix the reported JSON or backup error before re-running." -ForegroundColor Yellow
   exit 1
 }
 
@@ -266,14 +280,23 @@ if (-not (Test-Command pi)) {
 Write-Gate G3 "runtime parity" $g3
 if (-not $g3) { exit 1 }
 
+# Apply the temporary exact-version Pi #8782 runtime backport before any
+# restart. This is fatal: launching an unpatched PUI Pi Web is unsupported.
+$globalRoot = & npm root -g
+$piWebPkgRoot = Join-Path (Join-Path $globalRoot "@agegr") "pi-web"
+$backportScript = Join-Path $ScriptDir "lib\pui-pi-8782-backport.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $backportScript apply $ScriptDir $piWebPkgRoot 2>&1 | Out-Null; $backportExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($backportExit -ne 0) { Write-Host "  Pi #8782 backport could not be applied; install aborted" -ForegroundColor Red; exit 1 }
+Write-Host "  Pi #8782 backport applied to Pi Web runtime"
+
 # Override pi-web branding: improved icons, favicon, service worker cache-bust,
 # and PUI title/metadata. All setup-time, re-applied on update, restored on
 # uninstall. Failures are warned, not fatal.
 $puiIconsDir = Join-Path $ScriptDir "assets\icons"
 if (Test-Path $puiIconsDir) {
   try {
-    $globalRoot = & npm root -g
-    $piWebPkgRoot = Join-Path (Join-Path $globalRoot "@agegr") "pi-web"
     $piWebIconsDir = Join-Path $piWebPkgRoot "public\icons"
     if (Test-Path $piWebIconsDir) {
       Write-Host "  applying complete PUI icon set..."
@@ -339,10 +362,27 @@ $extensionScript = Join-Path $ScriptDir "lib\pui-update-extension.js"
 & node $extensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension install failed" -ForegroundColor Red; $g4 = $false }
 
+$askGuidance = $Stack.askUserQuestion.guidance | ConvertTo-Json -Depth 10 -Compress
+$askGuidanceFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($askGuidanceFile, $askGuidance, [System.Text.UTF8Encoding]::new($false))
+  $r = Invoke-NodeConfig -CfgArgs @("set-owned-fields", $askUserConfig, "guidance", "@$askGuidanceFile")
+} finally { Remove-Item $askGuidanceFile -Force -ErrorAction SilentlyContinue }
+if ($r.exit -ne 0) { Write-Host "  ask-user-question guidance reconciliation failed: $($r.out)" -ForegroundColor Red; $g4 = $false }
+else { Write-Host "  ask-user-question guidance configured" }
+
+$subagentDefaults = $Stack.subagents.modelMappings | ConvertTo-Json -Depth 10 -Compress
+$subagentDefaultsFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($subagentDefaultsFile, $subagentDefaults, [System.Text.UTF8Encoding]::new($false))
+  $r = Invoke-NodeConfig -CfgArgs @("reconcile-model-mappings", $puiSubagentsConfig, "@$subagentDefaultsFile")
+} finally { Remove-Item $subagentDefaultsFile -Force -ErrorAction SilentlyContinue }
+if ($r.exit -ne 0) { Write-Host "  subagent model mapping reconciliation failed: $($r.out)" -ForegroundColor Red; $g4 = $false }
+else { Write-Host "  subagent fuzzy model mappings configured: $puiSubagentsConfig" }
+
 # PUI opinion: unlimited automatic /goal turns with a readable status line.
 # continuationLimits.automaticTurns = null removes the 25-response ceiling;
 # the dist patch rewrites formatStatus into "Goal: <status> · <reason> · <counter>".
-$piGoalSettings = Expand-Path $Stack.configPaths.piGoal
 $goalCfg = '{"continuationLimits":{"automaticTurns":null,"noProgressTurns":3}}'
 $goalCfgFile = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllText($goalCfgFile, $goalCfg, [System.Text.UTF8Encoding]::new($false))
@@ -363,6 +403,18 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $nativeCheck ensure (Join-Path $piAgentDir "npm") 2>&1 | ForEach-Object { Write-Host "    $_" }; $nativeExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
 if ($nativeExit -ne 0) { Write-Host "  pi-background-tasks native (node-pty) binding could not be verified or rebuilt; install aborted. Install the required compiler toolchain and rerun install.ps1." -ForegroundColor Red; $g4 = $false }
+$backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $backgroundPatch apply 2>&1 | ForEach-Object { Write-Host "    $_" }; $backgroundPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($backgroundPatchExit -ne 0) { Write-Host "  pi-background-tasks compact prompt patch could not be applied (version or metadata drift); install aborted." -ForegroundColor Red; $g4 = $false }
+else { Write-Host "  pi-background-tasks compact model guidance applied" }
+$subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $subagentsPatch apply 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($subagentsPatchExit -ne 0) { Write-Host "  pi-subagents model policy patch could not be applied (version or metadata drift); install aborted." -ForegroundColor Red; $g4 = $false }
+else { Write-Host "  pi-subagents model policy applied" }
 # Verify packages are visible (pi list)
 $r = Invoke-Pi -PiArgs @("list")
 if ($r.exit -eq 0) {
@@ -375,14 +427,22 @@ Write-Gate G4 "packages" $g4
 if (-not $g4) { exit 1 }
 
 # Configure pi-fff feature state: suppress startup notices while keeping
-# fuzzy path resolution, content search, and autocomplete active.
-$piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
+# fuzzy path resolution, content search, and autocomplete active. Remove
+# retired custom agent tools from an existing PUI feature configuration.
 $fffCfg = @{ enabledFeatures = @($Stack.fff.enabledFeatures) } | ConvertTo-Json -Depth 10 -Compress
 $fffCfgFile = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllText($fffCfgFile, $fffCfg, [System.Text.UTF8Encoding]::new($false))
 $r = Invoke-NodeConfig -CfgArgs @("merge-object", $piFffFeatures, "@$fffCfgFile")
 Remove-Item $fffCfgFile -Force -ErrorAction SilentlyContinue
-Write-Host "  pi-fff feature state configured (startup notices disabled)"
+if ($r.exit -ne 0) { Write-Host "  pi-fff feature state merge failed: $($r.out)" -ForegroundColor Red; exit 1 }
+$fffRetired = ConvertTo-Json -InputObject @($Stack.fff.retiredFeatures) -Depth 10 -Compress
+$fffRetiredFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($fffRetiredFile, $fffRetired, [System.Text.UTF8Encoding]::new($false))
+  $r = Invoke-NodeConfig -CfgArgs @("remove-array-items", $piFffFeatures, "enabledFeatures", "@$fffRetiredFile")
+} finally { Remove-Item $fffRetiredFile -Force -ErrorAction SilentlyContinue }
+if ($r.exit -ne 0) { Write-Host "  pi-fff retired feature removal failed: $($r.out)" -ForegroundColor Red; exit 1 }
+Write-Host "  pi-fff feature state configured (startup notices disabled; custom agent tools disabled)"
 
 # ----------------------------------------------------------------------------
 # Phase 5 — Pi default tools (G5)

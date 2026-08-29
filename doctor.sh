@@ -18,6 +18,7 @@ node_version_ok() {
 FAILS=0
 MIN_NODE="$(jget minimumNode)"
 PIWEB_URL="$(jget piWeb.url)"
+PIWEB_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web"
 
 # ---- OS detection ----
 OS_TYPE="$(uname -s)"
@@ -52,8 +53,15 @@ if has_cmd pi-web; then
 else
   status_line "Pi Web version" "FAIL" "not on PATH"
 fi
+# Temporary Pi #8782 runtime backport used by Pi Web.
+if node "$SCRIPT_DIR/lib/pui-pi-8782-backport.js" verify "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null 2>&1; then
+  status_line "Pi #8782 backport" "PASS" "Pi Web runtime $(jget upstream.agentRuntime.version) patched"
+else
+  status_line "Pi #8782 backport" "FAIL" "missing or drifted"
+fi
 
 PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
+PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
 PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
 PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
@@ -68,8 +76,16 @@ pi list 2>&1 | grep -q rpiv-ask-user-question && status_line "package: rpiv-ask-
 pi list 2>&1 | grep -q pi-fff && status_line "package: pi-fff" "PASS" "" || status_line "package: pi-fff" "FAIL" ""
 pi list 2>&1 | grep -q pi-background-tasks && status_line "package: pi-background-tasks" "PASS" "" || status_line "package: pi-background-tasks" "FAIL" ""
 
+ASK_USER_CONFIG="$(node "$LIB" resolve-config-path "$(jget configPaths.askUserQuestion)" "$(jget askUserQuestion.configRelativePath)")"
+ASK_GUIDANCE="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.askUserQuestion.guidance))' "$STACK")"
+if node "$LIB" verify-owned-fields "$ASK_USER_CONFIG" guidance "$ASK_GUIDANCE" >/dev/null 2>&1; then
+  status_line "ask-user-question guidance" "PASS" "$ASK_USER_CONFIG"
+else
+  status_line "ask-user-question guidance" "FAIL" "missing or mismatched: $ASK_USER_CONFIG"
+fi
+
 PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
-[ -f "$PI_FFF_FEATURES" ] && node -e 'const f=require(process.argv[1]),s=require(process.argv[2]);if(!Array.isArray(f.enabledFeatures)||!s.fff.enabledFeatures.every(x=>f.enabledFeatures.includes(x)))process.exit(1)' "$PI_FFF_FEATURES" "$STACK" && status_line "fff feature state" "PASS" "startup notices disabled" || status_line "fff feature state" "WARN" "missing or incomplete"
+[ -f "$PI_FFF_FEATURES" ] && node -e 'const f=require(process.argv[1]),s=require(process.argv[2]),r=s.fff.retiredFeatures||[];if(!Array.isArray(f.enabledFeatures)||!s.fff.enabledFeatures.every(x=>f.enabledFeatures.includes(x))||r.some(x=>f.enabledFeatures.includes(x)))process.exit(1)' "$PI_FFF_FEATURES" "$STACK" && status_line "fff feature state" "PASS" "startup notices and custom agent tools disabled" || status_line "fff feature state" "WARN" "missing or incomplete"
 
 # pi-goal unlimited-turn configuration + status patch
 PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
@@ -94,14 +110,29 @@ if [ -f "$MCP_SHARED" ]; then
   node -e 'const m=require(process.argv[1]);process.exit(m.settings&&m.settings.mcpFooterStatus==="off"?0:1)' "$MCP_SHARED" 2>/dev/null && status_line "MCP footer status" "PASS" "mcpFooterStatus=off" || status_line "MCP footer status" "WARN" "footer status visible"
 fi
 
-# pi-background-tasks native (node-pty) binding
+# pi-background-tasks compact model guidance and native node-pty binding
+if node "$SCRIPT_DIR/lib/pui-background-tasks-patch.js" verify >/dev/null 2>&1; then
+  status_line "pi-background-tasks prompt" "PASS" "compact PUI guidance"
+else
+  status_line "pi-background-tasks prompt" "FAIL" "missing or drifted"
+fi
 if node "$SCRIPT_DIR/lib/pui-native-check.js" verify "$PI_AGENT_DIR/npm" >/dev/null 2>&1; then
   status_line "pi-background-tasks native" "PASS" "node-pty loads"
 else
   status_line "pi-background-tasks native" "FAIL" "node-pty binding missing"
 fi
+# pi-subagents mapped model and parent reasoning policy
+if node "$LIB" validate-model-mappings "$PUI_SUBAGENTS_CONFIG" >/dev/null 2>&1; then
+  status_line "subagent model mappings" "PASS" "$PUI_SUBAGENTS_CONFIG"
+else
+  status_line "subagent model mappings" "FAIL" "missing or invalid: $PUI_SUBAGENTS_CONFIG"
+fi
+if node "$SCRIPT_DIR/lib/pui-subagents-patch.js" verify >/dev/null 2>&1; then
+  status_line "subagent model policy" "PASS" "mapped model and parent reasoning"
+else
+  status_line "subagent model policy" "FAIL" "missing or drifted"
+fi
 node "$SCRIPT_DIR/lib/pui-update-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI installed identity" "PASS" "extension manifest" || status_line "PUI installed identity" "FAIL" "missing or mismatched"
-PIWEB_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web"
 node "$SCRIPT_DIR/lib/pui-web-integration.js" verify "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null 2>&1 && status_line "PUI update bridge" "PASS" "Pi Web $(jget upstream.gui.version)" || status_line "PUI update bridge" "FAIL" "missing or mismatched"
 
 AUTOSTART_REGISTERED=0

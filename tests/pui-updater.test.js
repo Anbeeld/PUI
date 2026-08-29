@@ -8,6 +8,8 @@ const repoRoot = path.resolve(__dirname, "..");
 const {
   chooseStableUpdate,
   detachedSpawnOptions,
+  backupBackgroundTaskFilesForStacks,
+  backupSubagentFilesForStacks,
   backupConfigFiles,
   backupConfigFilesForStacks,
   restoreConfigFiles,
@@ -48,6 +50,122 @@ test("checkpoint routes back up every distinct config surface once", (t) => {
 
   assert.deepEqual(new Set(backups.map((entry) => entry.file)), new Set([current, shared, checkpoint, target]));
   assert.equal(backups.filter((entry) => entry.file === shared).length, 1);
+});
+
+test("transaction backups include every managed JSON config surface", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-all-config-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const configPaths = Object.fromEntries(
+    ["piSettings", "piWebAccess", "mcpShared", "piFffFeatures", "piGoal", "askUserQuestion", "puiSubagents"]
+      .map((key) => [key, path.join(temp, `${key}.json`)]),
+  );
+  for (const file of Object.values(configPaths)) fs.writeFileSync(file, JSON.stringify({ file }));
+
+  const backups = backupConfigFiles({
+    configPaths,
+    askUserQuestion: { configRelativePath: "rpiv-ask-user-question/config.json" },
+  }, path.join(temp, "backups"));
+
+  assert.deepEqual(new Set(backups.map((entry) => entry.file)), new Set(Object.values(configPaths)));
+});
+
+test("transaction rollback restores the background-task bundle and ownership sidecars", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-background-transaction-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const npmRoot = path.join(temp, "npm");
+  const packageDir = path.join(npmRoot, "node_modules", "@99percentpeople", "pi-background-tasks");
+  const bundle = path.join(packageDir, "index.min.js");
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.writeFileSync(bundle, "original bundle");
+  const patch = {
+    packagePath: "node_modules/@99percentpeople/pi-background-tasks",
+    bundle: "index.min.js",
+    backupSuffix: ".pui-original",
+    manifestSuffix: ".pui-manifest.json",
+  };
+
+  const backups = backupBackgroundTaskFilesForStacks(
+    [{}, { backgroundTasksPromptPatch: patch }],
+    path.join(temp, "backups"),
+    npmRoot,
+  );
+  assert.deepEqual(backups.map((entry) => [path.basename(entry.file), entry.existed]), [
+    ["index.min.js", true],
+    ["index.min.js.pui-original", false],
+    ["index.min.js.pui-manifest.json", false],
+  ]);
+
+  fs.writeFileSync(bundle, "patched bundle");
+  fs.writeFileSync(`${bundle}.pui-original`, "original bundle");
+  fs.writeFileSync(`${bundle}.pui-manifest.json`, "owned");
+  restoreConfigFiles(backups);
+  assert.equal(fs.readFileSync(bundle, "utf8"), "original bundle");
+  assert.equal(fs.existsSync(`${bundle}.pui-original`), false);
+  assert.equal(fs.existsSync(`${bundle}.pui-manifest.json`), false);
+});
+
+test("transaction rollback restores subagent prompt files and ownership sidecars", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-subagents-transaction-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const npmRoot = path.join(temp, "npm");
+  const packageDir = path.join(npmRoot, "node_modules", "@gotgenes", "pi-subagents");
+  const relativeFiles = ["src/tools/agent-tool.ts", "src/config/default-agents.ts", "src/config/invocation-config.ts"];
+  for (const relative of relativeFiles) {
+    const file = path.join(packageDir, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `original ${relative}`);
+  }
+  const patch = {
+    packagePath: "node_modules/@gotgenes/pi-subagents",
+    files: relativeFiles,
+    backupSuffix: ".pui-original",
+    manifest: ".pui-subagents-prompt-manifest.json",
+  };
+
+  const backups = backupSubagentFilesForStacks(
+    [{}, { subagentsPromptPatch: patch }],
+    path.join(temp, "backups"),
+    npmRoot,
+  );
+  assert.equal(backups.length, 7);
+  assert.equal(backups.filter((entry) => entry.existed).length, 3);
+
+  for (const relative of relativeFiles) {
+    const file = path.join(packageDir, relative);
+    fs.writeFileSync(file, `patched ${relative}`);
+    fs.writeFileSync(`${file}.pui-original`, `original ${relative}`);
+  }
+  fs.writeFileSync(path.join(packageDir, patch.manifest), "owned");
+  restoreConfigFiles(backups);
+  for (const relative of relativeFiles) {
+    const file = path.join(packageDir, relative);
+    assert.equal(fs.readFileSync(file, "utf8"), `original ${relative}`);
+    assert.equal(fs.existsSync(`${file}.pui-original`), false);
+  }
+  assert.equal(fs.existsSync(path.join(packageDir, patch.manifest)), false);
+});
+
+test("transaction backup follows XDG_CONFIG_HOME for ask-user guidance", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-xdg-config-"));
+  const previous = process.env.XDG_CONFIG_HOME;
+  t.after(() => {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous;
+    fs.rmSync(temp, { recursive: true, force: true });
+  });
+  process.env.XDG_CONFIG_HOME = path.join(temp, "xdg");
+  const actual = path.join(process.env.XDG_CONFIG_HOME, "rpiv-ask-user-question", "config.json");
+  fs.mkdirSync(path.dirname(actual), { recursive: true });
+  fs.writeFileSync(actual, JSON.stringify({ guidance: { existing: true } }));
+
+  const backups = backupConfigFiles({
+    configPaths: { askUserQuestion: path.join(temp, "fallback.json") },
+    askUserQuestion: { configRelativePath: "rpiv-ask-user-question/config.json" },
+  }, path.join(temp, "backups"));
+
+  assert.equal(backups.length, 1);
+  assert.equal(backups[0].file, path.resolve(actual));
+  assert.equal(backups[0].existed, true);
 });
 
 test("rollback script environment clears target failure injection", () => {
@@ -248,7 +366,7 @@ test("rollback validation failure is recovery-required", async () => {
 });
 
 test("every material post-mutation boundary restores the previous certified release", async () => {
-  for (const boundary of ["package-reconciliation", "config-migration", "pi-web-integration", "extension-replacement", "restart-health", "target-validation"]) {
+  for (const boundary of ["package-reconciliation", "config-migration", "pi-web-integration", "pi-8782-backport", "extension-replacement", "restart-health", "target-validation"]) {
     let restored = false;
     const result = await runTransaction({
       current: "1.0.0",

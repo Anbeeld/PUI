@@ -28,6 +28,10 @@ jobs:
           fi
       - name: Verify exact Pi Web integration fixture
         run: npm run release:verify-pi-web
+      - name: "Verify exact Pi #8782 runtime backport artifact"
+        run: npm run release:verify-pi-8782
+      - name: Verify exact published prompt patch artifacts
+        run: npm run release:verify-prompt-patches
 
   windows-static:
     name: Windows static checks

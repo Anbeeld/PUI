@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 
 const repoRoot = path.resolve(__dirname, "..");
 const {
@@ -14,7 +15,7 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.1.1");
+  assert.equal(release.version, "1.1.2");
   for (const spec of Object.values(release.managed)) {
     assert.match(spec, /@\d+\.\d+\.\d+$/);
     assert.doesNotMatch(spec, /@latest$/);
@@ -28,6 +29,60 @@ test("release validation rejects rolling managed versions", () => {
   const mismatched = loadRelease(repoRoot);
   mismatched.stack.piPackages[0] = "npm:@gotgenes/pi-subagents@99.0.0";
   assert.match(validateRelease(mismatched).join("\n"), /piPackages.*upstream/i);
+  const invalidPromptPatch = loadRelease(repoRoot);
+  invalidPromptPatch.stack.backgroundTasksPromptPatch.bundle = "other.js";
+  assert.match(validateRelease(invalidPromptPatch).join("\n"), /backgroundTasksPromptPatch.*bundle/i);
+  const invalidSubagentsPatch = loadRelease(repoRoot);
+  invalidSubagentsPatch.stack.subagentsPromptPatch.files = ["other.ts"];
+  assert.match(validateRelease(invalidSubagentsPatch).join("\n"), /subagentsPromptPatch.*files/i);
+  for (const files of [["src/../../outside.ts"], ["src/tools\\..\\..\\outside.ts"], ["src/tools/agent-tool.ts", "src/tools/agent-tool.ts"]]) {
+    const unsafeSubagentsPatch = loadRelease(repoRoot);
+    unsafeSubagentsPatch.stack.subagentsPromptPatch.files = files;
+    assert.match(validateRelease(unsafeSubagentsPatch).join("\n"), /subagentsPromptPatch.*files/i);
+  }
+  const invalidSubagentsMapping = loadRelease(repoRoot);
+  invalidSubagentsMapping.stack.subagents.modelMappings = { sol: 42 };
+  assert.match(validateRelease(invalidSubagentsMapping).join("\n"), /subagents\.modelMappings.*string/i);
+});
+
+test("active releases require the Pi #8782 backport helper", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-backport-release-files-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const release = loadRelease(repoRoot);
+  release.repoRoot = temp;
+  const errors = validateRelease(release).join("\n");
+  assert.match(errors, /missing required release file lib\/pui-pi-8782-backport\.js/);
+  assert.match(errors, /missing required release file tests\/verify-pi-8782-backport\.js/);
+});
+
+test("release validation permits future prompt revisions with the stable ownership schema", () => {
+  const future = loadRelease(repoRoot);
+  future.version = "1.1.3";
+  future.stack.backgroundTasksPromptPatch.revision = 2;
+  future.stack.subagentsPromptPatch.revision = 5;
+  assert.deepEqual(validateRelease(future), []);
+});
+
+test("release validation remains compatible with pre-patch historical releases", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-historical-release-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const historical = loadRelease(repoRoot);
+  historical.version = "1.1.1";
+  historical.repoRoot = temp;
+  delete historical.stack.backgroundTasksPromptPatch;
+  delete historical.stack.subagentsPromptPatch;
+  const historicalFiles = [
+    "install.ps1", "install.sh", "update.ps1", "update.sh", "doctor.ps1", "doctor.sh", "uninstall.ps1", "uninstall.sh",
+    "lib/pui-updater.js", "lib/pui-update-extension.js", "lib/pui-web-integration.js", "lib/pui-update-bridge.cjs", "lib/pui-goal-patch.js", "lib/pui-native-check.js",
+    "extensions/pui-update/index.ts", "assets/pui-update-client.js",
+  ];
+  for (const file of historicalFiles) {
+    const target = path.join(temp, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "fixture");
+  }
+
+  assert.deepEqual(validateRelease(historical), []);
 });
 
 test("upgrade routes follow explicit checkpoints and reject cycles", async () => {
@@ -56,9 +111,13 @@ test("version comparison is monotonic", () => {
   assert.throws(() => compareVersions("latest", "1.0.0"), /semantic version/i);
 });
 
-test("CI validates the release manifest and tag/version agreement", () => {
+test("CI validates release metadata and exact managed prompt artifacts", () => {
   const workflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "tests.yml"), "utf8");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
   assert.match(workflow, /npm run release:validate/);
   assert.match(workflow, /GITHUB_REF_TYPE/);
   assert.match(workflow, /package\.json/);
+  assert.equal(packageJson.scripts["release:verify-prompt-patches"], "node tests/verify-prompt-patches.js");
+  assert.match(workflow, /npm run release:verify-prompt-patches/);
+  assert.equal(fs.existsSync(path.join(repoRoot, "tests", "verify-prompt-patches.js")), true);
 });

@@ -64,6 +64,14 @@ if (Test-Command pi-web) {
   Status "runtime parity" $(if ($piVer -eq [string]$Stack.upstream.agentRuntime.version -and $pwCAN -eq [string]$Stack.upstream.agentRuntime.version) { "PASS" } else { "FAIL" }) "pi=$piVer pi-web=$pwCAN expected=$($Stack.upstream.agentRuntime.version)"
 } else { Status "Pi Web version" "FAIL" "pi-web not on PATH"; Status "Pi Web-resolved Pi" "NOT CHECKED" ""; Status "runtime parity" "NOT CHECKED" "" }
 
+# Temporary Pi #8782 runtime backport used by Pi Web.
+$piWebRoot = if (Test-Command npm) { Join-Path (Join-Path (& npm root -g) "@agegr") "pi-web" } else { "" }
+$backportScript = Join-Path $ScriptDir "lib\pui-pi-8782-backport.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $backportScript verify $ScriptDir $piWebRoot 2>&1 | Out-Null; $backportExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+Status "Pi #8782 backport" $(if ($backportExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($backportExit -eq 0) { "Pi Web runtime $($Stack.upstream.agentRuntime.version) patched" } else { "missing or drifted" })
+
 # Pi package presence
 $piAgentDir = Expand-Path $Stack.configPaths.piAgentDir
 $piSettings = Expand-Path $Stack.configPaths.piSettings
@@ -78,12 +86,26 @@ try {
   }
 } catch { foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","pi-usage","rpiv-ask-user-question","pi-fff","pi-background-tasks")) { Status "package: $p" "NOT CHECKED" "" } }
 
+$askUserConfig = [string](& node $Lib "resolve-config-path" ([string]$Stack.configPaths.askUserQuestion) ([string]$Stack.askUserQuestion.configRelativePath) 2>&1 | Select-Object -Last 1)
+$askUserConfig = $askUserConfig.Trim()
+$askGuidance = $Stack.askUserQuestion.guidance | ConvertTo-Json -Depth 10 -Compress
+$askGuidanceFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($askGuidanceFile, $askGuidance, [System.Text.UTF8Encoding]::new($false))
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $Lib "verify-owned-fields" $askUserConfig "guidance" "@$askGuidanceFile" 2>&1 | Out-Null; $askGuidanceExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+} finally { Remove-Item $askGuidanceFile -Force -ErrorAction SilentlyContinue }
+Status "ask-user-question guidance" $(if ($askGuidanceExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($askGuidanceExit -eq 0) { $askUserConfig } else { "missing or mismatched: $askUserConfig" })
+
 # pi-fff feature state
 $piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
 if (Test-Path $piFffFeatures) {
   $fff = Get-Content $piFffFeatures -Raw | ConvertFrom-Json
   $allPresent = ($Stack.fff.enabledFeatures | Where-Object { $fff.enabledFeatures -notcontains $_ }).Count -eq 0
-  Status "fff feature state" $(if ($allPresent) { "PASS" } else { "WARN" }) $(if ($allPresent) { "startup notices disabled" } else { "incomplete" })
+  $retiredPresent = ($Stack.fff.retiredFeatures | Where-Object { $fff.enabledFeatures -contains $_ }).Count -gt 0
+  $allPresent = $allPresent -and -not $retiredPresent
+  Status "fff feature state" $(if ($allPresent) { "PASS" } else { "WARN" }) $(if ($allPresent) { "startup notices and custom agent tools disabled" } else { "incomplete" })
 } else { Status "fff feature state" "WARN" "missing" }
 
 # pi-goal unlimited-turn configuration + status patch
@@ -128,11 +150,24 @@ if (Test-Path $mcpShared) {
   Status "MCP footer status" $(if ($footerOff) { "PASS" } else { "WARN" }) $(if ($footerOff) { "mcpFooterStatus=off" } else { "footer status visible" })
 } else { Status "Playwright MCP" "WARN" "mcp.json missing" }
 
-# pi-background-tasks native (node-pty) binding
+# pi-background-tasks compact model guidance and native node-pty binding
+$backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $backgroundPatch verify 2>&1 | Out-Null; $backgroundPatchExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+Status "pi-background-tasks prompt" $(if ($backgroundPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($backgroundPatchExit -eq 0) { "compact PUI guidance" } else { "missing or drifted" })
 $nativeCheck = Join-Path $ScriptDir "lib\pui-native-check.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $nativeCheck verify (Join-Path $piAgentDir "npm") 2>&1 | Out-Null; $nativeExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
 Status "pi-background-tasks native" $(if ($nativeExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($nativeExit -eq 0) { "node-pty loads" } else { "node-pty binding missing" })
+# pi-subagents mapped model and parent reasoning policy
+$puiSubagentsConfig = Expand-Path $Stack.configPaths.puiSubagents
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $Lib "validate-model-mappings" $puiSubagentsConfig 2>&1 | Out-Null; $subagentConfigExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+Status "subagent model mappings" $(if ($subagentConfigExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($subagentConfigExit -eq 0) { $puiSubagentsConfig } else { "missing or invalid: $puiSubagentsConfig" })
+$subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $subagentsPatch verify 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+Status "subagent model policy" $(if ($subagentsPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($subagentsPatchExit -eq 0) { "mapped model and parent reasoning" } else { "missing or drifted" })
 
 # Pi Web health
 try {
@@ -144,7 +179,6 @@ try {
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") verify $ScriptDir 2>$null | Out-Null
 Status "PUI installed identity" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "extension manifest"
 if (Test-Command npm) {
-  $piWebRoot = Join-Path (Join-Path (& npm root -g) "@agegr") "pi-web"
   & node (Join-Path $ScriptDir "lib\pui-web-integration.js") verify $ScriptDir $piWebRoot 2>$null | Out-Null
   Status "PUI update bridge" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "Pi Web $($Stack.upstream.gui.version)"
 }

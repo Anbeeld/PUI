@@ -38,7 +38,7 @@ test("documented upstream versions match stack package count", () => {
   assert.match(content, /`@99percentpeople\/pi-background-tasks` \| 2\.1\.1/);
 });
 
-test("v1.1.1 documentation describes every added managed extension", () => {
+test("v1.1.2 documentation describes every added managed extension", () => {
   const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
   const components = fs.readFileSync(path.join(repoRoot, "docs", "components.md"), "utf8");
   const changelog = fs.readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf8");
@@ -49,7 +49,8 @@ test("v1.1.1 documentation describes every added managed extension", () => {
     assert.match(changelog, new RegExp(packageName.replace("/", "\\/")), `CHANGELOG.md: ${packageName}`);
   }
   for (const content of [readme, components, changelog]) assert.doesNotMatch(content, /pi-permission-system/);
-  assert.match(changelog, /^# Changelog\s+## v1\.1\.1/m);
+  assert.match(changelog, /^# Changelog\s+## v1\.1\.2/m);
+  assert.match(changelog, /disabled.*pi-fff.*agentTools/i);
   assert.match(changelog, /^## v1\.0\.4$/m);
 });
 
@@ -67,13 +68,56 @@ test("documentation describes usage tracking", () => {
   }
 });
 
-test("documentation describes native background-task recovery", () => {
+test("documentation describes PUI-managed structured-question guidance", () => {
+  const components = fs.readFileSync(path.join(repoRoot, "docs", "components.md"), "utf8");
+  const changelog = fs.readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf8");
+  assert.match(components, /~\/\.config\/rpiv-ask-user-question\/config\.json/);
+  assert.match(components, /guidance\.(?:description|promptSnippet|promptGuidelines)/);
+  assert.match(components, /uninstall.*exact.*managed.*guidance/i);
+  assert.match(changelog, /structured-question guidance/i);
+});
+
+test("documentation describes configurable fuzzy subagent mappings and update preservation", () => {
+  const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
+  const components = fs.readFileSync(path.join(repoRoot, "docs/components.md"), "utf8");
+  const changelog = fs.readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf8");
+  for (const content of [readme, components, changelog]) {
+    assert.match(content, /~\/\.config\/pui\/subagents\.json/);
+    assert.match(content, /fuzzy/i);
+  }
+  assert.match(components, /_pui\.defaultMappings/);
+  assert.match(components, /changed or deleted is preserved/i);
+  assert.match(changelog, /without restoring mappings the user deleted/i);
+});
+
+test("documentation describes the owned background-task prompt patch and native recovery", () => {
   const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
   const components = fs.readFileSync(path.join(repoRoot, "docs", "components.md"), "utf8");
   const changelog = fs.readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf8");
+  assert.match(readme, /background-tasks[\s\S]*node-pty.*during install and update/i);
   assert.match(readme, /node-pty.*during install and update/i);
+  assert.match(components, /27 overlapping prompt guidelines/);
+  assert.match(components, /index\.min\.js\.pui-original/);
+  assert.match(components, /index\.min\.js\.pui-manifest\.json/);
+  assert.match(components, /update transactions back up the bundle, original, and ownership manifest/i);
+  assert.match(components, /uninstall restores.*only while.*PUI-owned/i);
   assert.match(components, /node-pty.*approve\/rebuild/i);
+  assert.match(changelog, /background-tasks.*27 overlapping system-prompt guidelines/i);
   assert.match(changelog, /node-pty.*fail closed/i);
+});
+
+test("documentation describes the temporary Pi #8782 Pi Web-only backport", () => {
+  const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
+  const agents = fs.readFileSync(path.join(repoRoot, "AGENTS.md"), "utf8");
+  const components = fs.readFileSync(path.join(repoRoot, "docs", "components.md"), "utf8");
+  const verification = fs.readFileSync(path.join(repoRoot, "docs", "upstream-verification.md"), "utf8");
+  const changelog = fs.readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf8");
+  assert.match(readme, /Pi #8782|standalone.*stock.*Pi Web/i);
+  assert.match(agents, /pui-pi-8782-backport\.js[\s\S]*temporary[\s\S]*retir/i);
+  assert.match(components, /pui-pi-8782-backport\.js/);
+  assert.match(components, /standalone.*stock.*0\.84\.3.*Pi Web/i);
+  assert.match(verification, /Pi #8782 backport/);
+  assert.match(changelog, /Pi #8782.*temporary/i);
 });
 
 test("documentation describes the hybrid Playwright MCP policy", () => {

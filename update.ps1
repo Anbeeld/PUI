@@ -37,13 +37,52 @@ $piAgentDir = Expand-Path $Stack.configPaths.piAgentDir
 $piWebAccess = Expand-Path $Stack.configPaths.piWebAccess
 $mcpShared = Expand-Path $Stack.configPaths.mcpShared
 $piSettings = Expand-Path $Stack.configPaths.piSettings
+$piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
+$piGoalSettings = Expand-Path $Stack.configPaths.piGoal
+$puiSubagentsConfig = Expand-Path $Stack.configPaths.puiSubagents
+$askUserConfig = (& node $Lib "resolve-config-path" ([string]$Stack.configPaths.askUserQuestion) ([string]$Stack.askUserQuestion.configRelativePath) 2>&1 | Select-Object -Last 1).ToString().Trim()
+if ($LASTEXITCODE -ne 0) { Write-Host "  ask-user-question config path resolution failed" -ForegroundColor Red; exit 1 }
+
+# The installed transaction worker may predate this patch. Keep a target-script
+# snapshot so an introducing update can still restore these non-JSON artifacts.
+$backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
+$backgroundSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-background-task-" + [guid]::NewGuid().ToString("N"))
+$backgroundPatchCommitted = $false
+New-Item -ItemType Directory -Path $backgroundSnapshot -Force | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $backgroundPatch snapshot $backgroundSnapshot 2>&1 | Out-Null; $backgroundSnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($backgroundSnapshotExit -ne 0) {
+  Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  $backgroundSnapshot = $null
+  Write-Host "  could not snapshot pi-background-tasks prompt artifacts; update aborted" -ForegroundColor Red
+  exit 1
+}
+$subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
+$subagentsSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-subagents-" + [guid]::NewGuid().ToString("N"))
+$subagentsPatchCommitted = $false
+New-Item -ItemType Directory -Path $subagentsSnapshot -Force | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $subagentsPatch snapshot $subagentsSnapshot 2>&1 | Out-Null; $subagentsSnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($subagentsSnapshotExit -ne 0) {
+  Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $subagentsSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Write-Host "  could not snapshot pi-subagents prompt artifacts; update aborted" -ForegroundColor Red
+  exit 1
+}
 
 $backupFiles = @()
-foreach ($f in @($piWebAccess, $mcpShared, $piSettings) | Where-Object { Test-Path $_ }) {
+foreach ($f in @($piWebAccess, $mcpShared, $piSettings, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig) | Where-Object { Test-Path $_ }) {
   $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-  try { $bk = (& node $Lib "backup" $f 2>&1 | Select-Object -Last 1) } finally { $ErrorActionPreference = $prev }
-  Write-Host "  backed up: $($bk.Trim())"
-  $backupFiles += $bk.Trim()
+  try {
+    $bkOutput = & node $Lib "backup" $f 2>&1
+    $bkExit = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $prev }
+  if ($bkExit -ne 0) { Write-Host "  backup failed: $f — $($bkOutput -join ' ')" -ForegroundColor Red; exit 1 }
+  $bk = ($bkOutput | Select-Object -Last 1).ToString().Trim()
+  Write-Host "  backed up: $bk"
+  $backupFiles += $bk
 }
 
 # 2. update pi-web
@@ -153,12 +192,22 @@ if ($piWebCodingAgentVer -and $piCur -ne $piWebCodingAgentVer) {
   Write-Host "  standalone pi already at $piWebCodingAgentVer"
 }
 
+# Apply the temporary exact-version Pi #8782 runtime backport before any
+# restart. This is fatal: an unpatched PUI Pi Web is unsupported.
+$globalRoot = & npm root -g
+$piWebPkgRoot = Join-Path (Join-Path $globalRoot "@agegr") "pi-web"
+$backportScript = Join-Path $ScriptDir "lib\pui-pi-8782-backport.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $backportScript apply $ScriptDir $piWebPkgRoot 2>&1 | Out-Null; $backportExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($backportExit -ne 0) { Write-Host "  Pi #8782 backport could not be applied; update aborted" -ForegroundColor Red; exit 1 }
+Assert-NoInjectedFailure "pi-8782-backport"
+Write-Host "  Pi #8782 backport applied to Pi Web runtime"
+
 # Re-apply PUI icon override (npm update overwrites the package files).
 $puiIconsDir = Join-Path $ScriptDir "assets\icons"
 if (Test-Path $puiIconsDir) {
   try {
-    $globalRoot = & npm root -g
-    $piWebPkgRoot = Join-Path (Join-Path $globalRoot "@agegr") "pi-web"
     $piWebIconsDir = Join-Path $piWebPkgRoot "public\icons"
     if (Test-Path $piWebIconsDir) {
       Write-Host "  re-applying complete PUI icon set..."
@@ -225,8 +274,30 @@ foreach ($spec in @($Stack.piPackages)) {
 }
 Assert-NoInjectedFailure "package-reconciliation"
 
-# Reconcile pi-fff feature state: suppress startup notices.
-$piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
+$askGuidance = $Stack.askUserQuestion.guidance | ConvertTo-Json -Depth 10 -Compress
+$askGuidanceFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($askGuidanceFile, $askGuidance, [System.Text.UTF8Encoding]::new($false))
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $Lib "set-owned-fields" $askUserConfig "guidance" "@$askGuidanceFile" 2>&1 | Out-Null; $askGuidanceExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+} finally { Remove-Item $askGuidanceFile -Force -ErrorAction SilentlyContinue }
+if ($askGuidanceExit -ne 0) { Write-Host "  ask-user-question guidance reconciliation failed" -ForegroundColor Red; exit 1 }
+Write-Host "  ask-user-question guidance reconciled"
+
+$subagentDefaults = $Stack.subagents.modelMappings | ConvertTo-Json -Depth 10 -Compress
+$subagentDefaultsFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($subagentDefaultsFile, $subagentDefaults, [System.Text.UTF8Encoding]::new($false))
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $Lib "reconcile-model-mappings" $puiSubagentsConfig "@$subagentDefaultsFile" 2>&1 | Out-Null; $subagentConfigExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+} finally { Remove-Item $subagentDefaultsFile -Force -ErrorAction SilentlyContinue }
+if ($subagentConfigExit -ne 0) { Write-Host "  subagent model mapping reconciliation failed" -ForegroundColor Red; exit 1 }
+Write-Host "  subagent fuzzy model mappings reconciled: $puiSubagentsConfig"
+
+# Reconcile pi-fff feature state: suppress startup notices while keeping
+# PUI's fuzzy features active, and remove retired custom agent tools.
 $fffCfg = @{ enabledFeatures = @($Stack.fff.enabledFeatures) } | ConvertTo-Json -Depth 10 -Compress
 $fffCfgFile = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllText($fffCfgFile, $fffCfg, [System.Text.UTF8Encoding]::new($false))
@@ -234,10 +305,18 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $Lib "merge-object" $piFffFeatures "@$fffCfgFile" 2>&1 | Out-Null; $fffExit = $LASTEXITCODE }
 finally { Remove-Item $fffCfgFile -Force -ErrorAction SilentlyContinue; $ErrorActionPreference = $prev }
 if ($fffExit -ne 0) { Write-Host "  pi-fff feature state reconciliation failed" -ForegroundColor Red; exit 1 }
-Write-Host "  pi-fff feature state reconciled (startup notices disabled)"
+$fffRetired = ConvertTo-Json -InputObject @($Stack.fff.retiredFeatures) -Depth 10 -Compress
+$fffRetiredFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($fffRetiredFile, $fffRetired, [System.Text.UTF8Encoding]::new($false))
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $Lib "remove-array-items" $piFffFeatures "enabledFeatures" "@$fffRetiredFile" 2>&1 | Out-Null; $fffRetiredExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+} finally { Remove-Item $fffRetiredFile -Force -ErrorAction SilentlyContinue }
+if ($fffRetiredExit -ne 0) { Write-Host "  pi-fff retired feature removal failed" -ForegroundColor Red; exit 1 }
+Write-Host "  pi-fff feature state reconciled (startup notices disabled; custom agent tools disabled)"
 
 # Reconcile pi-goal settings: unlimited automatic turns with a readable status line.
-$piGoalSettings = Expand-Path $Stack.configPaths.piGoal
 $goalCfg = '{"continuationLimits":{"automaticTurns":null,"noProgressTurns":3}}'
 $goalCfgFile = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllText($goalCfgFile, $goalCfg, [System.Text.UTF8Encoding]::new($false))
@@ -258,6 +337,16 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $nativeCheck ensure (Join-Path $piAgentDir "npm") 2>&1 | Out-Null; $nativeExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
 if ($nativeExit -ne 0) { Write-Host "  pi-background-tasks native (node-pty) binding could not be verified or rebuilt; update aborted. Install the required compiler toolchain and rerun update.ps1." -ForegroundColor Red; exit 1 }
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $backgroundPatch apply 2>&1 | Out-Null; $backgroundPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($backgroundPatchExit -ne 0) { Write-Host "  pi-background-tasks compact prompt patch could not be applied (version or metadata drift); update aborted." -ForegroundColor Red; exit 1 }
+Write-Host "  pi-background-tasks compact model guidance applied"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $subagentsPatch apply 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($subagentsPatchExit -ne 0) { Write-Host "  pi-subagents model policy patch could not be applied (version or metadata drift); update aborted." -ForegroundColor Red; exit 1 }
+Write-Host "  pi-subagents model policy applied"
 
 Write-Host "  reconciling managed Playwright MCP..."
 $mcpDef = [ordered]@{
@@ -368,6 +457,61 @@ if ($doctorExit -ne 0) {
   exit 1
 }
 Assert-NoInjectedFailure "target-validation"
+$puiVersion = (Get-Content (Join-Path $ScriptDir "package.json") -Raw | ConvertFrom-Json).version
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $backgroundPatch spawn-guard $backgroundSnapshot $puiVersion 2>&1 | Out-Null; $backgroundGuardExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($backgroundGuardExit -eq 75 -or $backgroundGuardExit -eq 76) {
+  # A direct staged apply has no outer validation; a checkpoint route already
+  # has one transaction-level guard retaining the original snapshot.
+  $backgroundPatchCommitted = $true
+  Remove-Item $backgroundSnapshot -Recurse -Force
+  $backgroundSnapshot = $null
+} elseif ($backgroundGuardExit -ne 0) {
+  throw "Could not start the outer-transaction background prompt rollback guard"
+} else {
+  $backgroundGuardReady = Join-Path $backgroundSnapshot "guard-ready"
+  for ($guardWait = 0; $guardWait -lt 50 -and -not (Test-Path $backgroundGuardReady); $guardWait += 1) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path $backgroundGuardReady)) { throw "Background prompt rollback guard did not become ready" }
+  $backgroundPatchCommitted = $true
+}
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $subagentsPatch spawn-guard $subagentsSnapshot $puiVersion 2>&1 | Out-Null; $subagentsGuardExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($subagentsGuardExit -eq 75 -or $subagentsGuardExit -eq 76) {
+  # A direct staged apply has no outer validation; a checkpoint route already
+  # has one transaction-level guard retaining the original snapshot.
+  $subagentsPatchCommitted = $true
+  Remove-Item $subagentsSnapshot -Recurse -Force
+  $subagentsSnapshot = $null
+} elseif ($subagentsGuardExit -ne 0) {
+  throw "Could not start the outer-transaction subagents prompt rollback guard"
+} else {
+  $subagentsGuardReady = Join-Path $subagentsSnapshot "guard-ready"
+  for ($guardWait = 0; $guardWait -lt 50 -and -not (Test-Path $subagentsGuardReady); $guardWait += 1) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path $subagentsGuardReady)) { throw "Subagents prompt rollback guard did not become ready" }
+  $subagentsPatchCommitted = $true
+}
 
 Write-Host "`nUpdate complete: all doctor checks passed." -ForegroundColor Green
-} finally { Wait-IfInteractive }
+} finally {
+  if ($subagentsSnapshot -and -not $subagentsPatchCommitted) {
+    $subagentsSnapshotResolved = $false
+    $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $subagentsPatch restore-snapshot $subagentsSnapshot 2>&1 | Out-Null; $subagentsRestoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($subagentsRestoreExit -eq 0) { $subagentsSnapshotResolved = $true }
+    else { Write-Host "  FAILED to restore pi-subagents prompt artifacts; recovery snapshot retained at $subagentsSnapshot" -ForegroundColor Red }
+    if ($subagentsSnapshotResolved) { Remove-Item $subagentsSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  if ($backgroundSnapshot -and -not $backgroundPatchCommitted) {
+    $backgroundSnapshotResolved = $false
+    $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $backgroundPatch restore-snapshot $backgroundSnapshot 2>&1 | Out-Null; $backgroundRestoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($backgroundRestoreExit -eq 0) { $backgroundSnapshotResolved = $true }
+    else { Write-Host "  FAILED to restore pi-background-tasks prompt artifacts; recovery snapshot retained at $backgroundSnapshot" -ForegroundColor Red }
+    if ($backgroundSnapshotResolved) { Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  Wait-IfInteractive
+}
