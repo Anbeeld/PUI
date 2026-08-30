@@ -20,7 +20,50 @@ const {
   manualUpdateGuidance,
   piWebIdle,
   piWebLaunchSpec,
+  readCertifiedManifest,
 } = require(path.join(repoRoot, "lib", "pui-updater.js"));
+
+function certifiedManifest(root, files = { "updater.js": "placeholder" }) {
+  const core = { owner: "PUI", schemaVersion: 1, puiVersion: "1.0.0", managed: {}, files };
+  return { ...core, identityHash: require("node:crypto").createHash("sha256").update(JSON.stringify(core)).digest("hex") };
+}
+
+test("certified manifest accepts a valid installed updater identity", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-manifest-valid-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const hashes = {};
+  for (const name of ["index.ts", "updater.js", "pui-release.js", "pui-config.js"]) {
+    const file = path.join(root, name);
+    fs.writeFileSync(file, name === "updater.js" ? "module.exports = {};" : `// ${name}`);
+    hashes[name] = require("node:crypto").createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  }
+  const manifestFile = path.join(root, "manifest.json");
+  fs.writeFileSync(manifestFile, JSON.stringify(certifiedManifest(root, hashes)));
+  assert.equal(readCertifiedManifest(manifestFile).puiVersion, "1.0.0");
+});
+
+test("certified manifest rejects an incomplete installed extension shape", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-manifest-incomplete-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const updater = path.join(root, "updater.js");
+  fs.writeFileSync(updater, "module.exports = {};");
+  const hash = require("node:crypto").createHash("sha256").update(fs.readFileSync(updater)).digest("hex");
+  const manifestFile = path.join(root, "manifest.json");
+  fs.writeFileSync(manifestFile, JSON.stringify(certifiedManifest(root, { "updater.js": hash })));
+  assert.throws(() => readCertifiedManifest(manifestFile), /file|shape|identity/i);
+});
+
+test("certified manifest rejects a missing or hash-mismatched updater before it can load", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-manifest-files-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const updater = path.join(root, "updater.js");
+  fs.writeFileSync(updater, "module.exports = {};");
+  const manifestFile = path.join(root, "manifest.json");
+  fs.writeFileSync(manifestFile, JSON.stringify(certifiedManifest(root, { "updater.js": "0" })));
+  assert.throws(() => readCertifiedManifest(manifestFile), /hash|modified/i);
+  fs.writeFileSync(manifestFile, JSON.stringify(certifiedManifest(root, { "../escape.js": "0" })));
+  assert.throws(() => readCertifiedManifest(manifestFile), /path|invalid|modified/i);
+});
 
 test("transaction config backups restore pre-update user state", (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-config-transaction-"));
@@ -185,6 +228,7 @@ test("detached updater starts outside the replaceable Pi Web package tree", () =
   assert.equal(options.cwd, os.tmpdir());
   assert.equal(options.detached, true);
   assert.equal(options.windowsHide, true);
+  assert.equal(options.env.PUI_REQUIRE_INSTALLED_IDENTITY, "1");
 });
 
 test("update lock identifies the active transaction", (t) => {

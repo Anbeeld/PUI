@@ -55,7 +55,7 @@ test("verify follows a node-pty nested under background tasks", () => {
   const root = fakeRoot({ loadable: true, nested: true });
   assert.equal(
     nodePtyDir(root),
-    path.join(root, "node_modules", "@99percentpeople", "pi-background-tasks", "node_modules", "node-pty"),
+    fs.realpathSync(path.join(root, "node_modules", "@99percentpeople", "pi-background-tasks", "node_modules", "node-pty")),
   );
   assert.equal(verify(root).ok, true);
 });

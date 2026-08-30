@@ -24,6 +24,16 @@ test("installed update extension is the authoritative release identity", (t) => 
   assert.equal(fs.existsSync(path.join(target, "updater.js")), true);
 });
 
+test("installed update extension includes all updater runtime dependencies", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-extension-dependencies-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const target = path.join(temp, "pui-update");
+
+  installExtension({ repoRoot, target });
+  assert.doesNotThrow(() => require(path.join(target, "updater.js")));
+  assert.equal(fs.existsSync(path.join(target, "pui-config.js")), true);
+});
+
 test("uninstall removes only an unmodified PUI-owned extension", (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-extension-remove-"));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));

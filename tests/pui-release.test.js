@@ -15,7 +15,8 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.1.2");
+  assert.equal(release.version, "1.2.0");
+  assert.equal(release.stack.reasoningSummaryPatch.revision, 15, "v1.2.0 must migrate the revision-14 transform to make the full subagent notification header interactive");
   for (const spec of Object.values(release.managed)) {
     assert.match(spec, /@\d+\.\d+\.\d+$/);
     assert.doesNotMatch(spec, /@latest$/);
@@ -43,6 +44,19 @@ test("release validation rejects rolling managed versions", () => {
   const invalidSubagentsMapping = loadRelease(repoRoot);
   invalidSubagentsMapping.stack.subagents.modelMappings = { sol: 42 };
   assert.match(validateRelease(invalidSubagentsMapping).join("\n"), /subagents\.modelMappings.*string/i);
+  for (const field of ["maxConcurrent", "maxQueued"]) {
+    const invalidLimit = loadRelease(repoRoot);
+    invalidLimit.stack.subagents[field] = 0;
+    assert.match(validateRelease(invalidLimit).join("\n"), new RegExp(`subagents\\.${field}.*positive integer`, "i"));
+  }
+  for (const modelMappings of [{ " sol ": "luna" }, { Sol: "luna", sol: "terra" }]) {
+    const ambiguousMappings = loadRelease(repoRoot);
+    ambiguousMappings.stack.subagents.modelMappings = modelMappings;
+    assert.match(validateRelease(ambiguousMappings).join("\n"), /subagents\.modelMappings/i);
+  }
+  const invalidFooter = loadRelease(repoRoot);
+  invalidFooter.stack.mcp.footerStatus = "visible";
+  assert.match(validateRelease(invalidFooter).join("\n"), /mcp\.footerStatus/i);
 });
 
 test("active releases require the Pi #8782 backport helper", (t) => {
@@ -57,10 +71,17 @@ test("active releases require the Pi #8782 backport helper", (t) => {
 
 test("release validation permits future prompt revisions with the stable ownership schema", () => {
   const future = loadRelease(repoRoot);
-  future.version = "1.1.3";
+  future.version = "1.2.1";
   future.stack.backgroundTasksPromptPatch.revision = 2;
   future.stack.subagentsPromptPatch.revision = 5;
   assert.deepEqual(validateRelease(future), []);
+});
+
+test("reasoning-summary ownership starts with v1.2.0", () => {
+  const historical = loadRelease(repoRoot);
+  historical.version = "1.1.3";
+  delete historical.stack.reasoningSummaryPatch;
+  assert.deepEqual(validateRelease(historical), []);
 });
 
 test("release validation remains compatible with pre-patch historical releases", (t) => {
@@ -120,4 +141,7 @@ test("CI validates release metadata and exact managed prompt artifacts", () => {
   assert.equal(packageJson.scripts["release:verify-prompt-patches"], "node tests/verify-prompt-patches.js");
   assert.match(workflow, /npm run release:verify-prompt-patches/);
   assert.equal(fs.existsSync(path.join(repoRoot, "tests", "verify-prompt-patches.js")), true);
+  assert.equal(packageJson.scripts["release:verify-reasoning-summary"], "node tests/verify-reasoning-summary.js");
+  assert.match(workflow, /npm run release:verify-reasoning-summary/);
+  assert.equal(fs.existsSync(path.join(repoRoot, "tests", "verify-reasoning-summary.js")), true);
 });

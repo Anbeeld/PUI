@@ -9,6 +9,7 @@ const vm = require("node:vm");
 const repoRoot = path.resolve(__dirname, "..");
 const {
   applyIntegration,
+  finalizeIntegration,
   removeIntegration,
   verifyIntegration,
   patchRoute,
@@ -18,16 +19,67 @@ function piWebFixture(root) {
   fs.mkdirSync(path.join(root, ".next", "server", "app", "api", "app-update"), { recursive: true });
   fs.mkdirSync(path.join(root, ".next", "server", "app"), { recursive: true });
   fs.mkdirSync(path.join(root, "public"), { recursive: true });
+  fs.mkdirSync(path.join(root, ".next", "static", "chunks", "app"), { recursive: true });
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@agegr/pi-web", version: "0.8.11" }));
   fs.writeFileSync(path.join(root, ".next", "server", "app", "api", "app-update", "route.js"), 'x={62445:(a,b,c)=>{"use strict";c.r(b),c.d(b,{GET:()=>l,dynamic:()=>g});let g="force-dynamic",h="0.8.11";let u="registry.npmjs.org/@agegr%2Fpi-web/latest"},63033:a=>{}}');
-  fs.writeFileSync(path.join(root, ".next", "server", "app", "index.html"), "<html><body>PUI</body></html>");
+  fs.writeFileSync(path.join(root, ".next", "server", "app", "index.html"), '<html><body><script src="/_next/static/chunks/app/page-build.js?pui=a1b2c3d4e5f6"></script>PUI</body></html>');
+  fs.writeFileSync(path.join(root, ".next", "static", "chunks", "app", "page-build.js"), "branding bytes");
 }
+
+test("apply restores every pre-operation byte when a later integration write fails", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-web-transaction-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  piWebFixture(root);
+  const before = new Map();
+  for (const file of [".next/server/app/api/app-update/route.js", ".next/server/app/index.html", ".next/server/app/api/app-update/route.js.pui-update-original", ".next/server/app/index.html.pui-update-original", "pui-update-bridge.cjs", "public/pui-update.js", ".pui-update-integration.json"]) {
+    const target = path.join(root, file);
+    before.set(file, fs.existsSync(target) ? fs.readFileSync(target) : null);
+  }
+  const previous = process.env.PUI_FAIL_INTEGRATION_AT;
+  process.env.PUI_FAIL_INTEGRATION_AT = "client";
+  try { assert.throws(() => applyIntegration({ repoRoot, piWebRoot: root }), /injected/i); }
+  finally { if (previous === undefined) delete process.env.PUI_FAIL_INTEGRATION_AT; else process.env.PUI_FAIL_INTEGRATION_AT = previous; }
+  for (const [file, bytes] of before) assert.equal(fs.existsSync(path.join(root, file)), bytes !== null, file);
+  for (const [file, bytes] of before) if (bytes !== null) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+});
+
+test("remove restores every pre-operation byte when a later removal fails", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-web-remove-transaction-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  piWebFixture(root);
+  applyIntegration({ repoRoot, piWebRoot: root });
+  const files = [".next/server/app/api/app-update/route.js", ".next/server/app/index.html", ".next/server/app/api/app-update/route.js.pui-update-original", ".next/server/app/index.html.pui-update-original", "pui-update-bridge.cjs", "public/pui-update.js", ".pui-update-integration.json"];
+  const before = new Map(files.map((file) => { const target = path.join(root, file); return [file, fs.existsSync(target) ? fs.readFileSync(target) : null]; }));
+  const previous = process.env.PUI_FAIL_INTEGRATION_AT;
+  process.env.PUI_FAIL_INTEGRATION_AT = "remove-client";
+  try { assert.throws(() => removeIntegration(root), /injected/i); }
+  finally { if (previous === undefined) delete process.env.PUI_FAIL_INTEGRATION_AT; else process.env.PUI_FAIL_INTEGRATION_AT = previous; }
+  for (const [file, bytes] of before) assert.equal(fs.existsSync(path.join(root, file)), bytes !== null, file);
+  for (const [file, bytes] of before) if (bytes !== null) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+});
 
 test("Pi Web integration fails closed on an unexpected package layout", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-web-invalid-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@agegr/pi-web", version: "0.8.11" }));
   assert.throws(() => applyIntegration({ repoRoot, piWebRoot: root }), /expected.*app-update/i);
+});
+
+test("integration finalization versions its owned index from the final client bundle", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-web-finalize-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  piWebFixture(root);
+  const index = path.join(root, ".next", "server", "app", "index.html");
+  const originalIndex = fs.readFileSync(index, "utf8");
+  applyIntegration({ repoRoot, piWebRoot: root });
+  const client = path.join(root, ".next", "static", "chunks", "app", "page-build.js");
+  fs.writeFileSync(client, "final reasoning-patched bytes");
+  const version = crypto.createHash("sha256").update(fs.readFileSync(client)).digest("hex").slice(0, 12);
+  assert.equal(finalizeIntegration({ repoRoot, piWebRoot: root }).ok, true);
+  assert.match(fs.readFileSync(index, "utf8"), new RegExp(`page-build\\.js\\?pui=${version}`));
+  assert.equal(verifyIntegration({ repoRoot, piWebRoot: root }).ok, true);
+  assert.equal(removeIntegration(root).action, "removed");
+  assert.equal(fs.readFileSync(index, "utf8"), originalIndex);
 });
 
 test("client update card encodes install, exact skip, close, progress, rollback, and reload semantics", () => {
@@ -100,11 +152,18 @@ function bridgeStatusFixture(t) {
     ...core,
     identityHash: crypto.createHash("sha256").update(JSON.stringify(core)).digest("hex"),
   };
-  fs.writeFileSync(path.join(extensionRoot, "manifest.json"), JSON.stringify(manifest));
   fs.writeFileSync(path.join(extensionRoot, "updater.js"), [
     `module.exports = { STATUS_FILE: ${JSON.stringify(statusFile)}, LOCK_FILE: ${JSON.stringify(lockFile)}, chooseStableUpdate: () => null, restartPiWeb: () => ({ accepted: true, pid: 123 }),`,
     `writeStatus: (status) => { require("node:fs").writeFileSync(${JSON.stringify(statusFile)}, JSON.stringify({ id: "fixture", ...status })); } };`,
   ].join("\n"));
+  for (const name of ["index.ts", "pui-release.js", "pui-config.js"]) fs.writeFileSync(path.join(extensionRoot, name), `// ${name}`);
+  manifest.files = Object.fromEntries(["index.ts", "updater.js", "pui-release.js", "pui-config.js"].map((name) => [
+    name,
+    crypto.createHash("sha256").update(fs.readFileSync(path.join(extensionRoot, name))).digest("hex"),
+  ]));
+  const updatedCore = { owner: manifest.owner, schemaVersion: manifest.schemaVersion, puiVersion: manifest.puiVersion, managed: manifest.managed, files: manifest.files };
+  manifest.identityHash = crypto.createHash("sha256").update(JSON.stringify(updatedCore)).digest("hex");
+  fs.writeFileSync(path.join(extensionRoot, "manifest.json"), JSON.stringify(manifest));
 
   const bridgePath = path.join(repoRoot, "lib", "pui-update-bridge.cjs");
   const previousExtensionRoot = process.env.PUI_UPDATE_EXTENSION_DIR;
@@ -119,8 +178,24 @@ function bridgeStatusFixture(t) {
     delete require.cache[require.resolve(bridgePath)];
     fs.rmSync(root, { recursive: true, force: true });
   });
-  return { bridgePath, lockFile, statusFile };
+  return { bridgePath, extensionRoot, lockFile, statusFile };
 }
+
+test("bridge rejects a drifted installed updater before loading it", async (t) => {
+  const { bridgePath, extensionRoot } = bridgeStatusFixture(t);
+  fs.appendFileSync(path.join(extensionRoot, "updater.js"), "\n// drift");
+  const result = await require(bridgePath).getUpdate();
+  assert.match(result.error || "", /hash mismatch/i);
+  assert.equal(result.updateAvailable, false);
+});
+
+test("bridge verifies installed updater bytes before acknowledge and restart", (t) => {
+  const { bridgePath, extensionRoot } = bridgeStatusFixture(t);
+  const bridge = require(bridgePath);
+  fs.appendFileSync(path.join(extensionRoot, "updater.js"), "\n// drift");
+  assert.throws(() => bridge.acknowledge(), /hash mismatch/i);
+  assert.throws(() => bridge.restart(), /hash mismatch/i);
+});
 
 test("bridge discards stale terminal statuses for a different installed version", async (t) => {
   const { bridgePath, statusFile } = bridgeStatusFixture(t);

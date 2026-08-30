@@ -291,6 +291,14 @@ finally { $ErrorActionPreference = $prev }
 if ($backportExit -ne 0) { Write-Host "  Pi #8782 backport could not be applied; install aborted" -ForegroundColor Red; exit 1 }
 Write-Host "  Pi #8782 backport applied to Pi Web runtime"
 
+$standalonePiRoot = Join-Path $globalRoot "@earendil-works\pi-coding-agent"
+$reasoningPatchScript = Join-Path $ScriptDir "lib\pui-reasoning-summary-patch.js"
+$integrationScript = Join-Path $ScriptDir "lib\pui-web-integration.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $reasoningPatchScript migrate-legacy $ScriptDir $piWebPkgRoot $standalonePiRoot 2>&1 | Out-Null; $reasoningMigrationExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($reasoningMigrationExit -ne 0) { Write-Host "  previous reasoning-summary ownership could not be migrated; install aborted" -ForegroundColor Red; exit 1 }
+
 # Override pi-web branding: improved icons, favicon, service worker cache-bust,
 # and PUI title/metadata. All setup-time, re-applied on update, restored on
 # uninstall. Failures are warned, not fatal.
@@ -316,7 +324,6 @@ if (Test-Path $puiIconsDir) {
         $brandingExit = $LASTEXITCODE
       } finally { $ErrorActionPreference = $prev }
       if ($brandingExit -ne 0) { throw "text branding helper exited $brandingExit" }
-      $integrationScript = Join-Path $ScriptDir "lib\pui-web-integration.js"
       & node $integrationScript apply $ScriptDir $piWebPkgRoot 2>&1 | ForEach-Object { Write-Host "    $_" }
       if ($LASTEXITCODE -ne 0) { throw "Pi Web update integration failed" }
       Write-Host "  branding override applied (icons, favicon, SW cache-bust, title/metadata)"
@@ -329,6 +336,15 @@ if (Test-Path $puiIconsDir) {
   Write-Host "  PUI icon directory missing: $puiIconsDir" -ForegroundColor Red
   exit 1
 }
+
+# Apply after branding because both transforms own Pi Web page bundles.
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $reasoningPatchScript apply $ScriptDir $piWebPkgRoot $standalonePiRoot 2>&1 | Out-Null; $reasoningPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($reasoningPatchExit -ne 0) { Write-Host "  reasoning-summary compatibility patch could not be applied; install aborted" -ForegroundColor Red; exit 1 }
+Write-Host "  Responses reasoning-summary display patch applied to Pi Web and standalone Pi"
+& node $integrationScript finalize $ScriptDir $piWebPkgRoot 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  Pi Web update integration finalization failed; install aborted" -ForegroundColor Red; exit 1 }
 
 # ----------------------------------------------------------------------------
 # Phase 4 — Pi packages (G4)
@@ -413,8 +429,8 @@ $subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch apply 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
-if ($subagentsPatchExit -ne 0) { Write-Host "  pi-subagents model policy patch could not be applied (version or metadata drift); install aborted." -ForegroundColor Red; $g4 = $false }
-else { Write-Host "  pi-subagents model policy applied" }
+if ($subagentsPatchExit -ne 0) { Write-Host "  pi-subagents policy patch could not be applied (version or metadata drift); install aborted." -ForegroundColor Red; $g4 = $false }
+else { Write-Host "  pi-subagents policy applied" }
 # Verify packages are visible (pi list)
 $r = Invoke-Pi -PiArgs @("list")
 if ($r.exit -eq 0) {
@@ -541,13 +557,13 @@ if ($r.exit -ne 0) { Write-Host "  $($r.out)"; Write-Gate G7 "mcp" $false; exit 
 Write-Host "  $($r.out)"
 # PUI opinion: keep the MCP footer status quiet. mcpFooterStatus="off" clears
 # the "MCP: N server(s) enabled" segment from the extension status bar.
-$mcFooterCfg = '{"settings":{"mcpFooterStatus":"off"}}'
+$mcFooterCfg = @{ settings = @{ mcpFooterStatus = [string]$Stack.mcp.footerStatus } } | ConvertTo-Json -Compress
 $mcFooterFile = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllText($mcFooterFile, $mcFooterCfg, [System.Text.UTF8Encoding]::new($false))
 $r = Invoke-NodeConfig -CfgArgs @("merge-object", $mcpShared, "@$mcFooterFile")
 Remove-Item $mcFooterFile -Force -ErrorAction SilentlyContinue
 if ($r.exit -ne 0) { Write-Host "  MCP footer status merge failed: $($r.out)" -ForegroundColor Red; Write-Gate G7 "mcp" $false; exit 1 }
-Write-Host "  MCP footer status hidden (mcpFooterStatus=off)"
+Write-Host "  MCP footer status configured (mcpFooterStatus=$($Stack.mcp.footerStatus))"
 $g7 = $true
 $mcp = Get-Content $mcpShared -Raw | ConvertFrom-Json
 $expectedDirectTools = ConvertTo-Json -InputObject @($Stack.mcp.directTools) -Compress

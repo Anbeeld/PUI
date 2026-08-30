@@ -29,18 +29,24 @@ test("PUI manages pi-goal and retires pi-vcc", () => {
   assert.equal(stack.piPackages.some((spec) => /ogul|compaction/i.test(spec)), false);
 });
 
-test("PUI owns configurable fuzzy subagent model mappings and parent reasoning inheritance", () => {
+test("PUI owns subagent taxonomy, capabilities, completion delivery, model mapping, and reasoning inheritance", () => {
   assert.deepEqual(stack.subagentsPromptPatch, {
     schemaVersion: 1,
-    revision: 4,
+    revision: 8,
     packagePath: "node_modules/@gotgenes/pi-subagents",
     files: [
       "src/tools/agent-tool.ts",
       "src/config/default-agents.ts",
+      "src/config/agent-types.ts",
       "src/config/invocation-config.ts",
       "src/tools/spawn-config.ts",
       "src/runtime.ts",
       "src/types.ts",
+      "src/observation/notification.ts",
+      "src/index.ts",
+      "src/settings.ts",
+      "src/lifecycle/concurrency-limiter.ts",
+      "src/lifecycle/subagent-manager.ts",
     ],
     backupSuffix: ".pui-original",
     manifest: ".pui-subagents-prompt-manifest.json",
@@ -48,6 +54,8 @@ test("PUI owns configurable fuzzy subagent model mappings and parent reasoning i
   assert.equal(stack.configPaths.puiSubagents, "~/.config/pui/subagents.json");
   assert.deepEqual(stack.subagents, {
     schemaVersion: 1,
+    maxConcurrent: 128,
+    maxQueued: 512,
     modelMappings: {
       "openai-codex/gpt-5.6-sol": "openai-codex/gpt-5.6-luna",
     },
@@ -56,7 +64,7 @@ test("PUI owns configurable fuzzy subagent model mappings and parent reasoning i
   for (const script of ["install.ps1", "install.sh", "update.ps1", "update.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
     assert.match(content, /pui-subagents-patch\.js/, `${script}: subagent prompt patch`);
-    assert.match(content, /subagent.*model.*(?:applied|policy)/i, `${script}: model policy status`);
+    assert.match(content, /subagents policy (?:applied|patch)/i, `${script}: subagent policy status`);
   }
   for (const script of ["install.ps1", "install.sh", "update.ps1", "update.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
@@ -65,7 +73,7 @@ test("PUI owns configurable fuzzy subagent model mappings and parent reasoning i
   }
   for (const script of ["doctor.ps1", "doctor.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
-    assert.match(content, /subagent model policy/i, `${script}: model policy verification`);
+    assert.match(content, /subagent policy/i, `${script}: subagent policy verification`);
     assert.match(content, /validate-model-mappings/, `${script}: user mapping validation`);
   }
   for (const script of ["uninstall.ps1", "uninstall.sh"]) {
@@ -210,13 +218,16 @@ test("PUI configures pi-goal for unlimited turns and a readable status line", ()
 });
 
 test("PUI hides the MCP footer status from the extension bar", () => {
+  assert.equal(stack.mcp.footerStatus, "off");
   for (const script of ["install.ps1", "install.sh", "update.ps1", "update.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
+    assert.match(content, /mcp\.footerStatus/, `${script}: stack-owned footer status`);
     assert.match(content, /mcpFooterStatus/, `${script}: mcpFooterStatus setting`);
     assert.match(content, /merge-object/, `${script}: merge-object call`);
   }
   for (const script of ["doctor.ps1", "doctor.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
+    assert.match(content, /mcp\.footerStatus/, `${script}: stack-owned footer status`);
     assert.match(content, /mcpFooterStatus/, `${script}: mcpFooterStatus check`);
   }
 });

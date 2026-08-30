@@ -22,24 +22,71 @@ esac
 
 echo "=== PUI uninstall ($OS_NAME) ==="
 
-# 1. remove PUI-created autostart — OS-specific.
+# 1. remove PUI-created autostart — OS-specific. Compare the complete canonical
+# shape first: a same-named file with user edits is preserved.
+PIWEB_BIN="$(command -v pi-web 2>/dev/null || true)"
+PIWEB_PATH="$(dirname "$PIWEB_BIN"):${PATH:-/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 if [ "$OS_NAME" = "macOS" ]; then
   PLIST="$HOME/Library/LaunchAgents/com.pui.piweb.plist"
-  if [ -f "$PLIST" ]; then
-    echo "  removing LaunchAgent com.pui.piweb..."
+  if [ -f "$PLIST" ] && [ -n "$PIWEB_BIN" ] && cmp -s "$PLIST" <(cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pui.piweb</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$PIWEB_BIN</string>
+    <string>--no-open</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PI_WEB_SKIP_VERSION_CHECK</key><string>1</string>
+    <key>PATH</key><string>$PIWEB_PATH</string>
+  </dict>
+</dict>
+</plist>
+EOF
+); then
+    echo "  removing canonical LaunchAgent com.pui.piweb..."
     launchctl unload "$PLIST" 2>/dev/null || true
     rm -f "$PLIST"
+  elif [ -f "$PLIST" ]; then
+    echo "  LaunchAgent com.pui.piweb differs from the complete canonical shape; preserving (user-owned)." >&2
   else
     echo "  no com.pui.piweb LaunchAgent found"
   fi
 elif [ "$OS_NAME" = "Linux" ]; then
   SERVICE_FILE="$HOME/.config/systemd/user/pui-piweb.service"
-  if [ -f "$SERVICE_FILE" ]; then
-    echo "  removing systemd user service pui-piweb..."
+  if [ -f "$SERVICE_FILE" ] && [ -n "$PIWEB_BIN" ] && cmp -s "$SERVICE_FILE" <(cat <<EOF
+[Unit]
+Description=PUI Pi Web (loopback backend for PWA)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=PI_WEB_SKIP_VERSION_CHECK=1
+Environment="PATH=$PIWEB_PATH"
+ExecStart="$PIWEB_BIN" --no-open
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+); then
+    echo "  removing canonical systemd user service pui-piweb..."
     systemctl --user stop pui-piweb 2>/dev/null || true
     systemctl --user disable pui-piweb 2>/dev/null || true
     rm -f "$SERVICE_FILE"
     systemctl --user daemon-reload 2>/dev/null || true
+  elif [ -f "$SERVICE_FILE" ]; then
+    echo "  systemd user service pui-piweb differs from the complete canonical shape; preserving (user-owned)." >&2
   else
     echo "  no pui-piweb.service found"
   fi
@@ -58,6 +105,7 @@ const p=m.mcpServers&&m.mcpServers.playwright;
 const ok=p&&p.command===s.mcp.command&&JSON.stringify(p.args||null)===JSON.stringify(s.mcp.args)&&p.lifecycle===s.mcp.lifecycle&&JSON.stringify(p.directTools||null)===JSON.stringify(s.mcp.directTools);
 process.exit(ok?0:1)' "$STACK" "$MCP_SHARED" 2>/dev/null; then
     echo "  removing PUI-managed 'playwright' MCP entry from $MCP_SHARED"
+    node "$LIB" backup "$MCP_SHARED" >/dev/null || { echo "  MCP config backup failed; uninstall aborted" >&2; exit 1; }
     node "$LIB" remove-server "$MCP_SHARED" playwright >/dev/null
   else
     echo "  'playwright' MCP entry differs from PUI-managed shape; preserving (user-owned)."
@@ -82,7 +130,10 @@ done < <(node "$LIB" config-candidate-paths "$(jget configPaths.askUserQuestion)
 
 # Restore original pi-web files (undo PUI branding/icon overrides).
 if command -v npm >/dev/null 2>&1; then
-  PIWEB_ROOT="$(npm root -g 2>/dev/null)/@agegr/pi-web" || true
+  GLOBAL_ROOT="$(npm root -g 2>/dev/null)" || true
+  PIWEB_ROOT="${GLOBAL_ROOT}/@agegr/pi-web"
+  PI_STANDALONE_ROOT="${GLOBAL_ROOT}/@earendil-works/pi-coding-agent"
+  node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" remove "$PIWEB_ROOT" "$PI_STANDALONE_ROOT" "$SCRIPT_DIR" >/dev/null || echo "  reasoning-summary patch differs from its owned shape; preserving."
   if [ -d "$PIWEB_ROOT" ]; then
     node "$SCRIPT_DIR/lib/pui-pi-8782-backport.js" remove "$PIWEB_ROOT" >/dev/null || echo "  Pi #8782 backport differs from its owned shape; preserving."
     node "$SCRIPT_DIR/lib/pui-web-integration.js" remove "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null || echo "  PUI update integration differs from its owned shape; preserving."
@@ -105,9 +156,9 @@ else
   echo "  pi-background-tasks prompt override differs from its PUI-owned shape; preserving."
 fi
 if node "$SCRIPT_DIR/lib/pui-subagents-patch.js" remove >/dev/null 2>&1; then
-  echo "  removed the PUI-owned pi-subagents model policy patch when present"
+  echo "  removed the PUI-owned pi-subagents policy patch when present"
 else
-  echo "  pi-subagents model policy patch differs from its PUI-owned shape; preserving."
+  echo "  pi-subagents policy patch differs from its PUI-owned shape; preserving."
 fi
 node "$SCRIPT_DIR/lib/pui-update-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI update extension differs from its owned shape; preserving."
 

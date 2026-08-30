@@ -40,6 +40,7 @@ BACKUP_FILES=()
 PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
 PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
+MCP_FOOTER_STATUS="$(jget mcp.footerStatus)"
 PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
 PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
 PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
@@ -55,14 +56,25 @@ BACKGROUND_PATCH_COMMITTED=0
 SUBAGENTS_PATCH="$SCRIPT_DIR/lib/pui-subagents-patch.js"
 SUBAGENTS_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-subagents.XXXXXX")"
 SUBAGENTS_PATCH_COMMITTED=0
+GLOBAL_ROOT="$(npm root -g)"
+REASONING_PATCH="$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js"
+REASONING_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-reasoning-summary.XXXXXX")"
+REASONING_PATCH_COMMITTED=0
+REASONING_PIWEB_ROOT="${GLOBAL_ROOT}/@agegr/pi-web"
+REASONING_STANDALONE_ROOT="${GLOBAL_ROOT}/@earendil-works/pi-coding-agent"
 if ! node "$BACKGROUND_PATCH" snapshot "$BACKGROUND_SNAPSHOT" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT"
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT"
   echo "  could not snapshot pi-background-tasks prompt artifacts; update aborted" >&2
   exit 1
 fi
 if ! node "$SUBAGENTS_PATCH" snapshot "$SUBAGENTS_SNAPSHOT" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT"
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT"
   echo "  could not snapshot pi-subagents prompt artifacts; update aborted" >&2
+  exit 1
+fi
+if ! node "$REASONING_PATCH" snapshot "$REASONING_SNAPSHOT" "$SCRIPT_DIR" "$REASONING_PIWEB_ROOT" "$REASONING_STANDALONE_ROOT" >/dev/null 2>&1; then
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT"
+  echo "  could not snapshot Responses reasoning-summary artifacts; update aborted" >&2
   exit 1
 fi
 restore_background_patch_on_exit() {
@@ -88,6 +100,16 @@ restore_background_patch_on_exit() {
     fi
   fi
   if [ "$subagents_resolved" -eq 1 ]; then rm -rf -- "$SUBAGENTS_SNAPSHOT"; fi
+  reasoning_resolved=0
+  if [ "$REASONING_PATCH_COMMITTED" -eq 0 ]; then
+    if node "$REASONING_PATCH" restore-snapshot "$REASONING_SNAPSHOT" "$SCRIPT_DIR" "$REASONING_PIWEB_ROOT" "$REASONING_STANDALONE_ROOT" >/dev/null 2>&1; then
+      reasoning_resolved=1
+    else
+      echo "  FAILED to restore Responses reasoning-summary artifacts; recovery snapshot retained at $REASONING_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  if [ "$reasoning_resolved" -eq 1 ]; then rm -rf -- "$REASONING_SNAPSHOT"; fi
   exit "$status"
 }
 trap restore_background_patch_on_exit EXIT
@@ -187,6 +209,12 @@ fi
 pui_fail pi-8782-backport
 echo "  Pi #8782 backport applied to Pi Web runtime"
 
+PI_STANDALONE_ROOT="${GLOBAL_ROOT}/@earendil-works/pi-coding-agent"
+if ! node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" migrate-legacy "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" "$PI_STANDALONE_ROOT" >/dev/null; then
+  echo "  previous reasoning-summary ownership could not be migrated; update aborted" >&2
+  exit 1
+fi
+
 # Re-apply PUI icon override (npm update overwrites the package files).
 PUI_ICONS_DIR="$SCRIPT_DIR/assets/icons"
 if [ -d "$PUI_ICONS_DIR" ]; then
@@ -211,6 +239,18 @@ if [ -d "$PUI_ICONS_DIR" ]; then
   fi
 else
   echo "  PUI icon directory missing: $PUI_ICONS_DIR" >&2
+  exit 1
+fi
+
+# Apply after branding because both transforms own Pi Web page bundles.
+if ! node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" apply "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" "$PI_STANDALONE_ROOT" >/dev/null; then
+  echo "  reasoning-summary compatibility patch could not be applied; update aborted" >&2
+  exit 1
+fi
+pui_fail reasoning-summary-patch
+echo "  Responses reasoning-summary display patch applied to Pi Web and standalone Pi"
+if ! node "$SCRIPT_DIR/lib/pui-web-integration.js" finalize "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" >/dev/null; then
+  echo "  Pi Web update integration finalization failed; update aborted" >&2
   exit 1
 fi
 
@@ -267,10 +307,10 @@ if ! node "$BACKGROUND_PATCH" apply >/dev/null 2>&1; then
 fi
 echo "  pi-background-tasks compact model guidance applied"
 if ! node "$SUBAGENTS_PATCH" apply >/dev/null 2>&1; then
-  echo "  pi-subagents model policy patch could not be applied (version or metadata drift); update aborted." >&2
+  echo "  pi-subagents policy patch could not be applied (version or metadata drift); update aborted." >&2
   exit 1
 fi
-echo "  pi-subagents model policy applied"
+echo "  pi-subagents policy applied"
 
 echo "  reconciling managed Playwright MCP..."
 MCP_DEF="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify({command:s.mcp.command,args:s.mcp.args,lifecycle:s.mcp.lifecycle,directTools:s.mcp.directTools}))' "$STACK")"
@@ -287,8 +327,9 @@ if [ "$MCP_EXIT" -ne 0 ]; then
   exit 1
 fi
 # Reconcile MCP footer status: keep the extension status bar quiet.
-node "$LIB" merge-object "$MCP_SHARED" '{"settings":{"mcpFooterStatus":"off"}}' >/dev/null || { echo "  MCP footer status reconciliation failed" >&2; exit 1; }
-echo "  MCP footer status hidden (mcpFooterStatus=off)"
+MCP_FOOTER_CFG="$(node -e 'process.stdout.write(JSON.stringify({settings:{mcpFooterStatus:process.argv[1]}}))' "$MCP_FOOTER_STATUS")"
+node "$LIB" merge-object "$MCP_SHARED" "$MCP_FOOTER_CFG" >/dev/null || { echo "  MCP footer status reconciliation failed" >&2; exit 1; }
+echo "  MCP footer status configured (mcpFooterStatus=$MCP_FOOTER_STATUS)"
 pui_fail config-migration
 node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI update extension replacement failed" >&2; exit 1; }
 pui_fail extension-replacement
@@ -441,6 +482,25 @@ else
   done
   [ -f "$SUBAGENTS_GUARD_READY" ] || { echo "  subagents prompt rollback guard did not become ready" >&2; exit 1; }
   SUBAGENTS_PATCH_COMMITTED=1
+fi
+set +e
+node "$REASONING_PATCH" spawn-guard "$REASONING_SNAPSHOT" "$PUI_VERSION" "$SCRIPT_DIR" "$REASONING_PIWEB_ROOT" "$REASONING_STANDALONE_ROOT" >/dev/null
+REASONING_GUARD_EXIT=$?
+set -e
+if [ "$REASONING_GUARD_EXIT" -eq 75 ] || [ "$REASONING_GUARD_EXIT" -eq 76 ]; then
+  REASONING_PATCH_COMMITTED=1
+  rm -rf -- "$REASONING_SNAPSHOT"
+elif [ "$REASONING_GUARD_EXIT" -ne 0 ]; then
+  echo "  could not start the outer-transaction reasoning-summary rollback guard" >&2
+  exit 1
+else
+  REASONING_GUARD_READY="$REASONING_SNAPSHOT/guard-ready"
+  for _ in $(seq 1 50); do
+    [ -f "$REASONING_GUARD_READY" ] && break
+    sleep 0.1
+  done
+  [ -f "$REASONING_GUARD_READY" ] || { echo "  reasoning-summary rollback guard did not become ready" >&2; exit 1; }
+  REASONING_PATCH_COMMITTED=1
 fi
 
 echo

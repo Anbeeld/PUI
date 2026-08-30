@@ -42,6 +42,19 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   assert.equal(subagentsPatch.apply(packageDir).action, "patched");
   const toolSource = fs.readFileSync(path.join(packageDir, "src", "tools", "agent-tool.ts"), "utf8");
   assert.match(toolSource, new RegExp(JSON.stringify(subagentsPatch.POLICY_GUIDELINE).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  for (const rule of subagentsPatch.PARENT_OWNERSHIP_GUIDELINES) assert.equal(toolSource.split(rule).length - 1, 1);
+  assert.match(toolSource, /Foreground calls wait for their result and run sequentially\. Use foreground when the next parent action depends on that result; use run_in_background: true when useful independent work can proceed before collection\./);
+  assert.match(toolSource, /Run background agents in parallel only when their tracks are independent and do not overlap writes or other shared mutable state\./);
+  assert.match(toolSource, /true returns an agent ID immediately and runs in background; false waits for the result/);
+  assert.doesNotMatch(toolSource, /work you don't need immediately|target count|concurrency limit|max concurrency|capacity is available/);
+  const defaultsSource = fs.readFileSync(path.join(packageDir, "src", "config", "default-agents.ts"), "utf8");
+  assert.match(defaultsSource, /\["web_search", "source_check", "fetch_content", "get_search_content"\]/);
+  assert.doesNotMatch(defaultsSource, /anthropic\/claude-haiku/);
+  const agentTypesSource = fs.readFileSync(path.join(packageDir, "src", "config", "agent-types.ts"), "utf8");
+  assert.match(agentTypesSource, /DEFAULT_AGENT_NAMES = \["Worker", "Explore", "Research"\]/);
+  assert.match(agentTypesSource, /const existing = this\.resolveKey\(name\)/);
+  assert.match(agentTypesSource, /this\.agents\.get\(workerKey\)/);
+  assert.doesNotMatch(agentTypesSource, /this\.agents\.get\("general-purpose"\)/);
   const invocationFile = path.join(packageDir, "src", "config", "invocation-config.ts");
   const invocationSource = fs.readFileSync(invocationFile, "utf8");
   assert.match(invocationSource, /modelInput: params\.model,/);
@@ -52,10 +65,26 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   assert.doesNotMatch(spawnSource, /gpt-5\.6-(?:sol|luna)/);
   assert.match(spawnSource, /resolveModel\(parentInput, modelInfo\.modelRegistry\)/);
   assert.match(spawnSource, /resolvedConfig\.thinking \?\? modelInfo\.parentThinkingLevel/);
+  assert.match(spawnSource, /Unknown agent type/);
+  assert.doesNotMatch(spawnSource, /resolved \?\? "general-purpose"/);
   const subagentRuntimeSource = fs.readFileSync(path.join(packageDir, "src", "runtime.ts"), "utf8");
   assert.match(subagentRuntimeSource, /\.config", "pui", "subagents\.json"/);
   assert.match(subagentRuntimeSource, /parentThinkingLevel: this\.currentCtx\?\.thinkingLevel/);
   assert.match(fs.readFileSync(path.join(packageDir, "src", "types.ts"), "utf8"), /readonly thinkingLevel\?: ThinkingLevel/);
+  const notificationSource = fs.readFileSync(path.join(packageDir, "src", "observation", "notification.ts"), "utf8");
+  assert.match(notificationSource, /onParentTurnEnd\(\): void/);
+  assert.match(notificationSource, /flushPendingNudges\("steer"\)/);
+  assert.match(notificationSource, /flushPendingNudges\("followUp"\)/);
+  assert.match(fs.readFileSync(path.join(packageDir, "src", "index.ts"), "utf8"), /pi\.on\("turn_end", \(\) => notifications\.onParentTurnEnd\(\)\)/);
+  const settingsSource = fs.readFileSync(path.join(packageDir, "src", "settings.ts"), "utf8");
+  assert.match(settingsSource, /const DEFAULT_MAX_CONCURRENT = 128;/);
+  assert.match(settingsSource, /const MAX_CONCURRENT_CEILING = 128;/);
+  const limiterSource = fs.readFileSync(path.join(packageDir, "src", "lifecycle", "concurrency-limiter.ts"), "utf8");
+  assert.match(limiterSource, /private readonly maxQueued = 512/);
+  assert.match(limiterSource, /this\.pending\.length < this\.maxQueued/);
+  const managerSource = fs.readFileSync(path.join(packageDir, "src", "lifecycle", "subagent-manager.ts"), "utf8");
+  assert.match(managerSource, /!this\.limiter\.canSchedule\(\)/);
+  assert.match(managerSource, /Background agent queue is full/);
 
   const runtimeCheckDir = path.join(runtimeRoot, "prompt-patch-runtime-check");
   fs.mkdirSync(runtimeCheckDir, { recursive: true });
@@ -115,16 +144,17 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
       const sol = { provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT 5.6 Sol" };
       const luna = { provider: "openai-codex", id: "gpt-5.6-luna", name: "GPT 5.6 Luna" };
       const registry = {
-        resolveType: (type) => type,
+        resolveType: (type) => type === "Worker" ? "Worker" : undefined,
         isValidType: () => true,
-        resolveAgentConfig: () => ({ name: "general-purpose", displayName: "General", promptMode: "replace", model: "profile/model", thinking: "minimal" }),
+        getAvailableTypes: () => ["Worker", "Explore", "Research"],
+        resolveAgentConfig: () => ({ name: "Worker", displayName: "Worker", promptMode: "append", model: "profile/model", thinking: "minimal" }),
       };
       const modelRegistry = {
         getAll: () => [sol, luna],
         getAvailable: () => [sol, luna],
         find: (provider, id) => [sol, luna].find((model) => model.provider === provider && model.id === id),
       };
-      const params = { subagent_type: "general-purpose", prompt: "test", description: "test" };
+      const params = { subagent_type: "Worker", prompt: "test", description: "test" };
       const settings = { defaultMaxTurns: undefined };
       const mappings = { sol: "luna" };
       const mapped = resolveSpawnConfig(params, registry, { parentModel: sol, parentThinkingLevel: "xhigh", modelRegistry, modelMappings: mappings }, settings);
@@ -136,6 +166,8 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
       if (unavailable.execution.model !== sol || unavailable.execution.thinking !== "high") throw new Error("unavailable mapping fallback failed");
       const noRegistry = resolveSpawnConfig(params, registry, { parentModel: sol, parentThinkingLevel: "medium", modelRegistry: undefined, modelMappings: mappings }, settings);
       if (noRegistry.execution.model !== sol || noRegistry.execution.thinking !== "medium") throw new Error("missing registry fallback failed");
+      const unknown = resolveSpawnConfig({ ...params, subagent_type: "Reserach" }, registry, { parentModel: sol, parentThinkingLevel: "medium", modelRegistry, modelMappings: mappings }, settings);
+      if (!unknown.error?.includes("Unknown agent type") || "execution" in unknown) throw new Error("unknown type fell through");
     `,
   ], { cwd: runtimeCheckDir, encoding: "utf8", windowsHide: true });
   assert.equal(runtimeCheck.status, 0, runtimeCheck.stderr || runtimeCheck.stdout);
@@ -156,6 +188,94 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
     path.join(packageDir, "src", "index.ts"),
   ], { cwd: runtimeRoot, encoding: "utf8", windowsHide: true });
   assert.equal(importCheck.status, 0, importCheck.stderr || importCheck.stdout);
+
+  const profileRoot = path.join(runtimeRoot, "profile-overlay-check");
+  const profileProject = path.join(profileRoot, "project");
+  fs.mkdirSync(path.join(profileRoot, "agents"), { recursive: true });
+  fs.mkdirSync(path.join(profileProject, ".pi", "agents"), { recursive: true });
+  fs.writeFileSync(path.join(profileRoot, "agents", "Explore.md"), "---\ndescription: global override\n---\nglobal\n");
+  fs.writeFileSync(path.join(profileRoot, "agents", "Custom.md"), "---\ndescription: added profile\n---\ncustom\n");
+  fs.writeFileSync(path.join(profileProject, ".pi", "agents", "explore.md"), "---\ndescription: project override\nenabled: false\n---\nproject\n");
+
+  const renderedCheck = spawnSync(process.execPath, [
+    "--eval",
+    `
+      const path = require("node:path");
+      const createJiti = require(process.argv[1]);
+      const jiti = createJiti(path.join(process.argv[2], "rendered-policy-check.cjs"), { moduleCache: false, tryNative: false });
+      Promise.all([
+        jiti.import(process.argv[3]),
+        jiti.import(process.argv[4]),
+        jiti.import(process.argv[5]),
+        jiti.import(process.argv[6]),
+        jiti.import(process.argv[7]),
+      ]).then(([defaultsModule, typesModule, promptsModule, toolModule, customAgentsModule]) => {
+        const { DEFAULT_AGENTS } = defaultsModule;
+        const { AgentTypeRegistry } = typesModule;
+        const { buildAgentPrompt } = promptsModule;
+        const { AgentTool } = toolModule;
+        const names = [...DEFAULT_AGENTS.keys()];
+        if (JSON.stringify(names) !== JSON.stringify(["Worker", "Explore", "Research"])) throw new Error("default taxonomy drifted: " + JSON.stringify(names));
+        const registry = new AgentTypeRegistry(() => new Map());
+        const builtins = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+        if (JSON.stringify(registry.getToolNamesForType("Worker")) !== JSON.stringify(builtins)) throw new Error("Worker tools drifted");
+        if (JSON.stringify(registry.getToolNamesForType("Explore")) !== JSON.stringify(["read", "grep", "find", "ls"])) throw new Error("Explore tools drifted");
+        if (JSON.stringify(registry.getToolNamesForType("Research")) !== JSON.stringify(["read", "grep", "find", "ls", "web_search", "source_check", "fetch_content", "get_search_content"])) throw new Error("Research tools drifted");
+        if (registry.resolveType("Plan") !== undefined || registry.resolveType("general-purpose") !== undefined) throw new Error("removed built-in alias remains");
+        const customRegistry = new AgentTypeRegistry(() => new Map([
+          ["Plan", { name: "Plan", description: "custom", systemPrompt: "custom", promptMode: "append" }],
+          ["general-purpose", { name: "general-purpose", description: "custom", systemPrompt: "custom", promptMode: "append" }],
+        ]));
+        if (customRegistry.resolveType("PLAN") !== "Plan" || customRegistry.resolveType("GENERAL-PURPOSE") !== "general-purpose") throw new Error("custom removed-name profiles failed");
+        const caseOverrideRegistry = new AgentTypeRegistry(() => new Map([
+          ["explore", { name: "explore", description: "user override", systemPrompt: "custom", promptMode: "append", toolNames: ["read"] }],
+          ["Custom", { name: "Custom", description: "added profile", systemPrompt: "custom", promptMode: "append" }],
+        ]));
+        if (caseOverrideRegistry.resolveType("Explore") !== "explore" || caseOverrideRegistry.getDefaultAgentNames().includes("Explore")) throw new Error("case-variant default override failed");
+        if (caseOverrideRegistry.resolveAgentConfig("EXPLORE").description !== "user override") throw new Error("case-variant override config failed");
+        if (!caseOverrideRegistry.getUserAgentNames().includes("Custom")) throw new Error("added custom profile missing");
+        const loadedProfiles = customAgentsModule.loadCustomAgents(process.argv[8]);
+        const fileRegistry = new AgentTypeRegistry(() => loadedProfiles);
+        if (fileRegistry.resolveType("EXPLORE") !== "explore") throw new Error("project case-variant profile did not override global/default");
+        if (fileRegistry.isValidType("Explore") !== false || fileRegistry.resolveAgentConfig("Explore").description !== "project override") throw new Error("disabled project override was not preserved");
+        if (!fileRegistry.getUserAgentNames().includes("Custom")) throw new Error("filesystem custom profile missing");
+        const env = { isGitRepo: true, branch: "main", platform: "win32" };
+        const inherited = { systemPrompt: "PARENT PREFIX", cwd: "C:/repo" };
+        for (const name of names) {
+          const config = DEFAULT_AGENTS.get(name);
+          const rendered = buildAgentPrompt(config, "C:/repo", env, inherited);
+          if (!rendered.startsWith("PARENT PREFIX")) throw new Error(name + " lost inherited prefix");
+          if (name === "Worker") {
+            if (!rendered.endsWith("<agent_instructions>\\n" + config.systemPrompt + "\\n</agent_instructions>")) throw new Error("Worker contract is not the final specialist content");
+          } else if (!rendered.endsWith(config.systemPrompt)) throw new Error(name + " specialist prompt is not last");
+        }
+        const definition = new AgentTool({}, {}, { defaultMaxTurns: undefined, maxConcurrent: 4 }, registry, process.argv[2]).toToolDefinition();
+        for (const rule of ${JSON.stringify(subagentsPatch.PARENT_OWNERSHIP_GUIDELINES)}) {
+          if (definition.description.split(rule).length - 1 !== 1) throw new Error("parent rule missing or duplicated: " + rule);
+        }
+        for (const name of names) if (!definition.description.includes(DEFAULT_AGENTS.get(name).toolGuideline)) throw new Error(name + " route guideline missing");
+        if (definition.description.includes("Use Plan for architecture")) throw new Error("Plan route remains");
+        if (definition.description.includes("Provide clear, detailed prompts so the agent can work autonomously")) throw new Error("redundant generic prompt guidance remains");
+        const promptDescription = definition.parameters.properties.prompt.description;
+        if (!promptDescription.includes("selected agent type's prompt recipe")) throw new Error("prompt parameter does not point to type recipe");
+        const typeDescription = definition.parameters.properties.subagent_type.description;
+        if (!typeDescription.includes("Use an exact listed name; unknown names fail closed")) throw new Error("type parameter omits fail-closed guidance");
+        const thinkingValues = definition.parameters.properties.thinking.anyOf?.map((schema) => schema.const);
+        if (JSON.stringify(thinkingValues) !== JSON.stringify(["off", "minimal", "low", "medium", "high", "xhigh"])) throw new Error("thinking schema is not the exact literal union");
+        if (definition.parameters.properties.max_turns.type !== "integer") throw new Error("max_turns schema accepts fractional turns");
+      }).catch((error) => { console.error(error); process.exit(1); });
+    `,
+    jitiFile,
+    runtimeRoot,
+    path.join(packageDir, "src", "config", "default-agents.ts"),
+    path.join(packageDir, "src", "config", "agent-types.ts"),
+    path.join(packageDir, "src", "session", "prompts.ts"),
+    path.join(packageDir, "src", "tools", "agent-tool.ts"),
+    path.join(packageDir, "src", "config", "custom-agents.ts"),
+    profileProject,
+  ], { cwd: runtimeRoot, encoding: "utf8", windowsHide: true, env: { ...process.env, PI_CODING_AGENT_DIR: profileRoot } });
+  assert.equal(renderedCheck.status, 0, renderedCheck.stderr || renderedCheck.stdout);
+
   assert.equal(subagentsPatch.verify(packageDir).ok, true);
   assert.equal(subagentsPatch.apply(packageDir).action, "already-patched");
   assert.equal(subagentsPatch.remove(packageDir).action, "restored");

@@ -1,6 +1,6 @@
 {
   "name": "pui",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "private": true,
   "description": "Opinionated batteries-included composition profile for vanilla Pi with explicit transactional self-update.",
   "license": "MIT",
@@ -13,6 +13,7 @@
     "release:validate": "node lib/pui-release.js validate .",
     "release:verify-pi-web": "node tests/verify-pi-web-integration.js",
     "release:verify-pi-8782": "node tests/verify-pi-8782-backport.js",
-    "release:verify-prompt-patches": "node tests/verify-prompt-patches.js"
+    "release:verify-prompt-patches": "node tests/verify-prompt-patches.js",
+    "release:verify-reasoning-summary": "node tests/verify-reasoning-summary.js"
   }
 }

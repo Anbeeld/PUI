@@ -28,6 +28,13 @@ test("Unix entry points are executable in Git", () => {
   for (const file of unixEntryPoints) assert.equal(modes.get(file), "100755", file);
 });
 
+test("Unix entry points retain LF endings in Windows worktrees", () => {
+  assert.match(read(".gitattributes"), /^\*\.sh text eol=lf$/m);
+  for (const file of unixEntryPoints) {
+    assert.equal(fs.readFileSync(path.join(repoRoot, file)).includes(Buffer.from("\r\n")), false, file);
+  }
+});
+
 test("all Unix entry points use the shared stack reader", () => {
   for (const file of unixEntryPoints) {
     const content = read(file);
@@ -287,6 +294,57 @@ test("uninstall preserves a Playwright entry with user-modified lifecycle or dir
     const content = read(file);
     assert.match(content, /lifecycle/);
     assert.match(content, /directTools/);
+  }
+});
+
+test("uninstall preserves drifted autostart entries and removes only canonical entries", () => {
+  const shell = read("uninstall.sh");
+  assert.match(shell, /cmp -s|diff -q/, "uninstall.sh: exact content comparison");
+  assert.match(shell, /LaunchAgent.*differs|LaunchAgent.*preserving|preserving.*LaunchAgent/i);
+  assert.match(shell, /systemd.*differs|systemd.*preserving|preserving.*systemd/i);
+  assert.match(shell, /pui-piweb\.service/);
+
+  const powershell = read("uninstall.ps1");
+  assert.match(powershell, /Get-Content[\s\S]*vbsContent|ReadAllText[\s\S]*launcherVbs/);
+  assert.match(powershell, /launcher.*differs|launcher.*preserving|preserving.*launcher/i);
+  assert.match(powershell, /pui-piweb\.bat/);
+  assert.match(powershell, /complete canonical|exact.*shape|canonical/i);
+});
+
+test("doctor treats missing or drifted MCP footer status as a failure with detail", () => {
+  for (const file of ["doctor.sh", "doctor.ps1"]) {
+    const content = read(file);
+    const footer = content.indexOf("MCP footer status");
+    assert.notEqual(footer, -1, `${file}: footer status diagnostic`);
+    const section = content.slice(Math.max(0, footer - 500), footer + 500);
+    assert.match(section, /FAIL/);
+    assert.match(section, /does not match stack\.json|mismatch|missing/i);
+  }
+});
+
+test("doctor verifies the installed Pi Web runtime instead of its dependency declaration", () => {
+  for (const file of ["doctor.sh", "doctor.ps1"]) {
+    const content = read(file);
+    assert.match(content, /pi-web[\s\S]*node_modules[\s\S]*pi-coding-agent[\s\S]*package\.json/, file);
+  }
+  assert.doesNotMatch(read("doctor.sh"), /dependencies.*pi-coding-agent/);
+  assert.doesNotMatch(read("doctor.ps1"), /dependencies\.'@earendil-works\/pi-coding-agent'/);
+});
+
+test("Unix install always stops a detected Pi Web process before package mutation", () => {
+  const install = read("install.sh");
+  const stopPhase = install.slice(install.indexOf("stop_existing_piweb_autostart"), install.indexOf("standalone-busy"));
+  assert.doesNotMatch(stopPhase, /if has_cmd pi-web/);
+  assert.match(stopPhase, /pkill -f/);
+  assert.match(stopPhase, /pgrep -f[\s\S]*install aborted/);
+});
+
+test("uninstall backs up MCP JSON before removing its owned server", () => {
+  for (const file of ["uninstall.sh", "uninstall.ps1"]) {
+    const content = read(file);
+    const removal = content.slice(content.indexOf("removing PUI-managed 'playwright'"));
+    assert.match(removal.slice(0, 700), /backup/);
+    assert.match(removal.slice(0, 700), /remove-server/);
   }
 });
 

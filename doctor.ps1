@@ -57,11 +57,13 @@ if (Test-Command pi-web) {
   $pwPkg = Join-Path (Join-Path (Join-Path (& npm root -g) "@agegr") "pi-web") "package.json"
   $pwv = if (Test-Path $pwPkg) { (Get-Content $pwPkg -Raw | ConvertFrom-Json).version } else { "unknown" }
   Status "Pi Web version" $(if ($pwv -eq [string]$Stack.upstream.gui.version) { "PASS" } else { "FAIL" }) "$pwv (expected $($Stack.upstream.gui.version))"
-  $pwCA = if (Test-Path $pwPkg) { (Get-Content $pwPkg -Raw | ConvertFrom-Json).dependencies.'@earendil-works/pi-coding-agent' } else { $null }
-  Status "Pi Web-resolved Pi" "PASS" $pwCA
+  $piWebPackageRoot = Split-Path $pwPkg -Parent
+  $pwCaPkg = Join-Path (Join-Path (Join-Path $piWebPackageRoot "node_modules") "@earendil-works") "pi-coding-agent\package.json"
+  $pwCA = if (Test-Path $pwCaPkg) { try { [string](Get-Content $pwCaPkg -Raw | ConvertFrom-Json).version } catch { $null } } else { $null }
+  $expectedPi = [string]$Stack.upstream.agentRuntime.version
+  Status "Pi Web-resolved Pi" $(if ($pwCA -eq $expectedPi) { "PASS" } else { "FAIL" }) "$(if ($pwCA) { $pwCA } else { 'missing' }) (expected $expectedPi)"
   $piVer = (& pi --version 2>$null) -replace '[^0-9.]',''
-  $pwCAN = ($pwCA -replace '[^0-9.]','')
-  Status "runtime parity" $(if ($piVer -eq [string]$Stack.upstream.agentRuntime.version -and $pwCAN -eq [string]$Stack.upstream.agentRuntime.version) { "PASS" } else { "FAIL" }) "pi=$piVer pi-web=$pwCAN expected=$($Stack.upstream.agentRuntime.version)"
+  Status "runtime parity" $(if ($piVer -eq $expectedPi -and $pwCA -eq $expectedPi) { "PASS" } else { "FAIL" }) "pi=$piVer pi-web=$(if ($pwCA) { $pwCA } else { 'missing' }) expected=$expectedPi"
 } else { Status "Pi Web version" "FAIL" "pi-web not on PATH"; Status "Pi Web-resolved Pi" "NOT CHECKED" ""; Status "runtime parity" "NOT CHECKED" "" }
 
 # Temporary Pi #8782 runtime backport used by Pi Web.
@@ -71,6 +73,13 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $backportScript verify $ScriptDir $piWebRoot 2>&1 | Out-Null; $backportExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
 Status "Pi #8782 backport" $(if ($backportExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($backportExit -eq 0) { "Pi Web runtime $($Stack.upstream.agentRuntime.version) patched" } else { "missing or drifted" })
+# Display-only Responses reasoning-summary compatibility patch.
+$standalonePiRoot = if (Test-Command npm) { Join-Path (& npm root -g) "@earendil-works\pi-coding-agent" } else { "" }
+$reasoningPatchScript = Join-Path $ScriptDir "lib\pui-reasoning-summary-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $reasoningPatchScript verify $ScriptDir $piWebRoot $standalonePiRoot 2>&1 | Out-Null; $reasoningPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+Status "reasoning-summary display patch" $(if ($reasoningPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($reasoningPatchExit -eq 0) { "Pi Web and standalone Pi" } else { "missing or drifted" })
 
 # Pi package presence
 $piAgentDir = Expand-Path $Stack.configPaths.piAgentDir
@@ -146,9 +155,12 @@ if (Test-Path $mcpShared) {
   $actualDirectTools = ConvertTo-Json -Compress -InputObject @($mcp.mcpServers.playwright.directTools)
   $proxyEnabled = -not ($mcp.settings -and $mcp.settings.disableProxyTool -eq $true)
   Status "Playwright MCP" $(if ($mcp.mcpServers.playwright -and $expectedMcp -eq $actualMcp -and $expectedDirectTools -eq $actualDirectTools -and $proxyEnabled) { "PASS" } else { "FAIL" }) $(if ($proxyEnabled) { "exact version; 6 direct tools; proxy preserved" } else { "settings.disableProxyTool=true" })
-  $footerOff = $mcp.settings.mcpFooterStatus -eq "off"
-  Status "MCP footer status" $(if ($footerOff) { "PASS" } else { "WARN" }) $(if ($footerOff) { "mcpFooterStatus=off" } else { "footer status visible" })
-} else { Status "Playwright MCP" "WARN" "mcp.json missing" }
+  $footerMatches = $mcp.settings.mcpFooterStatus -eq [string]$Stack.mcp.footerStatus
+  Status "MCP footer status" $(if ($footerMatches) { "PASS" } else { "FAIL" }) $(if ($footerMatches) { "matches stack.json" } else { "missing or does not match stack.json (expected $($Stack.mcp.footerStatus))" })
+} else {
+  Status "Playwright MCP" "WARN" "mcp.json missing"
+  Status "MCP footer status" "FAIL" "mcp.json missing (expected $($Stack.mcp.footerStatus))"
+}
 
 # pi-background-tasks compact model guidance and native node-pty binding
 $backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
@@ -159,7 +171,7 @@ $nativeCheck = Join-Path $ScriptDir "lib\pui-native-check.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $nativeCheck verify (Join-Path $piAgentDir "npm") 2>&1 | Out-Null; $nativeExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
 Status "pi-background-tasks native" $(if ($nativeExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($nativeExit -eq 0) { "node-pty loads" } else { "node-pty binding missing" })
-# pi-subagents mapped model and parent reasoning policy
+# pi-subagents taxonomy, capabilities, mapped model, and reasoning policy
 $puiSubagentsConfig = Expand-Path $Stack.configPaths.puiSubagents
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $Lib "validate-model-mappings" $puiSubagentsConfig 2>&1 | Out-Null; $subagentConfigExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
@@ -167,7 +179,7 @@ Status "subagent model mappings" $(if ($subagentConfigExit -eq 0) { "PASS" } els
 $subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch verify 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
-Status "subagent model policy" $(if ($subagentsPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($subagentsPatchExit -eq 0) { "mapped model and parent reasoning" } else { "missing or drifted" })
+Status "subagent policy" $(if ($subagentsPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($subagentsPatchExit -eq 0) { "taxonomy, capabilities, model, and reasoning" } else { "missing or drifted" })
 
 # Pi Web health
 try {

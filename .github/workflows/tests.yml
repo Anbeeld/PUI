@@ -32,6 +32,8 @@ jobs:
         run: npm run release:verify-pi-8782
       - name: Verify exact published prompt patch artifacts
         run: npm run release:verify-prompt-patches
+      - name: Verify exact GPT-5.6 reasoning-summary artifacts
+        run: npm run release:verify-reasoning-summary
 
   windows-static:
     name: Windows static checks

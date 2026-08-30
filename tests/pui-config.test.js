@@ -19,6 +19,7 @@ const {
   resolveConfigPath,
   readJsonSafe,
   backupFile,
+  writeJson,
   reconcileModelMappings,
   validateModelMappingsConfig,
 } = require(LIB);
@@ -67,10 +68,40 @@ test("reconcileModelMappings removes retired untouched defaults and keeps change
   assert.deepEqual(out._pui.defaultMappings, {});
 });
 
+test("reconcileModelMappings preserves user key casing without creating a duplicate mapping", () => {
+  const canonical = "openai-codex/gpt-5.6-sol";
+  const userKey = "OpenAI-Codex/GPT-5.6-Sol";
+  const out = reconcileModelMappings({
+    schemaVersion: 1,
+    modelMappings: { [userKey]: "openai-codex/gpt-5.6-luna" },
+    _pui: { defaultMappings: { [canonical]: "openai-codex/gpt-5.6-luna" } },
+  }, { [canonical]: "openai-codex/gpt-5.6-terra" });
+  assert.deepEqual(out.modelMappings, { [userKey]: "openai-codex/gpt-5.6-terra" });
+  assert.deepEqual(out._pui.defaultMappings, { [canonical]: "openai-codex/gpt-5.6-terra" });
+});
+
 test("validateModelMappingsConfig accepts fuzzy strings and rejects malformed mappings", () => {
   assert.equal(validateModelMappingsConfig({ schemaVersion: 1, modelMappings: { sol: "luna" }, _pui: { defaultMappings: { sol: "luna" } } }).ok, true);
   assert.equal(validateModelMappingsConfig({ schemaVersion: 2, modelMappings: {} }).ok, false);
   assert.equal(validateModelMappingsConfig({ schemaVersion: 1, modelMappings: { sol: 42 } }).ok, false);
+  assert.equal(validateModelMappingsConfig({ schemaVersion: 1, modelMappings: { Sol: "luna", sol: "terra" } }).ok, false);
+  assert.equal(validateModelMappingsConfig({ schemaVersion: 1, modelMappings: { " sol ": "luna" } }).ok, false);
+});
+
+test("writeJson atomically preserves the previous file when rename fails", (t) => {
+  const dir = tmpdir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(file, '{"before":true}\n');
+  const originalRename = fs.renameSync;
+  fs.renameSync = () => { throw new Error("injected rename failure"); };
+  try {
+    assert.throws(() => writeJson(file, { after: true }), /injected rename failure/);
+  } finally {
+    fs.renameSync = originalRename;
+  }
+  assert.equal(fs.readFileSync(file, "utf8"), '{"before":true}\n');
+  assert.deepEqual(fs.readdirSync(dir), ["config.json"]);
 });
 
 // ---------- deepMerge ----------

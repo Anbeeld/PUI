@@ -68,23 +68,43 @@
       "repository": "https://github.com/99percentpeople/pi-extensions/tree/master/extensions/background-tasks"
     }
   },
+  "reasoningSummaryPatch": {
+    "schemaVersion": 1,
+    "revision": 15,
+    "piWebPackage": "@agegr/pi-web",
+    "piWebVersion": "0.8.11",
+    "codingAgentPackage": "@earendil-works/pi-coding-agent",
+    "codingAgentVersion": "0.84.3",
+    "aiPackage": "@earendil-works/pi-ai",
+    "aiVersion": "0.84.3",
+    "backupSuffix": ".pui-reasoning-original",
+    "manifest": ".pui-reasoning-summary.json"
+  },
   "subagentsPromptPatch": {
     "schemaVersion": 1,
-    "revision": 4,
+    "revision": 8,
     "packagePath": "node_modules/@gotgenes/pi-subagents",
     "files": [
       "src/tools/agent-tool.ts",
       "src/config/default-agents.ts",
+      "src/config/agent-types.ts",
       "src/config/invocation-config.ts",
       "src/tools/spawn-config.ts",
       "src/runtime.ts",
-      "src/types.ts"
+      "src/types.ts",
+      "src/observation/notification.ts",
+      "src/index.ts",
+      "src/settings.ts",
+      "src/lifecycle/concurrency-limiter.ts",
+      "src/lifecycle/subagent-manager.ts"
     ],
     "backupSuffix": ".pui-original",
     "manifest": ".pui-subagents-prompt-manifest.json"
   },
   "subagents": {
     "schemaVersion": 1,
+    "maxConcurrent": 128,
+    "maxQueued": 512,
     "modelMappings": {
       "openai-codex/gpt-5.6-sol": "openai-codex/gpt-5.6-luna"
     }
@@ -127,6 +147,7 @@
     "noOpenFlag": "--no-open"
   },
   "mcp": {
+    "footerStatus": "off",
     "serverName": "playwright",
     "command": "npx",
     "args": [

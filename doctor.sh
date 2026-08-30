@@ -46,10 +46,11 @@ if has_cmd pi-web; then
   PIWEB_PKG="$GLOBAL_ROOT/@agegr/pi-web/package.json"
   PIWEB_VERSION="$(node -e 'console.log(require(process.argv[1]).version)' "$PIWEB_PKG" 2>/dev/null || true)"
   [ "$PIWEB_VERSION" = "$(jget upstream.gui.version)" ] && status_line "Pi Web version" "PASS" "$PIWEB_VERSION" || status_line "Pi Web version" "FAIL" "$PIWEB_VERSION expected $(jget upstream.gui.version)"
-  PW_CA="$(node -e 'const p=require(process.argv[1]);const d=p.dependencies&&p.dependencies["@earendil-works/pi-coding-agent"];if(d)process.stdout.write(d.replace(/[^0-9.]/g,""))' "$PIWEB_PKG" 2>/dev/null)"
-  status_line "Pi Web-resolved Pi" "PASS" "$PW_CA"
+  PW_CA_PKG="$GLOBAL_ROOT/@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent/package.json"
+  PW_CA="$(node -e 'process.stdout.write(String(require(process.argv[1]).version||""))' "$PW_CA_PKG" 2>/dev/null || true)"
+  [ -n "$PW_CA" ] && [ "$PW_CA" = "$(jget upstream.agentRuntime.version)" ] && status_line "Pi Web-resolved Pi" "PASS" "$PW_CA" || status_line "Pi Web-resolved Pi" "FAIL" "${PW_CA:-missing} expected $(jget upstream.agentRuntime.version)"
   PI_VER="$(pi --version 2>/dev/null | sed 's/[^0-9.]//g')"
-  [ "$PI_VER" = "$(jget upstream.agentRuntime.version)" ] && [ "$PW_CA" = "$(jget upstream.agentRuntime.version)" ] && status_line "runtime parity" "PASS" "$PI_VER" || status_line "runtime parity" "FAIL" "pi=$PI_VER piweb=$PW_CA expected=$(jget upstream.agentRuntime.version)"
+  [ "$PI_VER" = "$(jget upstream.agentRuntime.version)" ] && [ "$PW_CA" = "$(jget upstream.agentRuntime.version)" ] && status_line "runtime parity" "PASS" "$PI_VER" || status_line "runtime parity" "FAIL" "pi=$PI_VER piweb=${PW_CA:-missing} expected=$(jget upstream.agentRuntime.version)"
 else
   status_line "Pi Web version" "FAIL" "not on PATH"
 fi
@@ -58,6 +59,13 @@ if node "$SCRIPT_DIR/lib/pui-pi-8782-backport.js" verify "$SCRIPT_DIR" "$PIWEB_R
   status_line "Pi #8782 backport" "PASS" "Pi Web runtime $(jget upstream.agentRuntime.version) patched"
 else
   status_line "Pi #8782 backport" "FAIL" "missing or drifted"
+fi
+# Display-only Responses reasoning-summary compatibility patch.
+PI_STANDALONE_ROOT="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"
+if node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" verify "$SCRIPT_DIR" "$PIWEB_ROOT" "$PI_STANDALONE_ROOT" >/dev/null 2>&1; then
+  status_line "reasoning-summary display patch" "PASS" "Pi Web and standalone Pi"
+else
+  status_line "reasoning-summary display patch" "FAIL" "missing or drifted"
 fi
 
 PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
@@ -107,7 +115,9 @@ done
 [ -f "$PI_WEB_ACCESS" ] && node -e 'const w=require(process.argv[1]);if(w.searchRouting.providers.indexOf("duckduckgo")<0||w.fetchRouting.allowRemoteHostedProviders!==false)process.exit(1)' "$PI_WEB_ACCESS" && status_line "web routing" "PASS" "duckduckgo+http" || status_line "web routing" "WARN" "missing"
 [ -f "$MCP_SHARED" ] && node -e 'const m=require(process.argv[1]),s=require(process.argv[2]);const p=m.mcpServers&&m.mcpServers.playwright;process.exit(p&&JSON.stringify(p.args)===JSON.stringify(s.mcp.args)&&JSON.stringify(p.directTools)===JSON.stringify(s.mcp.directTools)&&m.settings?.disableProxyTool!==true?0:1)' "$MCP_SHARED" "$STACK" && status_line "Playwright MCP" "PASS" "exact version; 6 direct tools; proxy preserved" || status_line "Playwright MCP" "FAIL" "missing, mismatched, or proxy disabled"
 if [ -f "$MCP_SHARED" ]; then
-  node -e 'const m=require(process.argv[1]);process.exit(m.settings&&m.settings.mcpFooterStatus==="off"?0:1)' "$MCP_SHARED" 2>/dev/null && status_line "MCP footer status" "PASS" "mcpFooterStatus=off" || status_line "MCP footer status" "WARN" "footer status visible"
+  node -e 'const m=require(process.argv[1]),s=require(process.argv[2]);process.exit(m.settings&&m.settings.mcpFooterStatus===s.mcp.footerStatus?0:1)' "$MCP_SHARED" "$STACK" 2>/dev/null && status_line "MCP footer status" "PASS" "matches stack.json" || status_line "MCP footer status" "FAIL" "missing or does not match stack.json (expected $(jget mcp.footerStatus))"
+else
+  status_line "MCP footer status" "FAIL" "mcp.json missing (expected $(jget mcp.footerStatus))"
 fi
 
 # pi-background-tasks compact model guidance and native node-pty binding
@@ -121,16 +131,16 @@ if node "$SCRIPT_DIR/lib/pui-native-check.js" verify "$PI_AGENT_DIR/npm" >/dev/n
 else
   status_line "pi-background-tasks native" "FAIL" "node-pty binding missing"
 fi
-# pi-subagents mapped model and parent reasoning policy
+# pi-subagents taxonomy, capabilities, mapped model, and reasoning policy
 if node "$LIB" validate-model-mappings "$PUI_SUBAGENTS_CONFIG" >/dev/null 2>&1; then
   status_line "subagent model mappings" "PASS" "$PUI_SUBAGENTS_CONFIG"
 else
   status_line "subagent model mappings" "FAIL" "missing or invalid: $PUI_SUBAGENTS_CONFIG"
 fi
 if node "$SCRIPT_DIR/lib/pui-subagents-patch.js" verify >/dev/null 2>&1; then
-  status_line "subagent model policy" "PASS" "mapped model and parent reasoning"
+  status_line "subagent policy" "PASS" "taxonomy, capabilities, model, and reasoning"
 else
-  status_line "subagent model policy" "FAIL" "missing or drifted"
+  status_line "subagent policy" "FAIL" "missing or drifted"
 fi
 node "$SCRIPT_DIR/lib/pui-update-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI installed identity" "PASS" "extension manifest" || status_line "PUI installed identity" "FAIL" "missing or mismatched"
 node "$SCRIPT_DIR/lib/pui-web-integration.js" verify "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null 2>&1 && status_line "PUI update bridge" "PASS" "Pi Web $(jget upstream.gui.version)" || status_line "PUI update bridge" "FAIL" "missing or mismatched"

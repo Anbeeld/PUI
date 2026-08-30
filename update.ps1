@@ -68,7 +68,29 @@ finally { $ErrorActionPreference = $prev }
 if ($subagentsSnapshotExit -ne 0) {
   Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $subagentsSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  $backgroundSnapshot = $null
+  $subagentsSnapshot = $null
   Write-Host "  could not snapshot pi-subagents prompt artifacts; update aborted" -ForegroundColor Red
+  exit 1
+}
+$globalRoot = & npm root -g
+$reasoningPatch = Join-Path $ScriptDir "lib\pui-reasoning-summary-patch.js"
+$reasoningSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-reasoning-summary-" + [guid]::NewGuid().ToString("N"))
+$reasoningPatchCommitted = $false
+$reasoningPiWebRoot = Join-Path (Join-Path $globalRoot "@agegr") "pi-web"
+$reasoningStandaloneRoot = Join-Path $globalRoot "@earendil-works\pi-coding-agent"
+New-Item -ItemType Directory -Path $reasoningSnapshot -Force | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $reasoningPatch snapshot $reasoningSnapshot $ScriptDir $reasoningPiWebRoot $reasoningStandaloneRoot 2>&1 | Out-Null; $reasoningSnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($reasoningSnapshotExit -ne 0) {
+  Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $subagentsSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $reasoningSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  $backgroundSnapshot = $null
+  $subagentsSnapshot = $null
+  $reasoningSnapshot = $null
+  Write-Host "  could not snapshot Responses reasoning-summary artifacts; update aborted" -ForegroundColor Red
   exit 1
 }
 
@@ -204,6 +226,14 @@ if ($backportExit -ne 0) { Write-Host "  Pi #8782 backport could not be applied;
 Assert-NoInjectedFailure "pi-8782-backport"
 Write-Host "  Pi #8782 backport applied to Pi Web runtime"
 
+$standalonePiRoot = Join-Path $globalRoot "@earendil-works\pi-coding-agent"
+$reasoningPatchScript = Join-Path $ScriptDir "lib\pui-reasoning-summary-patch.js"
+$integrationScript = Join-Path $ScriptDir "lib\pui-web-integration.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $reasoningPatchScript migrate-legacy $ScriptDir $piWebPkgRoot $standalonePiRoot 2>&1 | Out-Null; $reasoningMigrationExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($reasoningMigrationExit -ne 0) { Write-Host "  previous reasoning-summary ownership could not be migrated; update aborted" -ForegroundColor Red; exit 1 }
+
 # Re-apply PUI icon override (npm update overwrites the package files).
 $puiIconsDir = Join-Path $ScriptDir "assets\icons"
 if (Test-Path $puiIconsDir) {
@@ -227,7 +257,7 @@ if (Test-Path $puiIconsDir) {
         $brandingExit = $LASTEXITCODE
       } finally { $ErrorActionPreference = $prev }
       if ($brandingExit -ne 0) { throw "text branding helper exited $brandingExit" }
-      & node (Join-Path $ScriptDir "lib\pui-web-integration.js") apply $ScriptDir $piWebPkgRoot 2>&1 | ForEach-Object { Write-Host "    $_" }
+      & node $integrationScript apply $ScriptDir $piWebPkgRoot 2>&1 | ForEach-Object { Write-Host "    $_" }
       if ($LASTEXITCODE -ne 0) { throw "Pi Web update integration failed" }
       Assert-NoInjectedFailure "pi-web-integration"
     }
@@ -239,6 +269,16 @@ if (Test-Path $puiIconsDir) {
   Write-Host "  PUI icon directory missing: $puiIconsDir" -ForegroundColor Red
   exit 1
 }
+
+# Apply after branding because both transforms own Pi Web page bundles.
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $reasoningPatchScript apply $ScriptDir $piWebPkgRoot $standalonePiRoot 2>&1 | Out-Null; $reasoningPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($reasoningPatchExit -ne 0) { Write-Host "  reasoning-summary compatibility patch could not be applied; update aborted" -ForegroundColor Red; exit 1 }
+Assert-NoInjectedFailure "reasoning-summary-patch"
+Write-Host "  Responses reasoning-summary display patch applied to Pi Web and standalone Pi"
+& node $integrationScript finalize $ScriptDir $piWebPkgRoot 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  Pi Web update integration finalization failed; update aborted" -ForegroundColor Red; exit 1 }
 
 # 5. reconcile the exact PUI-managed extension set.
 $installedPackages = @()
@@ -345,8 +385,8 @@ Write-Host "  pi-background-tasks compact model guidance applied"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch apply 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
-if ($subagentsPatchExit -ne 0) { Write-Host "  pi-subagents model policy patch could not be applied (version or metadata drift); update aborted." -ForegroundColor Red; exit 1 }
-Write-Host "  pi-subagents model policy applied"
+if ($subagentsPatchExit -ne 0) { Write-Host "  pi-subagents policy patch could not be applied (version or metadata drift); update aborted." -ForegroundColor Red; exit 1 }
+Write-Host "  pi-subagents policy applied"
 
 Write-Host "  reconciling managed Playwright MCP..."
 $mcpDef = [ordered]@{
@@ -374,14 +414,14 @@ if ($mcpExit -ne 0) {
   exit 1
 }
 # Reconcile MCP footer status: keep the extension status bar quiet.
-$mcFooterCfg = '{"settings":{"mcpFooterStatus":"off"}}'
+$mcFooterCfg = @{ settings = @{ mcpFooterStatus = [string]$Stack.mcp.footerStatus } } | ConvertTo-Json -Compress
 $mcFooterFile = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllText($mcFooterFile, $mcFooterCfg, [System.Text.UTF8Encoding]::new($false))
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $Lib "merge-object" $mcpShared "@$mcFooterFile" 2>&1 | Out-Null; $mcFooterExit = $LASTEXITCODE }
 finally { Remove-Item $mcFooterFile -Force -ErrorAction SilentlyContinue; $ErrorActionPreference = $prev }
 if ($mcFooterExit -ne 0) { Write-Host "  MCP footer status reconciliation failed" -ForegroundColor Red; exit 1 }
-Write-Host "  MCP footer status hidden (mcpFooterStatus=off)"
+Write-Host "  MCP footer status configured (mcpFooterStatus=$($Stack.mcp.footerStatus))"
 Assert-NoInjectedFailure "config-migration"
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") install $ScriptDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension replacement failed" -ForegroundColor Red; exit 1 }
@@ -492,9 +532,33 @@ if ($subagentsGuardExit -eq 75 -or $subagentsGuardExit -eq 76) {
   if (-not (Test-Path $subagentsGuardReady)) { throw "Subagents prompt rollback guard did not become ready" }
   $subagentsPatchCommitted = $true
 }
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $reasoningPatch spawn-guard $reasoningSnapshot $puiVersion $ScriptDir $reasoningPiWebRoot $reasoningStandaloneRoot 2>&1 | Out-Null; $reasoningGuardExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($reasoningGuardExit -eq 75 -or $reasoningGuardExit -eq 76) {
+  $reasoningPatchCommitted = $true
+  Remove-Item $reasoningSnapshot -Recurse -Force
+  $reasoningSnapshot = $null
+} elseif ($reasoningGuardExit -ne 0) {
+  throw "Could not start the outer-transaction reasoning-summary rollback guard"
+} else {
+  $reasoningGuardReady = Join-Path $reasoningSnapshot "guard-ready"
+  for ($guardWait = 0; $guardWait -lt 50 -and -not (Test-Path $reasoningGuardReady); $guardWait += 1) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path $reasoningGuardReady)) { throw "Reasoning-summary rollback guard did not become ready" }
+  $reasoningPatchCommitted = $true
+}
 
 Write-Host "`nUpdate complete: all doctor checks passed." -ForegroundColor Green
 } finally {
+  if ($reasoningSnapshot -and -not $reasoningPatchCommitted) {
+    $reasoningSnapshotResolved = $false
+    $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $reasoningPatch restore-snapshot $reasoningSnapshot $ScriptDir $reasoningPiWebRoot $reasoningStandaloneRoot 2>&1 | Out-Null; $reasoningRestoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($reasoningRestoreExit -eq 0) { $reasoningSnapshotResolved = $true }
+    else { Write-Host "  FAILED to restore Responses reasoning-summary artifacts; recovery snapshot retained at $reasoningSnapshot" -ForegroundColor Red }
+    if ($reasoningSnapshotResolved) { Remove-Item $reasoningSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
   if ($subagentsSnapshot -and -not $subagentsPatchCommitted) {
     $subagentsSnapshotResolved = $false
     $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"

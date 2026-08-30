@@ -225,9 +225,9 @@ test("resolver follows Pi Web's private coding-agent and agent-core tree", (t) =
   const fixture = makePiWebFixture();
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
   const runtime = resolveRuntime({ piWebRoot: fixture.piWebRoot });
-  assert.equal(runtime.piWebRoot, path.resolve(fixture.piWebRoot));
-  assert.equal(runtime.codingAgentRoot, path.resolve(fixture.codingRoot));
-  assert.equal(runtime.agentCoreRoot, path.resolve(fixture.coreRoot));
+  assert.equal(runtime.piWebRoot, fs.realpathSync(path.resolve(fixture.piWebRoot)));
+  assert.equal(runtime.codingAgentRoot, fs.realpathSync(path.resolve(fixture.codingRoot)));
+  assert.equal(runtime.agentCoreRoot, fs.realpathSync(path.resolve(fixture.coreRoot)));
   assert.equal(runtime.targets.agentLoop.relative, "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js");
   assert.equal(runtime.targets.agentSession.relative, "node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js");
 });

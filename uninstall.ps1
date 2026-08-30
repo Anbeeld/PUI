@@ -29,17 +29,34 @@ function Expand-Path($p) { if ($p -match '^~') { return (Join-Path $env:USERPROF
 
 Write-Host "=== PUI uninstall (Windows) ===" -ForegroundColor Cyan
 
-# 1. remove Pi Web autostart created by PUI (Startup folder launcher)
+# 1. remove Pi Web autostart created by PUI (Startup folder launcher). Compare
+# complete canonical content so drifted/user-modified files are preserved.
 $startupFolder = [Environment]::GetFolderPath("Startup")
 $launcherVbs = Join-Path $startupFolder "pui-piweb.vbs"
 $launcherBat = Join-Path $startupFolder "pui-piweb.bat"
-foreach ($lf in @($launcherVbs, $launcherBat)) {
-  if (Test-Path $lf) {
-    Write-Host "  removing autostart launcher: $lf"
-    Remove-Item $lf -Force -ErrorAction SilentlyContinue
+$piWebCmd = "$env:APPDATA\npm\pi-web.cmd"
+$vbsContent = @"
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""$piWebCmd"" --no-open", 0, False
+"@
+$batContent = "@echo off`r`nset PI_WEB_SKIP_VERSION_CHECK=1`r`n`"%APPDATA%\npm\pi-web.cmd`" --no-open`r`n"
+if (Test-Path $launcherVbs) {
+  if (([System.IO.File]::ReadAllText($launcherVbs) -ceq $vbsContent)) {
+    Write-Host "  removing canonical autostart launcher: $launcherVbs"
+    Remove-Item $launcherVbs -Force
+  } else {
+    Write-Host "  autostart launcher differs from the complete canonical shape; preserving (user-owned): $launcherVbs" -ForegroundColor Yellow
   }
 }
-Write-Host "  autostart launcher removed (if present)"
+if (Test-Path $launcherBat) {
+  if (([System.IO.File]::ReadAllText($launcherBat) -ceq $batContent)) {
+    Write-Host "  removing canonical legacy autostart launcher: $launcherBat"
+    Remove-Item $launcherBat -Force
+  } else {
+    Write-Host "  legacy autostart launcher differs from the complete canonical shape; preserving (user-owned): $launcherBat" -ForegroundColor Yellow
+  }
+}
+if (-not (Test-Path $launcherVbs) -and -not (Test-Path $launcherBat)) { Write-Host "  no canonical autostart launcher found" }
 
 # Stop only processes launched from the globally installed Pi Web package. This
 # releases Windows' file locks before a full npm uninstall and matches the
@@ -73,6 +90,8 @@ if (Test-Path $mcpShared) {
     $pkgMatch = ($pw.command -eq [string]$Stack.mcp.command) -and ($exArgs -eq $puiArgs) -and ($pw.lifecycle -eq [string]$Stack.mcp.lifecycle) -and ($exDirectTools -eq $puiDirectTools)
     if ($pkgMatch) {
       Write-Host "  removing PUI-managed 'playwright' MCP entry from $mcpShared"
+      & node $Lib "backup" $mcpShared | Out-Null
+      if ($LASTEXITCODE -ne 0) { Write-Host "  MCP config backup failed; uninstall aborted" -ForegroundColor Red; exit 1 }
       & node $Lib "remove-server" $mcpShared "playwright" | Out-Null
     } else {
       Write-Host "  'playwright' MCP entry differs from PUI-managed shape; preserving (user-owned)." -ForegroundColor Yellow
@@ -102,7 +121,14 @@ try {
 
 # 3b. Restore original pi-web files (undo PUI branding/icon overrides).
 try {
-  $piWebRoot = Join-Path (Join-Path (& npm root -g) "@agegr") "pi-web"
+  $globalRoot = & npm root -g
+  $piWebRoot = Join-Path (Join-Path $globalRoot "@agegr") "pi-web"
+  $standalonePiRoot = Join-Path $globalRoot "@earendil-works\pi-coding-agent"
+  $reasoningPatchScript = Join-Path $ScriptDir "lib\pui-reasoning-summary-patch.js"
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $reasoningPatchScript remove $piWebRoot $standalonePiRoot $ScriptDir 2>&1 | Out-Null; $reasoningRemoveExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+  if ($reasoningRemoveExit -ne 0) { Write-Host "  reasoning-summary patch differs from its owned shape; preserving." -ForegroundColor Yellow }
   if (Test-Path $piWebRoot) {
     $backportScript = Join-Path $ScriptDir "lib\pui-pi-8782-backport.js"
     $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
@@ -136,8 +162,8 @@ $subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch remove 2>&1 | Out-Null; $subagentsRemoveExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
-if ($subagentsRemoveExit -eq 0) { Write-Host "  removed the PUI-owned pi-subagents model policy patch when present" }
-else { Write-Host "  pi-subagents model policy patch differs from its PUI-owned shape; preserving." -ForegroundColor Yellow }
+if ($subagentsRemoveExit -eq 0) { Write-Host "  removed the PUI-owned pi-subagents policy patch when present" }
+else { Write-Host "  pi-subagents policy patch differs from its PUI-owned shape; preserving." -ForegroundColor Yellow }
 
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") remove $ScriptDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension differs from its owned shape; preserving." -ForegroundColor Yellow }

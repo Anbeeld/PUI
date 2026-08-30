@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.2.0
+
+- Replaced the built-in subagent profiles with execution-focused `Worker`, read-only local `Explore`, and read-only external `Research`. Unknown types fail closed, custom profiles can override defaults case-insensitively, each Pi instance permits 128 running and 512 queued background agents, and background completions reach an active parent at the next turn boundary instead of waiting for the run to settle.
+- Made successful `/goal` completion visible as a durable, expanded `Goal complete` message without another model request. The summary is now the complete user-facing response, accepts up to Pi's 50 KB UTF-8 tool-output limit without truncation, reuses Pi Web's roomier compaction typography only for the completion body, and leaves rejected calls and original tool details in Process.
+- Added exact-version Responses API reasoning-summary display to Pi Web and standalone Pi. Parser-produced summaries stream as ordinary text, persisted, deferred, and exported summaries require validated signatures, raw reasoning remains hidden, and entirely bold summaries render as italics.
+- Rendered recognized pi-goal start and resume prompts in Pi Web as canonical `/goal …` and `/goal resume` commands without changing stored prompts or model context. Active extension-started goal runs now retain the optimistic command while Pi Web waits for the persisted transcript instead of briefly removing it after submission.
+- Preserved line breaks, indentation, tabs, and repeated spaces in new `/goal` objectives instead of flattening parsed tokens into one line. Subcommand, token-budget, quote-removal, validation, and `/goal edit` behavior remain compatible.
+- Collapsed Pi Web subagent completion notifications to a timestamped tool-like row whose entire header toggles the existing content, Copy, and Details actions by mouse or keyboard. Extension-started completions now also appear live after a streaming reconnect.
+- Made Pi Web update-integration changes transactional, so failed apply or removal operations restore the previous state. The update bridge and detached worker now reject missing, extra, or hash-drifted installed extension files before loading updater code.
+- Made doctor fail when managed `mcpFooterStatus` is missing or drifted and verify Pi Web's actually installed runtime version rather than its dependency declaration. Uninstall preserves modified or unrecognized Pi Web autostart files with a warning and backs up MCP JSON before removing its owned server; Unix install now confirms every detected Pi Web process stopped before package mutation.
+- Kept Unix lifecycle scripts on LF line endings in Windows worktrees so mounted checkouts run directly under WSL and other Linux environments.
+
 ## v1.1.2
 
 - Backported upstream Pi #8782 to PUI's pinned Pi Web runtime so long tool loops compact before the next provider request instead of overrunning the configured context threshold. This is a temporary Pi Web-only compatibility shim until PUI can pin the first released Pi version containing the fix; standalone `pi` remains stock 0.84.3.

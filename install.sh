@@ -71,6 +71,7 @@ PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
 PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
 PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
+MCP_FOOTER_STATUS="$(jget mcp.footerStatus)"
 PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
 PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
 PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
@@ -166,9 +167,11 @@ if ! stop_existing_piweb_autostart; then
   gate G3 "pi-web stop" 0
   exit 1
 fi
-if has_cmd pi-web; then
-  pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]' 2>/dev/null || true
-  sleep 1
+pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]' 2>/dev/null || true
+sleep 1
+if pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1; then
+  echo "  Pi Web did not stop; install aborted" >&2
+  exit 1
 fi
 set +e
 node "$SCRIPT_DIR/lib/pui-updater.js" standalone-busy
@@ -217,6 +220,12 @@ if ! node "$SCRIPT_DIR/lib/pui-pi-8782-backport.js" apply "$SCRIPT_DIR" "$PIWEB_
 fi
 echo "  Pi #8782 backport applied to Pi Web runtime"
 
+PI_STANDALONE_ROOT="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"
+if ! node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" migrate-legacy "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" "$PI_STANDALONE_ROOT" >/dev/null; then
+  echo "  previous reasoning-summary ownership could not be migrated; install aborted" >&2
+  exit 1
+fi
+
 # Override pi-web PWA icons with PUI's improved version (white glyph on teal).
 # Setup-time asset override: re-applied on every install/update since npm
 # overwrites the package. Originals are backed up beside the files.
@@ -244,6 +253,18 @@ if [ -d "$PUI_ICONS_DIR" ]; then
   fi
 else
   echo "  PUI icon directory missing: $PUI_ICONS_DIR" >&2
+  exit 1
+fi
+
+# Apply this display patch after branding because both transforms own Pi Web
+# page bundles. Uninstall restores them in the reverse order.
+if ! node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" apply "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" "$PI_STANDALONE_ROOT" >/dev/null; then
+  echo "  reasoning-summary compatibility patch could not be applied; install aborted" >&2
+  exit 1
+fi
+echo "  Responses reasoning-summary display patch applied to Pi Web and standalone Pi"
+if ! node "$SCRIPT_DIR/lib/pui-web-integration.js" finalize "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" >/dev/null; then
+  echo "  Pi Web update integration finalization failed; install aborted" >&2
   exit 1
 fi
 
@@ -306,12 +327,12 @@ if ! node "$SCRIPT_DIR/lib/pui-background-tasks-patch.js" apply >/dev/null 2>&1;
 else
   echo "  pi-background-tasks compact model guidance applied"
 fi
-# Apply PUI's mapped subagent model defaults and parent reasoning inheritance.
+# Apply PUI's subagent taxonomy, capabilities, routing, model, and reasoning policy.
 if ! node "$SCRIPT_DIR/lib/pui-subagents-patch.js" apply >/dev/null 2>&1; then
-  echo "  pi-subagents model policy patch could not be applied (version or metadata drift); install aborted." >&2
+  echo "  pi-subagents policy patch could not be applied (version or metadata drift); install aborted." >&2
   G4=0
 else
-  echo "  pi-subagents model policy applied"
+  echo "  pi-subagents policy applied"
 fi
 pi list 2>&1 | sed 's/^/    /' || true
 gate G4 "packages" "$G4"
@@ -379,8 +400,9 @@ if [ "$RC" -eq 2 ]; then
 elif [ "$RC" -ne 0 ]; then gate G7 "mcp" 0; exit 1; fi
 # PUI opinion: keep the MCP footer status quiet. mcpFooterStatus="off" clears
 # the "MCP: N server(s) enabled" segment from the extension status bar.
-node_config merge-object "$MCP_SHARED" '{"settings":{"mcpFooterStatus":"off"}}' >/dev/null || { echo "  MCP footer status merge failed" >&2; gate G7 "mcp" 0; exit 1; }
-echo "  MCP footer status hidden (mcpFooterStatus=off)"
+MCP_FOOTER_CFG="$(node -e 'process.stdout.write(JSON.stringify({settings:{mcpFooterStatus:process.argv[1]}}))' "$MCP_FOOTER_STATUS")"
+node_config merge-object "$MCP_SHARED" "$MCP_FOOTER_CFG" >/dev/null || { echo "  MCP footer status merge failed" >&2; gate G7 "mcp" 0; exit 1; }
+echo "  MCP footer status configured (mcpFooterStatus=$MCP_FOOTER_STATUS)"
 G7=1
 node -e 'const m=require(process.argv[1]),s=require(process.argv[2]);const p=m.mcpServers&&m.mcpServers.playwright;process.exit(p&&JSON.stringify(p.directTools)===JSON.stringify(s.mcp.directTools)&&m.settings?.disableProxyTool!==true?0:1)' "$MCP_SHARED" "$STACK" || G7=0
 [ "$(node -e 'const m=require(process.argv[1]);process.stdout.write(m.settings?.disableProxyTool===true?"1":"0")' "$MCP_SHARED")" = "1" ] && echo "  MCP proxy is disabled by settings.disableProxyTool; PUI requires it for non-direct tools." >&2

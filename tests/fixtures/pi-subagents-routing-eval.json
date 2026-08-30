@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "scoring": {
+    "missedOpportunity": "A useful specialist route is available but the main agent does not use it.",
+    "overDelegation": "The main agent delegates work that should remain in main or transfers retained decision ownership.",
+    "ambiguousRoute": "The guidance does not identify one safe ownership-preserving route.",
+    "policyViolation": "A route crosses a capability or trust boundary, silently substitutes an unknown type, or transfers final ownership."
+  },
+  "cases": [
+    {
+      "id": "trivial-local-read",
+      "request": "Where is authenticate defined? Give the file and exported symbol.",
+      "acceptableCandidateRoutes": ["Main", "Explore"]
+    },
+    {
+      "id": "current-upstream-evidence",
+      "request": "Check current authoritative upstream release notes and docs for whether pi-subagents changed its agent registry API, with sources.",
+      "acceptableCandidateRoutes": ["Research"]
+    },
+    {
+      "id": "decided-bounded-execution",
+      "request": "The decision and acceptance criteria are supplied: implement the bounded login-validation change across auth.js and login.js, then run the narrow tests.",
+      "acceptableCandidateRoutes": ["Worker"]
+    },
+    {
+      "id": "architecture-and-execution",
+      "request": "Redesign authentication for this application and implement it.",
+      "acceptableCandidateRoutes": ["Main", "Main+Worker"]
+    },
+    {
+      "id": "mixed-local-and-upstream",
+      "request": "Determine whether our local adapter must change for the latest upstream API; inspect local code and current upstream sources, then recommend action.",
+      "acceptableCandidateRoutes": ["Main+Explore+Research"]
+    },
+    {
+      "id": "trivial-known-edit",
+      "request": "Fix the known typo on line 3 of README.md.",
+      "acceptableCandidateRoutes": ["Main"]
+    },
+    {
+      "id": "overall-plan",
+      "request": "Propose the architecture and phased plan for a new offline sync feature; do not edit.",
+      "acceptableCandidateRoutes": ["Main"]
+    },
+    {
+      "id": "unknown-explicit-type",
+      "request": "Invoke the subagent tool with subagent_type set to Bogus.",
+      "acceptableCandidateRoutes": ["fail-closed"]
+    }
+  ]
+}
