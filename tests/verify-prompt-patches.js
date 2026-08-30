@@ -43,12 +43,18 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   const toolSource = fs.readFileSync(path.join(packageDir, "src", "tools", "agent-tool.ts"), "utf8");
   assert.match(toolSource, new RegExp(JSON.stringify(subagentsPatch.POLICY_GUIDELINE).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   for (const rule of subagentsPatch.PARENT_OWNERSHIP_GUIDELINES) assert.equal(toolSource.split(rule).length - 1, 1);
-  assert.match(toolSource, /Foreground calls wait for their result and run sequentially\. Use foreground when the next parent action depends on that result; use run_in_background: true when useful independent work can proceed before collection\./);
-  assert.match(toolSource, /Run background agents in parallel only when their tracks are independent and do not overlap writes or other shared mutable state\./);
-  assert.match(toolSource, /true returns an agent ID immediately and runs in background; false waits for the result/);
-  assert.doesNotMatch(toolSource, /work you don't need immediately|target count|concurrency limit|max concurrency|capacity is available/);
+  assert.match(toolSource, /Launch a background specialist only for substantial independent work that can proceed concurrently with main or other agents\./);
+  assert.match(toolSource, /Profile fit selects a capability only after the parallelism gate passes; it does not justify delegation by itself\./);
+  assert.equal(toolSource.split("Use foreground only when the user explicitly requests it").length - 1, 1);
+  assert.doesNotMatch(toolSource, /autonomously handle complex tasks|Run background agents in parallel only when/);
+  assert.match(toolSource, /Keep the coherent critical path in main and execute it there\./);
+  assert.match(toolSource, /Default: delegate only when one substantial independent track can run in the background while main continues substantial non-conflicting work, or when two or more substantial independent tracks can run concurrently\./);
+  assert.match(toolSource, /If you must wait before useful independent work can continue, do the work in main\. Use foreground only when the user explicitly requests it\./);
+  assert.match(toolSource, /PUI built-ins default to background execution\. Omitted uses the selected profile default, or foreground when the profile has none; set false only for an explicit user request for foreground execution\./);
+  assert.doesNotMatch(toolSource, /Use foreground when|substantial intermediate output justifies|work would consume many tool calls|Default routes: local static evidence|sequence them through main|PUI built-ins: false|target count|concurrency limit|max concurrency|capacity is available/);
   const defaultsSource = fs.readFileSync(path.join(packageDir, "src", "config", "default-agents.ts"), "utf8");
   assert.match(defaultsSource, /\["web_search", "source_check", "fetch_content", "get_search_content"\]/);
+  assert.equal(defaultsSource.split("runInBackground: true").length - 1, 3);
   assert.doesNotMatch(defaultsSource, /anthropic\/claude-haiku/);
   const agentTypesSource = fs.readFileSync(path.join(packageDir, "src", "config", "agent-types.ts"), "utf8");
   assert.match(agentTypesSource, /DEFAULT_AGENT_NAMES = \["Worker", "Explore", "Research"\]/);
@@ -59,6 +65,7 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   const invocationSource = fs.readFileSync(invocationFile, "utf8");
   assert.match(invocationSource, /modelInput: params\.model,/);
   assert.match(invocationSource, /thinking: params\.thinking as ThinkingLevel/);
+  assert.match(invocationSource, /runInBackground: params\.run_in_background \?\? agentConfig\?\.runInBackground \?\? false/);
   assert.doesNotMatch(invocationSource, /agentConfig\?\.(model|thinking)/);
   const spawnFile = path.join(packageDir, "src", "tools", "spawn-config.ts");
   const spawnSource = fs.readFileSync(spawnFile, "utf8");
@@ -243,6 +250,7 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         const inherited = { systemPrompt: "PARENT PREFIX", cwd: "C:/repo" };
         for (const name of names) {
           const config = DEFAULT_AGENTS.get(name);
+          if (config.runInBackground !== true) throw new Error(name + " does not default to background execution");
           const rendered = buildAgentPrompt(config, "C:/repo", env, inherited);
           if (!rendered.startsWith("PARENT PREFIX")) throw new Error(name + " lost inherited prefix");
           if (name === "Worker") {
@@ -257,7 +265,9 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         if (definition.description.includes("Use Plan for architecture")) throw new Error("Plan route remains");
         if (definition.description.includes("Provide clear, detailed prompts so the agent can work autonomously")) throw new Error("redundant generic prompt guidance remains");
         const promptDescription = definition.parameters.properties.prompt.description;
-        if (!promptDescription.includes("selected agent type's prompt recipe")) throw new Error("prompt parameter does not point to type recipe");
+        if (!promptDescription.includes("delegated parallel track") || !promptDescription.includes("selected agent type's prompt recipe")) throw new Error("prompt parameter does not enforce a parallel type recipe");
+        const backgroundDescription = definition.parameters.properties.run_in_background.description;
+        if (!backgroundDescription.includes("PUI built-ins default to background execution") || !backgroundDescription.includes("Omitted uses the selected profile default, or foreground when the profile has none") || !backgroundDescription.includes("explicit user request")) throw new Error("background parameter does not document execution-mode resolution");
         const typeDescription = definition.parameters.properties.subagent_type.description;
         if (!typeDescription.includes("Use an exact listed name; unknown names fail closed")) throw new Error("type parameter omits fail-closed guidance");
         const thinkingValues = definition.parameters.properties.thinking.anyOf?.map((schema) => schema.const);

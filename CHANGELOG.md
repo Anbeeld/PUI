@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.1
+
+- Changed subagents so they only take on substantial work that can run at the same time as main work or another subagent. Sequential work stays with main. Built-in subagents run in the background by default, explicit foreground requests still work, and `Explore` does a quick targeted search unless asked to investigate more deeply.
+
 ## v1.2.0
 
 - Replaced the built-in subagent profiles with execution-focused `Worker`, read-only local `Explore`, and read-only external `Research`. Unknown types fail closed, custom profiles can override defaults case-insensitively, each Pi instance permits 128 running and 512 queued background agents, and background completions reach an active parent at the next turn boundary instead of waiting for the run to settle.

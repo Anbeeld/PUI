@@ -1,46 +1,62 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "scoring": {
-    "missedOpportunity": "A useful specialist route is available but the main agent does not use it.",
-    "overDelegation": "The main agent delegates work that should remain in main or transfers retained decision ownership.",
-    "ambiguousRoute": "The guidance does not identify one safe ownership-preserving route.",
-    "policyViolation": "A route crosses a capability or trust boundary, silently substitutes an unknown type, or transfers final ownership."
+    "missedParallelOpportunity": "A substantial independent track could have run concurrently with main or another background agent, but all work was executed serially.",
+    "sequentialDelegation": "The main agent delegates a foreground task or a task it must await before any useful independent work can continue.",
+    "idleParentDelegation": "The main agent launches one background agent but retains no substantial independent work while it runs.",
+    "ambiguousRoute": "The guidance does not identify one dependency-safe, ownership-preserving route.",
+    "policyViolation": "A route crosses a capability or trust boundary, silently substitutes an unknown type, overlaps mutable state, or transfers final ownership."
   },
   "cases": [
     {
       "id": "trivial-local-read",
       "request": "Where is authenticate defined? Give the file and exported symbol.",
-      "acceptableCandidateRoutes": ["Main", "Explore"]
+      "acceptableCandidateRoutes": ["Main"]
     },
     {
-      "id": "current-upstream-evidence",
-      "request": "Check current authoritative upstream release notes and docs for whether pi-subagents changed its agent registry API, with sources.",
-      "acceptableCandidateRoutes": ["Research"]
+      "id": "substantial-sequential-local-analysis",
+      "request": "Trace the local authentication control flow and identify the root cause before making the one dependent fix. There is no other independent work.",
+      "acceptableCandidateRoutes": ["Main"]
     },
     {
-      "id": "decided-bounded-execution",
-      "request": "The decision and acceptance criteria are supplied: implement the bounded login-validation change across auth.js and login.js, then run the narrow tests.",
-      "acceptableCandidateRoutes": ["Worker"]
+      "id": "sequential-current-upstream-evidence",
+      "request": "Check current authoritative upstream release notes and docs, then use that answer to decide the next step. There is no other independent work.",
+      "acceptableCandidateRoutes": ["Main"]
     },
     {
-      "id": "architecture-and-execution",
-      "request": "Redesign authentication for this application and implement it.",
-      "acceptableCandidateRoutes": ["Main", "Main+Worker"]
+      "id": "sequential-decided-execution",
+      "request": "Implement the bounded login-validation change across auth.js and login.js, then run its dependent narrow tests. This is the only work track.",
+      "acceptableCandidateRoutes": ["Main"]
     },
     {
-      "id": "mixed-local-and-upstream",
-      "request": "Determine whether our local adapter must change for the latest upstream API; inspect local code and current upstream sources, then recommend action.",
-      "acceptableCandidateRoutes": ["Main+Explore+Research"]
+      "id": "main-plus-background-explore",
+      "request": "Implement the decided parser change in parser.js while independently auditing the unrelated logging module for the requested call-site inventory.",
+      "acceptableCandidateRoutes": ["Main+Explore(background)"]
     },
     {
-      "id": "trivial-known-edit",
-      "request": "Fix the known typo on line 3 of README.md.",
+      "id": "main-plus-background-research",
+      "request": "Implement the decided local compatibility shim while independently checking authoritative upstream release notes for a separate follow-up recommendation.",
+      "acceptableCandidateRoutes": ["Main+Research(background)"]
+    },
+    {
+      "id": "two-background-specialists",
+      "request": "Independently inspect our local adapter and current upstream API sources, then synthesize whether the adapter must change.",
+      "acceptableCandidateRoutes": ["Main+Explore(background)+Research(background)"]
+    },
+    {
+      "id": "dependent-analysis-and-edit",
+      "request": "Find the crash root cause, then implement the fix that depends on that finding. No useful work can continue before the finding.",
       "acceptableCandidateRoutes": ["Main"]
     },
     {
       "id": "overall-plan",
       "request": "Propose the architecture and phased plan for a new offline sync feature; do not edit.",
       "acceptableCandidateRoutes": ["Main"]
+    },
+    {
+      "id": "explicit-foreground-request",
+      "request": "Explicitly use a foreground Explore subagent to locate authenticate, even though this is sequential.",
+      "acceptableCandidateRoutes": ["Explore(foreground:user-requested)"]
     },
     {
       "id": "unknown-explicit-type",

@@ -15,8 +15,8 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.2.0");
-  assert.equal(release.stack.reasoningSummaryPatch.revision, 15, "v1.2.0 must migrate the revision-14 transform to make the full subagent notification header interactive");
+  assert.equal(release.version, "1.2.1");
+  assert.equal(release.stack.reasoningSummaryPatch.revision, 15, "v1.2.1 must retain the revision-15 reasoning transform");
   for (const spec of Object.values(release.managed)) {
     assert.match(spec, /@\d+\.\d+\.\d+$/);
     assert.doesNotMatch(spec, /@latest$/);
