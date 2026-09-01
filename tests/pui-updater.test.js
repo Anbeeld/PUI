@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
+const { spawnSync } = require("node:child_process");
 
 const repoRoot = path.resolve(__dirname, "..");
 const {
@@ -13,6 +14,8 @@ const {
   backupConfigFiles,
   backupConfigFilesForStacks,
   restoreConfigFiles,
+  rollbackScriptWithRecovery,
+  runScript,
   runTransaction,
   scriptEnvironment,
   isStandalonePiCommand,
@@ -276,11 +279,18 @@ test("busy Pi Web and standalone Pi prevent mutation", async () => {
   assert.equal(mutated, true);
 });
 
-test("Pi Web idle verification fails closed when activity cannot be read", async (t) => {
-  const originalFetch = global.fetch;
-  t.after(() => { global.fetch = originalFetch; });
-  global.fetch = async () => { throw new Error("connection refused"); };
-  await assert.rejects(piWebIdle(), /Could not verify Pi Web idle state/);
+test("Pi Web idle verification permits recovery when the endpoint and managed process are both absent", async () => {
+  await piWebIdle({
+    fetch: async () => { throw new Error("connection refused"); },
+    listPiWebProcesses: () => [],
+  });
+});
+
+test("Pi Web idle verification fails closed when a managed process exists but activity cannot be read", async () => {
+  await assert.rejects(piWebIdle({
+    fetch: async () => { throw new Error("connection refused"); },
+    listPiWebProcesses: () => [{ pid: 42, line: "pi-web" }],
+  }), /Could not verify Pi Web idle state/);
 });
 
 test("standalone Pi detection recognizes npm shim process command lines", () => {
@@ -297,20 +307,41 @@ test("pi-web process detection matches the managed GUI server and excludes the a
 });
 
 
-test("restart relaunch reuses the Windows autostart VBS launcher when present", () => {
-  const vbs = path.join("appdata", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "pui-piweb.vbs");
-  const spec = piWebLaunchSpec({ platform: "win32", appData: "appdata", env: {}, existsSync: (p) => p === vbs });
-  assert.equal(spec.file, "wscript.exe");
-  assert.deepEqual(spec.args, [vbs]);
+test("Windows relaunch uses the absolute Pi Web command directly instead of trusting the Startup VBS", () => {
+  const piWebCmd = path.join("appdata", "npm", "pi-web.cmd");
+  const spec = piWebLaunchSpec({ platform: "win32", appData: "appdata", env: { ComSpec: "cmd.exe" }, existsSync: (p) => p === piWebCmd });
+  assert.equal(spec.file, "cmd.exe");
+  assert.deepEqual(spec.args, ["/d", "/s", "/c", `""${piWebCmd}" --no-open"`]);
+  assert.equal(spec.windowsVerbatimArguments, true);
+  assert.equal(spec.env.PI_WEB_SKIP_VERSION_CHECK, "1");
   assert.equal(spec.stopsExisting, false);
 });
 
-test("restart relaunch without autostart falls back to a cmd shim that skips pi-web's version check", () => {
-  const spec = piWebLaunchSpec({ platform: "win32", appData: "appdata", env: {}, existsSync: () => false });
-  assert.equal(spec.file, "cmd.exe");
-  assert.deepEqual(spec.args, ["/d", "/s", "/c", "pi-web --no-open"]);
-  assert.equal(spec.env.PI_WEB_SKIP_VERSION_CHECK, "1");
-  assert.equal(spec.stopsExisting, false);
+test("Windows relaunch executes a spaced absolute command with the hidden-launch environment", { skip: process.platform !== "win32" }, (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui launcher probe "));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const piWebCmd = path.join(root, "pi-web.cmd");
+  const marker = path.join(root, "result.txt");
+  fs.writeFileSync(piWebCmd, `@echo off\r\n> "${marker}" echo ARGS=%* ENV=%PI_WEB_SKIP_VERSION_CHECK%\r\n`);
+  const spec = piWebLaunchSpec({ platform: "win32", piWebCmd, env: process.env, existsSync: (p) => p === piWebCmd });
+  const result = spawnSync(spec.file, spec.args, { env: spec.env, windowsHide: true, windowsVerbatimArguments: spec.windowsVerbatimArguments });
+  assert.equal(result.status, 0);
+  assert.equal(fs.readFileSync(marker, "utf8").trim(), "ARGS=--no-open ENV=1");
+});
+
+test("Windows relaunch fails clearly when the absolute Pi Web command is missing", () => {
+  assert.throws(() => piWebLaunchSpec({ platform: "win32", appData: "appdata", env: {}, existsSync: () => false }), /launcher is missing.*pi-web\.cmd/i);
+});
+
+test("staged script failures retain output in the transaction log and surface the useful error", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-script-failure-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const logFile = path.join(root, "update.log");
+  fs.writeFileSync(path.join(root, "update.sh"), "#!/usr/bin/env bash\necho 'launcher health failed' >&2\nexit 7\n");
+  fs.chmodSync(path.join(root, "update.sh"), 0o755);
+  fs.writeFileSync(path.join(root, "update.ps1"), "Write-Error 'launcher health failed'\nexit 7\n");
+  assert.throws(() => runScript(root, [], { logFile, label: "target v1.2.2" }), /launcher health failed/);
+  assert.match(fs.readFileSync(logFile, "utf8"), /target v1\.2\.2[\s\S]*launcher health failed/);
 });
 
 test("restart relaunch delegates stop+start to the service manager when autostart is managed", () => {
@@ -372,6 +403,26 @@ test("a failure before mutation leaves the current composition untouched", async
   );
   assert.equal(applied, false);
   assert.equal(rolledBack, false);
+});
+
+test("rollback recovers from an old lifecycle script's restart failure only after certified validation", async () => {
+  const events = [];
+  await rollbackScriptWithRecovery({
+    version: "1.2.0",
+    runScript: () => { events.push("script"); throw new Error("old VBS restart failed"); },
+    ensurePiWebRunning: async () => events.push("relaunch"),
+    validateInstalled: async (version) => events.push(`validate:${version}`),
+  });
+  assert.deepEqual(events, ["script", "relaunch", "validate:1.2.0"]);
+});
+
+test("rollback preserves an old lifecycle failure when certified recovery validation also fails", async () => {
+  await assert.rejects(rollbackScriptWithRecovery({
+    version: "1.2.0",
+    runScript: () => { throw new Error("old apply failed"); },
+    ensurePiWebRunning: async () => {},
+    validateInstalled: async () => { throw new Error("identity mismatch"); },
+  }), /old apply failed[\s\S]*identity mismatch/);
 });
 
 test("post-mutation failure restores and validates the previous certified release", async () => {

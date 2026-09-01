@@ -250,12 +250,17 @@
     await poll(target);
   }
 
-  async function checkOnce() {
+  async function checkOnce(afterRestart = false) {
     try {
       const response = await fetch("/api/app-update", { cache: "no-store" });
       if (!response.ok) return;
       const info = await response.json();
       if (["success", "rolled-back", "recovery-required", "aborted"].includes(info.result)) return showTerminal(info);
+      if (info.result === "restarted" && !afterRestart) {
+        await fetch("/api/app-update", { method: "DELETE" }).catch(() => {});
+        return checkOnce(true);
+      }
+      if (!info.target && info.phase === "failed" && info.result === "failed") return restartFailed(info.error);
       if (info.phase && info.target) return poll(info.target);
       if (info.updateAvailable && localStorage.getItem(SKIP_KEY) !== info.latestVersion) showAvailable(info);
     } catch {

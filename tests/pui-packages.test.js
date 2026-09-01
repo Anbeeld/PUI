@@ -32,10 +32,11 @@ test("PUI manages pi-goal and retires pi-vcc", () => {
 test("PUI owns subagent taxonomy, capabilities, completion delivery, model mapping, and reasoning inheritance", () => {
   assert.deepEqual(stack.subagentsPromptPatch, {
     schemaVersion: 1,
-    revision: 9,
+    revision: 11,
     packagePath: "node_modules/@gotgenes/pi-subagents",
     files: [
       "src/tools/agent-tool.ts",
+      "src/session/prompts.ts",
       "src/config/default-agents.ts",
       "src/config/agent-types.ts",
       "src/config/invocation-config.ts",

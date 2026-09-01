@@ -271,20 +271,27 @@ test("bridge restart proceeds over a stale restart status", async (t) => {
   assert.equal(result.accepted, true);
 });
 
-test("bridge getUpdate passes through restart statuses", async (t) => {
+test("bridge consumes a completed restart once while retaining active and failed restart statuses", async (t) => {
   const { bridgePath, statusFile } = bridgeStatusFixture(t);
   const bridge = require(bridgePath);
   for (const status of [
     { id: "r1", phase: "restarting", result: null, at: Date.now() },
-    { id: "r2", phase: "complete", result: "restarted" },
     { id: "r3", phase: "failed", result: "failed", error: "boom" },
   ]) {
     fs.writeFileSync(statusFile, JSON.stringify(status));
     const result = await bridge.getUpdate();
     assert.equal(result.currentVersion, "1.0.4");
     assert.equal(result.phase, status.phase);
-    assert.equal(fs.existsSync(statusFile), true, "restart status must not be discarded");
+    assert.equal(fs.existsSync(statusFile), true, "actionable restart status must be retained");
   }
+
+  fs.writeFileSync(statusFile, JSON.stringify({ id: "r2", phase: "complete", result: "restarted" }));
+  const completed = await bridge.getUpdate();
+  assert.equal(completed.result, "restarted");
+  assert.equal(fs.existsSync(statusFile), false, "completed restart must not suppress future update discovery");
+  const discovered = await bridge.getUpdate();
+  assert.equal(discovered.result, undefined);
+  assert.equal(discovered.currentVersion, "1.0.4");
 });
 
 test("uninstall preserves a Pi Web integration whose ownership manifest changed", (t) => {
@@ -358,6 +365,23 @@ function appHarness(fetchImpl) {
 async function settle() {
   for (let index = 0; index < 8; index += 1) await new Promise((resolve) => setImmediate(resolve));
 }
+
+test("startup consumes a completed service restart and immediately checks for PUI updates", async () => {
+  const calls = [];
+  let getCount = 0;
+  const harness = appHarness(async (_url, options = {}) => {
+    const method = options.method || "GET";
+    calls.push(method);
+    if (method === "DELETE") return response({ acknowledged: true });
+    getCount += 1;
+    if (getCount === 1) return response({ currentVersion: "1.0.0", phase: "complete", result: "restarted" });
+    return response({ currentVersion: "1.0.0", latestVersion: "1.1.0", updateAvailable: true });
+  });
+  await settle();
+  assert.ok(calls.includes("DELETE"), "completed restart was acknowledged");
+  assert.ok(harness.findButton("Install"), "update discovery ran after restart cleanup");
+  assert.match(harness.body.textContent, /PUI v1\.1\.0 is available/);
+});
 
 test("app update flow survives backend restart and offers reload after success", async () => {
   const calls = [];

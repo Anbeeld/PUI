@@ -43,17 +43,32 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   const toolSource = fs.readFileSync(path.join(packageDir, "src", "tools", "agent-tool.ts"), "utf8");
   assert.match(toolSource, new RegExp(JSON.stringify(subagentsPatch.POLICY_GUIDELINE).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   for (const rule of subagentsPatch.PARENT_OWNERSHIP_GUIDELINES) assert.equal(toolSource.split(rule).length - 1, 1);
-  assert.match(toolSource, /Launch a background specialist only for substantial independent work that can proceed concurrently with main or other agents\./);
-  assert.match(toolSource, /Profile fit selects a capability only after the parallelism gate passes; it does not justify delegation by itself\./);
-  assert.equal(toolSource.split("Use foreground only when the user explicitly requests it").length - 1, 1);
+  assert.match(toolSource, /By default, launch a background specialist only for a substantial independent track that can run alongside main work or another agent\./);
+  assert.doesNotMatch(toolSource, /Profile fit selects a capability only after the parallelism gate passes/);
+  assert.equal(toolSource.split("set run_in_background: true").length - 1, 1);
   assert.doesNotMatch(toolSource, /autonomously handle complex tasks|Run background agents in parallel only when/);
-  assert.match(toolSource, /Keep the coherent critical path in main and execute it there\./);
-  assert.match(toolSource, /Default: delegate only when one substantial independent track can run in the background while main continues substantial non-conflicting work, or when two or more substantial independent tracks can run concurrently\./);
-  assert.match(toolSource, /If you must wait before useful independent work can continue, do the work in main\. Use foreground only when the user explicitly requests it\./);
-  assert.match(toolSource, /PUI built-ins default to background execution\. Omitted uses the selected profile default, or foreground when the profile has none; set false only for an explicit user request for foreground execution\./);
+  assert.match(toolSource, /Keep critical-path execution, judgment, architecture, planning, synthesis, integration, verification, and final response in main\./);
+  assert.match(toolSource, /Default: delegate a substantial independent background track alongside substantial main work, or two or more such tracks concurrently\. Otherwise work in main\./);
+  assert.match(toolSource, /Argument\/profile default determines mode; naming alone cannot authorize foreground\. Foreground requires explicit user request\./);
+  assert.match(toolSource, /Reload resolves profile changes\./);
+  assert.equal(toolSource.split("Resume only with new information/direction").length - 1, 1);
+  assert.doesNotMatch(toolSource, /Use resume with an agent ID to continue a previous agent's work/);
+  assert.match(toolSource, /A commit, PR, or Git ref is not readable merely because it exists/);
+  assert.match(toolSource, /sole-critical-path follow-ups stay in main/);
+  assert.match(toolSource, /spawn-only parameters are ignored/);
+  assert.match(toolSource, /Set a finite limit for a narrow or bounded question/);
+  assert.match(toolSource, /their description best matches/);
+  assert.match(toolSource, /Omitted uses the selected profile default \(PUI built-ins: background; no profile default: foreground\)\. Use false only for an explicit user request\./);
   assert.doesNotMatch(toolSource, /Use foreground when|substantial intermediate output justifies|work would consume many tool calls|Default routes: local static evidence|sequence them through main|PUI built-ins: false|target count|concurrency limit|max concurrency|capacity is available/);
   const defaultsSource = fs.readFileSync(path.join(packageDir, "src", "config", "default-agents.ts"), "utf8");
   assert.match(defaultsSource, /\["web_search", "source_check", "fetch_content", "get_search_content"\]/);
+  assert.match(defaultsSource, /Your available tools are exactly: read, bash, edit, write, grep, find, and ls\./);
+  assert.match(defaultsSource, /Your available tools are exactly: read, grep, find, and ls\./);
+  assert.match(defaultsSource, /Your available tools are exactly: read, grep, find, ls, web_search, source_check, fetch_content, and get_search_content\./);
+  assert.match(defaultsSource, /Check evidence accessibility before searching\./);
+  assert.match(defaultsSource, /Never cite one revision as evidence for another\./);
+  assert.match(defaultsSource, /do not replace execution with a proposed experiment\./);
+  assert.match(defaultsSource, /not invitations to propose unexecuted experiments\./);
   assert.equal(defaultsSource.split("runInBackground: true").length - 1, 3);
   assert.doesNotMatch(defaultsSource, /anthropic\/claude-haiku/);
   const agentTypesSource = fs.readFileSync(path.join(packageDir, "src", "config", "agent-types.ts"), "utf8");
@@ -247,17 +262,48 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         if (fileRegistry.isValidType("Explore") !== false || fileRegistry.resolveAgentConfig("Explore").description !== "project override") throw new Error("disabled project override was not preserved");
         if (!fileRegistry.getUserAgentNames().includes("Custom")) throw new Error("filesystem custom profile missing");
         const env = { isGitRepo: true, branch: "main", platform: "win32" };
-        const inherited = { systemPrompt: "PARENT PREFIX", cwd: "C:/repo" };
+        const skillBlock = "\\n\\nThe following skills provide specialized instructions for specific tasks.\\nUse the read tool to load a skill's file when the task matches its description.\\nWhen a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\\n\\n<available_skills>\\n  <skill><name>sample</name></skill>\\n</available_skills>";
+        const parentPrompt = [
+          "AUTHORITY_RULE: preserve inherited authority.",
+          "",
+          "Available tools:",
+          "- parent_only_tool: unavailable to children",
+          "",
+          "In addition to the tools above, you may have access to other custom tools depending on the project.",
+          "",
+          "Guidelines:",
+          ...${JSON.stringify(subagentsPatch.PARENT_OWNERSHIP_GUIDELINES)},
+          "",
+          "Pi documentation (preserved heading)",
+          "PROJECT_RULE: preserve project instructions.",
+        ].join("\\n") + skillBlock;
+        const inherited = { systemPrompt: parentPrompt, cwd: "C:/repo" };
+        const exactTools = {
+          Worker: "read, bash, edit, write, grep, find, and ls",
+          Explore: "read, grep, find, and ls",
+          Research: "read, grep, find, ls, web_search, source_check, fetch_content, and get_search_content",
+        };
         for (const name of names) {
           const config = DEFAULT_AGENTS.get(name);
           if (config.runInBackground !== true) throw new Error(name + " does not default to background execution");
           const rendered = buildAgentPrompt(config, "C:/repo", env, inherited);
-          if (!rendered.startsWith("PARENT PREFIX")) throw new Error(name + " lost inherited prefix");
+          for (const kept of ["AUTHORITY_RULE", "PROJECT_RULE"]) if (!rendered.includes(kept)) throw new Error(name + " lost " + kept);
+          for (const removed of ["parent_only_tool", "<available_skills>", ${JSON.stringify(subagentsPatch.PARENT_OWNERSHIP_GUIDELINES[0])}]) if (rendered.includes(removed)) throw new Error(name + " retained " + removed);
+          if (!config.systemPrompt.includes("Your available tools are exactly: " + exactTools[name] + ".")) throw new Error(name + " prompt/tool allowlist mismatch");
+          if ((rendered + skillBlock).split("<available_skills>").length - 1 !== 1) throw new Error(name + " duplicates child skills");
+          if (rendered.trim().split(/\\s+/).length > 400) throw new Error(name + " effective fixed prompt exceeds 400 words");
           if (name === "Worker") {
             if (!rendered.endsWith("<agent_instructions>\\n" + config.systemPrompt + "\\n</agent_instructions>")) throw new Error("Worker contract is not the final specialist content");
           } else if (!rendered.endsWith(config.systemPrompt)) throw new Error(name + " specialist prompt is not last");
         }
         const definition = new AgentTool({}, {}, { defaultMaxTurns: undefined, maxConcurrent: 4 }, registry, process.argv[2]).toToolDefinition();
+        const wordCount = (text) => String(text ?? "").trim().split(/\\s+/).filter(Boolean).length;
+        const parameterText = Object.values(definition.parameters.properties).map((schema) => schema.description ?? "").join("\\n");
+        const descriptionWords = wordCount(definition.description);
+        const interfaceWords = wordCount(definition.description + "\\n" + parameterText);
+        if (definition.description.includes("\\n\\n\\n")) throw new Error("parent tool description has redundant blank paragraphs");
+        if (descriptionWords > 460) throw new Error("parent tool description exceeds 460 words: " + descriptionWords);
+        if (interfaceWords > 680) throw new Error("complete parent-facing interface exceeds 680 words: " + interfaceWords);
         for (const rule of ${JSON.stringify(subagentsPatch.PARENT_OWNERSHIP_GUIDELINES)}) {
           if (definition.description.split(rule).length - 1 !== 1) throw new Error("parent rule missing or duplicated: " + rule);
         }
@@ -267,7 +313,7 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         const promptDescription = definition.parameters.properties.prompt.description;
         if (!promptDescription.includes("delegated parallel track") || !promptDescription.includes("selected agent type's prompt recipe")) throw new Error("prompt parameter does not enforce a parallel type recipe");
         const backgroundDescription = definition.parameters.properties.run_in_background.description;
-        if (!backgroundDescription.includes("PUI built-ins default to background execution") || !backgroundDescription.includes("Omitted uses the selected profile default, or foreground when the profile has none") || !backgroundDescription.includes("explicit user request")) throw new Error("background parameter does not document execution-mode resolution");
+        if (!backgroundDescription.includes("PUI built-ins: background; no profile default: foreground") || !backgroundDescription.includes("Omitted uses the selected profile default") || !backgroundDescription.includes("explicit user request")) throw new Error("background parameter does not document execution-mode resolution");
         const typeDescription = definition.parameters.properties.subagent_type.description;
         if (!typeDescription.includes("Use an exact listed name; unknown names fail closed")) throw new Error("type parameter omits fail-closed guidance");
         const thinkingValues = definition.parameters.properties.thinking.anyOf?.map((schema) => schema.const);

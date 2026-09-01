@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2.2
+
+- Consolidated subagent guidance and added capability and readable-input checks before spawning or resuming. Parents now keep sole-critical-path follow-ups and verdicts in main and bound narrow investigations; built-in agents declare their exact tools, preserve inherited authority and project instructions without duplicate parent metadata, and stop early when required evidence or execution is unavailable.
+- Fixed Windows update and rollback relaunches by starting the absolute `pi-web.cmd` shim in a detached hidden process instead of depending on the fire-and-forget Startup VBS wrapper. Rollback from older releases now recovers from their restart-only failure only after the restored certified identity and live bridge validate.
+- Allowed the updater to recover when Pi Web is already down only when no managed Pi Web process exists; an unreachable activity endpoint still fails closed while a managed process is present. Staged-script output is retained in `%TEMP%\pui-update-last.log`, and failures include the useful tail instead of only an exit code.
+- Stopped completed restart status from suppressing update discovery, made the client consume that status and immediately check again, and surfaced retained restart failures after a reload. Windows doctor now fails when configured autostart is down or its launcher is missing or modified.
+
 ## v1.2.1
 
 - Changed subagents so they only take on substantial work that can run at the same time as main work or another subagent. Sequential work stays with main. Built-in subagents run in the background by default, explicit foreground requests still work, and `Explore` does a quick targeted search unless asked to investigate more deeply.

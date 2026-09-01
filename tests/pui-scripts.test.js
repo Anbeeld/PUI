@@ -238,22 +238,24 @@ test("staged apply requires stable Windows Pi Web health after restart", () => {
 
   const restart = powershell.indexOf("restarting pi-web");
   const restartStop = powershell.indexOf("foreach ($pidToStop in @(Get-PiWebPid))", restart);
-  const restartLaunch = powershell.indexOf('Start-Process -FilePath "wscript.exe"', restartStop);
+  const restartLaunch = powershell.indexOf('Start-Process -FilePath $env:ComSpec', restartStop);
   const stopGate = powershell.indexOf("Wait-PiWebStopped", restartStop);
   const healthGate = powershell.indexOf("Wait-PiWebHealthy", restartLaunch);
   assert.ok(restartStop !== -1 && stopGate > restartStop && stopGate < restartLaunch, "update.ps1: restart must wait for Pi Web to stop before launch");
   assert.ok(restartLaunch !== -1 && healthGate > restartLaunch, "update.ps1: stable health gate must follow the restart");
-  assert.match(powershell, /pi-web launch requested via autostart launcher/);
-  assert.match(powershell, /pi-web restarted via autostart launcher and is running and healthy/);
+  assert.match(powershell, /pi-web hidden launch requested/);
+  assert.match(powershell, /pi-web restarted hidden and is running and healthy/);
 
   const doctor = read("doctor.ps1");
   assert.match(doctor, /Invoke-WebRequest \$piWebUrl -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop/, "doctor.ps1: health failures must be terminating and catchable");
   assert.match(doctor, /StatusCode -eq 200/, "doctor.ps1: health check must require HTTP 200");
+  assert.match(doctor, /Pi Web health" "FAIL"/, "doctor.ps1: a configured but down Pi Web must fail diagnostics");
 });
 
-test("staged apply restarts Pi Web through the autostart launcher and gates on health", () => {
+test("staged apply restarts Pi Web through the absolute hidden command and gates on health", () => {
   const powershell = read("update.ps1");
-  assert.match(powershell, /wscript\.exe/, "update.ps1: restart must go through the hidden VBS launcher");
+  assert.match(powershell, /Start-Process -FilePath \$env:ComSpec/, "update.ps1: restart must use a detached hidden command");
+  assert.match(powershell, /PI_WEB_SKIP_VERSION_CHECK=1/, "update.ps1: restart must suppress Pi Web's competing updater");
   assert.match(powershell, /Get-PiWebPid/, "update.ps1: restart stop must reuse the hardened pi-web detection");
   const restart = powershell.indexOf("restarting pi-web");
   const healthGate = powershell.indexOf("HTTP 200 within 60s");

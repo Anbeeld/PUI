@@ -4,6 +4,7 @@
     "missedParallelOpportunity": "A substantial independent track could have run concurrently with main or another background agent, but all work was executed serially.",
     "sequentialDelegation": "The main agent delegates a foreground task or a task it must await before any useful independent work can continue.",
     "idleParentDelegation": "The main agent launches one background agent but retains no substantial independent work while it runs.",
+    "executionModeDrift": "A default built-in delegation runs in the foreground, including when run_in_background is omitted, without an explicit user request for foreground execution.",
     "ambiguousRoute": "The guidance does not identify one dependency-safe, ownership-preserving route.",
     "policyViolation": "A route crosses a capability or trust boundary, silently substitutes an unknown type, overlaps mutable state, or transfers final ownership."
   },
@@ -34,6 +35,16 @@
       "acceptableCandidateRoutes": ["Main+Explore(background)"]
     },
     {
+      "id": "named-agent-default-background",
+      "request": "While implementing the decided parser change in main, use Explore for an independent inventory of unrelated logging call sites. I am naming the profile, not requesting foreground execution.",
+      "acceptableCandidateRoutes": ["Main+Explore(background)"]
+    },
+    {
+      "id": "default-background-omission",
+      "request": "Implement the decided parser change in main while independently using Explore to inventory unrelated logging call sites. Omit run_in_background so the built-in profile default controls execution.",
+      "acceptableCandidateRoutes": ["Main+Explore(background:profile-default)"]
+    },
+    {
       "id": "main-plus-background-research",
       "request": "Implement the decided local compatibility shim while independently checking authoritative upstream release notes for a separate follow-up recommendation.",
       "acceptableCandidateRoutes": ["Main+Research(background)"]
@@ -42,6 +53,21 @@
       "id": "two-background-specialists",
       "request": "Independently inspect our local adapter and current upstream API sources, then synthesize whether the adapter must change.",
       "acceptableCandidateRoutes": ["Main+Explore(background)+Research(background)"]
+    },
+    {
+      "id": "unreadable-revision-evidence",
+      "request": "Review a named PR commit that is not checked out or supplied as diff text. This is the only work track, and the review requires Git commands to access that revision.",
+      "acceptableCandidateRoutes": ["Main"]
+    },
+    {
+      "id": "empirical-explore-follow-up",
+      "request": "A completed Explore result now needs a local build experiment to resolve its only remaining claim. No independent work remains.",
+      "acceptableCandidateRoutes": ["Main"]
+    },
+    {
+      "id": "bounded-parallel-explore",
+      "request": "Implement the decided parser change in main while Explore independently answers a narrow question from supplied readable files. Bound the investigation rather than leaving it intentionally open-ended.",
+      "acceptableCandidateRoutes": ["Main+Explore(background,max_turns:finite)"]
     },
     {
       "id": "dependent-analysis-and-edit",

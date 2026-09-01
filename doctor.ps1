@@ -181,12 +181,18 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch verify 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
 Status "subagent policy" $(if ($subagentsPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($subagentsPatchExit -eq 0) { "taxonomy, capabilities, model, and reasoning" } else { "missing or drifted" })
 
-# Pi Web health
+# Pi Web health. A registered PUI autostart with no healthy server is a broken
+# managed runtime, not an optional/manual-start warning.
+$launcherVbs = Join-Path ([Environment]::GetFolderPath("Startup")) "pui-piweb.vbs"
 try {
   $r = Invoke-WebRequest $piWebUrl -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
   if ([int]$r.StatusCode -eq 200) { Status "Pi Web health" "PASS" "HTTP $($r.StatusCode)" }
+  elseif (Test-Path $launcherVbs) { Status "Pi Web health" "FAIL" "managed autostart returned HTTP $($r.StatusCode) on $piWebUrl" }
   else { Status "Pi Web health" "WARN" "HTTP $($r.StatusCode) on $piWebUrl" }
-} catch { Status "Pi Web health" "WARN" "not running on $piWebUrl" }
+} catch {
+  if (Test-Path $launcherVbs) { Status "Pi Web health" "FAIL" "managed autostart is not running on $piWebUrl" }
+  else { Status "Pi Web health" "WARN" "not running on $piWebUrl" }
+}
 
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") verify $ScriptDir 2>$null | Out-Null
 Status "PUI installed identity" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "extension manifest"
@@ -196,8 +202,15 @@ if (Test-Command npm) {
 }
 
 # autostart registration
-$launcherVbs = Join-Path ([Environment]::GetFolderPath("Startup")) "pui-piweb.vbs"
-Status "autostart registration" $(if (Test-Path $launcherVbs) { "PASS" } else { "WARN" }) $(if (Test-Path $launcherVbs) { "pui-piweb.vbs present" } else { "no pui-piweb.vbs" })
+$piWebCmd = "$env:APPDATA\npm\pi-web.cmd"
+$expectedVbs = @"
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""$piWebCmd"" --no-open", 0, False
+"@
+if (-not (Test-Path $launcherVbs)) { Status "autostart registration" "WARN" "no pui-piweb.vbs" }
+elseif (-not (Test-Path $piWebCmd)) { Status "autostart registration" "FAIL" "Pi Web launcher is missing: $piWebCmd" }
+elseif ([System.IO.File]::ReadAllText($launcherVbs) -ne $expectedVbs) { Status "autostart registration" "FAIL" "pui-piweb.vbs is modified" }
+else { Status "autostart registration" "PASS" "canonical hidden launcher" }
 
 # PWA status
 Status "PWA status" "USER ACTION REQUIRED" "verify browser install manually"

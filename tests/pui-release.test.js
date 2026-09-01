@@ -15,8 +15,8 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.2.1");
-  assert.equal(release.stack.reasoningSummaryPatch.revision, 15, "v1.2.1 must retain the revision-15 reasoning transform");
+  assert.equal(release.version, "1.2.2");
+  assert.equal(release.stack.reasoningSummaryPatch.revision, 15, "v1.2.2 must retain the revision-15 reasoning transform");
   for (const spec of Object.values(release.managed)) {
     assert.match(spec, /@\d+\.\d+\.\d+$/);
     assert.doesNotMatch(spec, /@latest$/);
@@ -71,7 +71,7 @@ test("active releases require the Pi #8782 backport helper", (t) => {
 
 test("release validation permits future prompt revisions with the stable ownership schema", () => {
   const future = loadRelease(repoRoot);
-  future.version = "1.2.1";
+  future.version = "1.2.2";
   future.stack.backgroundTasksPromptPatch.revision = 2;
   future.stack.subagentsPromptPatch.revision = 5;
   assert.deepEqual(validateRelease(future), []);

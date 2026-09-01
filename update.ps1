@@ -437,11 +437,13 @@ if ($modelsExit -ne 0) { Write-Host "  model catalog refresh failed" -Foreground
 
 # 8. do not rewrite web/MCP config unless schema migration required (not in v1)
 
-# 9. restart pi-web if autostart enabled (Startup-folder VBS launcher, not Task Scheduler)
+# 9. restart pi-web if autostart enabled. Keep the VBS as the logon
+# registration, but launch the absolute npm shim directly so update and
+# rollback receive the same observable health gate as initial installation.
 $startupFolder = [Environment]::GetFolderPath("Startup")
 $launcherVbs = Join-Path $startupFolder "pui-piweb.vbs"
 if (Test-Path $launcherVbs) {
-  Write-Host "  restarting pi-web (autostart launcher present)..."
+  Write-Host "  restarting pi-web (autostart registration present)..."
   # Stop any running pi-web node process so the new binary is picked up.
   $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
   try {
@@ -450,27 +452,33 @@ if (Test-Path $launcherVbs) {
       Write-Host "  could not stop Pi Web before restart; update aborted" -ForegroundColor Red
       exit 1
     }
-    # Re-launch pi-web through the same hidden VBS launcher the autostart uses.
     $piWebCmd = "$env:APPDATA\npm\pi-web.cmd"
-    if (Test-Path $piWebCmd) {
-      # Refresh the VBS launcher so it sets PI_WEB_SKIP_VERSION_CHECK=1
-      # (PUI owns update notifications; suppress pi-web's built-in check).
-      $vbsContent = @"
+    if (-not (Test-Path $piWebCmd)) { Write-Host "  Pi Web launcher is missing: $piWebCmd" -ForegroundColor Red; exit 1 }
+    # Refresh the VBS registration so login startup remains hidden and PUI owns
+    # update discovery instead of Pi Web's npm version checker.
+    $vbsContent = @"
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""$piWebCmd"" --no-open", 0, False
 "@
-      # No BOM: Windows Script Host rejects UTF-8 BOM with "Invalid character" (800A0408).
-      [System.IO.File]::WriteAllText($launcherVbs, $vbsContent, [System.Text.UTF8Encoding]::new($false))
-      Start-Process -FilePath "wscript.exe" -ArgumentList "`"$launcherVbs`"" | Out-Null
-      Write-Host "    pi-web launch requested via autostart launcher"
-      # Require two consecutive HTTP 200 responses so a stale or short-lived
-      # process cannot pass this gate before the doctor smoke suite runs.
-      if (-not (Wait-PiWebHealthy)) { Write-Host "  pi-web did not reach stable running state with HTTP 200 within 60s" -ForegroundColor Red; exit 1 }
-      Write-Host "    pi-web restarted via autostart launcher and is running and healthy at $($Stack.piWeb.url)"
+    # No BOM: Windows Script Host rejects UTF-8 BOM with "Invalid character" (800A0408).
+    [System.IO.File]::WriteAllText($launcherVbs, $vbsContent, [System.Text.UTF8Encoding]::new($false))
+    $previousSkipVersionCheck = $env:PI_WEB_SKIP_VERSION_CHECK
+    try {
+      $env:PI_WEB_SKIP_VERSION_CHECK = "1"
+      $launchArgs = '/d /s /c ""{0}" --no-open"' -f $piWebCmd
+      Start-Process -FilePath $env:ComSpec -ArgumentList $launchArgs -WindowStyle Hidden | Out-Null
+    } finally {
+      if ($null -eq $previousSkipVersionCheck) { Remove-Item Env:PI_WEB_SKIP_VERSION_CHECK -ErrorAction SilentlyContinue }
+      else { $env:PI_WEB_SKIP_VERSION_CHECK = $previousSkipVersionCheck }
     }
+    Write-Host "    pi-web hidden launch requested"
+    # Require two consecutive HTTP 200 responses so a stale or short-lived
+    # process cannot pass this gate before the doctor smoke suite runs.
+    if (-not (Wait-PiWebHealthy)) { Write-Host "  pi-web did not reach stable running state with HTTP 200 within 60s" -ForegroundColor Red; exit 1 }
+    Write-Host "    pi-web restarted hidden and is running and healthy at $($Stack.piWeb.url)"
   } finally { $ErrorActionPreference = $prev }
 } else {
-  Write-Host "  no autostart launcher found; skipping pi-web restart"
+  Write-Host "  no autostart registration found; skipping pi-web restart"
 }
 
 # 10. run smoke suite

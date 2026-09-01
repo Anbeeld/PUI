@@ -82,10 +82,11 @@
   },
   "subagentsPromptPatch": {
     "schemaVersion": 1,
-    "revision": 9,
+    "revision": 11,
     "packagePath": "node_modules/@gotgenes/pi-subagents",
     "files": [
       "src/tools/agent-tool.ts",
+      "src/session/prompts.ts",
       "src/config/default-agents.ts",
       "src/config/agent-types.ts",
       "src/config/invocation-config.ts",
