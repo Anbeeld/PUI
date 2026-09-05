@@ -1,9 +1,12 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 5,
   "scoring": {
     "missedParallelOpportunity": "A substantial independent track could have run concurrently with main or another background agent, but all work was executed serially.",
     "sequentialDelegation": "The main agent delegates a foreground task or a task it must await before any useful independent work can continue.",
     "idleParentDelegation": "The main agent launches one background agent but retains no substantial independent work while it runs.",
+    "duplicatedScope": "Main or another child repeats an active child's assigned evidence gathering, edits, checks, or deliverable.",
+    "delegatedJudgment": "A child receives architecture, planning, severity, acceptance, or final-verdict ownership reserved for main.",
+    "incompleteResultAccepted": "An errored, empty, stopped, limit-steered, missing-coverage, or residual-work result is treated as complete.",
     "executionModeDrift": "A default built-in delegation runs in the foreground, including when run_in_background is omitted, without an explicit user request for foreground execution.",
     "ambiguousRoute": "The guidance does not identify one dependency-safe, ownership-preserving route.",
     "policyViolation": "A route crosses a capability or trust boundary, silently substitutes an unknown type, overlaps mutable state, or transfers final ownership."
@@ -55,6 +58,21 @@
       "acceptableCandidateRoutes": ["Main+Explore(background)+Research(background)"]
     },
     {
+      "id": "overlapping-parent-investigation",
+      "request": "Implement the parser fix in main while Explore independently traces the same parser path to validate main's reasoning.",
+      "acceptableCandidateRoutes": ["Main"]
+    },
+    {
+      "id": "delegated-severity-verdict",
+      "request": "Use Explore to inspect the parser issue and assign its severity and final acceptance verdict. No other independent work remains.",
+      "acceptableCandidateRoutes": ["Main"]
+    },
+    {
+      "id": "sole-critical-path-audit",
+      "request": "After implementing the parser fix, delegate the only remaining whole-change audit and wait for its verdict.",
+      "acceptableCandidateRoutes": ["Main"]
+    },
+    {
       "id": "unreadable-revision-evidence",
       "request": "Review a named PR commit that is not checked out or supplied as diff text. This is the only work track, and the review requires Git commands to access that revision.",
       "acceptableCandidateRoutes": ["Main"]
@@ -66,8 +84,38 @@
     },
     {
       "id": "bounded-parallel-explore",
-      "request": "Implement the decided parser change in main while Explore independently answers a narrow question from supplied readable files. Bound the investigation rather than leaving it intentionally open-ended.",
-      "acceptableCandidateRoutes": ["Main+Explore(background,max_turns:finite)"]
+      "request": "Implement the decided parser change in main while Explore independently answers a narrow question from supplied readable files. No turn limit or calibrated value is supplied.",
+      "acceptableCandidateRoutes": ["Main+Explore(background,max_turns:omitted)"]
+    },
+    {
+      "id": "explicit-user-turn-limit",
+      "request": "Implement the decided parser change in main while Explore independently answers a supplied-file question. Limit Explore to 6 turns.",
+      "acceptableCandidateRoutes": ["Main+Explore(background,max_turns:6)"]
+    },
+    {
+      "id": "parallel-git-evidence",
+      "request": "Implement the decided parser change in main while independently comparing two checked-out revisions with Git commands.",
+      "acceptableCandidateRoutes": ["Main+Worker(background)"]
+    },
+    {
+      "id": "disjoint-release-inventory",
+      "request": "While main updates package.json, lib/pui-release.js, lib/pui-updater.js, and their version-gate tests, use Worker in the background for one Git-backed release inventory that excludes those main-owned files and stops after one sufficient evidence pass. Main must finish its reserved version work before waiting. A child result missing track status or coverage is incomplete.",
+      "acceptableCandidateRoutes": ["Main(version-files)+Worker(background:inventory-excluding-version-files)+Main(wait-after-version-work)"]
+    },
+    {
+      "id": "two-children-parent-waits",
+      "request": "Run two independent supplied-file audits concurrently. There is no third non-overlapping main track.",
+      "acceptableCandidateRoutes": ["Main(wait)+Explore(background)+Explore(background)"]
+    },
+    {
+      "id": "decision-question-reframed",
+      "request": "While main investigates the runtime algorithm, inspect lifecycle evidence needed to decide whether extending the existing patch or adding another is safer.",
+      "acceptableCandidateRoutes": ["Main+Explore(background:evidence-only)"]
+    },
+    {
+      "id": "empty-child-result",
+      "request": "A background child returned lifecycle status completed with an empty result.",
+      "acceptableCandidateRoutes": ["Main(incomplete-result)"]
     },
     {
       "id": "dependent-analysis-and-edit",

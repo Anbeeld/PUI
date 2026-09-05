@@ -10,6 +10,10 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# npm's bulk-advisory audit POST stalls indefinitely on pi's large package tree;
+# every npm child (including the one inside `pi install`) inherits this setting.
+$env:npm_config_audit = "false"
+
 function Wait-IfInteractive {
   if ($env:PUI_NONINTERACTIVE) { return }
   try { Write-Host ""; Read-Host -Prompt "Press Enter to close this window" | Out-Null } catch {}
@@ -23,6 +27,62 @@ if (-not $ApplyStaged -and $env:PUI_APPLY_STAGED -ne "1") {
 }
 function Assert-NoInjectedFailure([string]$Boundary) {
   if ($env:PUI_FAIL_AT -eq $Boundary) { throw "Injected update failure at $Boundary" }
+}
+
+function Invoke-PiBounded {
+  param([string[]]$PiArgs, [int]$TimeoutMs = 120000)
+  # Network-facing `pi` commands spawn npm children that can stall indefinitely
+  # on the registry or on Windows file locks. Bound each call and kill the whole
+  # pi process tree on timeout so no orphaned npm survives.
+  $piCommands = @(Get-Command pi -All -ErrorAction SilentlyContinue)
+  if ($piCommands.Count -eq 0) { return @{ exit = 127; out = "pi not found on PATH" } }
+  $piSource = $piCommands[0].Source
+  foreach ($candidate in $piCommands) {
+    if ($candidate.Source -match '\.(cmd|bat|exe)$') { $piSource = $candidate.Source; break }
+  }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  if ($piSource -match '\.ps1$') {
+    $psi.FileName = (Join-Path $PSHOME "powershell.exe")
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $piSource + '"'
+  } else {
+    $psi.FileName = $piSource
+    $psi.Arguments = ""
+  }
+  foreach ($arg in $PiArgs) {
+    if ($psi.Arguments) { $psi.Arguments += " " }
+    if ($arg -match '[\s"]') { $psi.Arguments += '"' + ($arg -replace '"', '') + '"' } else { $psi.Arguments += $arg }
+  }
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  $outTask = $null
+  $errTask = $null
+  try {
+    $proc.Start() | Out-Null
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit($TimeoutMs)) {
+      # The process may exit in the race window before taskkill runs; suppress
+      # the failure so ErrorActionPreference=Stop cannot abort the lifecycle.
+      $killPreference = $ErrorActionPreference
+      $ErrorActionPreference = "Continue"
+      try { & taskkill /PID $proc.Id /T /F *> $null } catch {}
+      $ErrorActionPreference = $killPreference
+      $proc.WaitForExit(15000) | Out-Null
+      $code = 124
+    } else { $code = $proc.ExitCode }
+  } finally {
+    if ($outTask) { try { $outTask.Wait(15000) | Out-Null } catch {} }
+    if ($errTask) { try { $errTask.Wait(15000) | Out-Null } catch {} }
+  }
+  $out = ""
+  if ($outTask -and $outTask.IsCompleted) { $out += $outTask.Result }
+  if ($errTask -and $errTask.IsCompleted -and $errTask.Result) { if ($out) { $out += "`n" }; $out += $errTask.Result }
+  if ($code -eq 124) { if ($out) { $out += "`n" }; $out += "pi $($PiArgs -join ' ') timed out after $($TimeoutMs / 1000)s" }
+  return @{ exit = $code; out = $out }
 }
 
 Write-Host "=== PUI update (Windows) ===" -ForegroundColor Cyan
@@ -40,11 +100,41 @@ $piSettings = Expand-Path $Stack.configPaths.piSettings
 $piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
 $piGoalSettings = Expand-Path $Stack.configPaths.piGoal
 $puiSubagentsConfig = Expand-Path $Stack.configPaths.puiSubagents
+$puiReasoningSummaries = Expand-Path $Stack.configPaths.puiReasoningSummaries
+$puiSessionTitles = Expand-Path $Stack.configPaths.puiSessionTitles
 $askUserConfig = (& node $Lib "resolve-config-path" ([string]$Stack.configPaths.askUserQuestion) ([string]$Stack.askUserQuestion.configRelativePath) 2>&1 | Select-Object -Last 1).ToString().Trim()
 if ($LASTEXITCODE -ne 0) { Write-Host "  ask-user-question config path resolution failed" -ForegroundColor Red; exit 1 }
 
 # The installed transaction worker may predate this patch. Keep a target-script
 # snapshot so an introducing update can still restore these non-JSON artifacts.
+$skillLoaderExtension = Join-Path $ScriptDir "lib\pui-skill-loader-extension.js"
+$skillLoaderSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-skill-loader-" + [guid]::NewGuid().ToString("N"))
+$skillLoaderSnapshotCommitted = $false
+New-Item -ItemType Directory -Path $skillLoaderSnapshot -Force | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $skillLoaderExtension snapshot $skillLoaderSnapshot $ScriptDir 2>&1 | Out-Null; $skillLoaderSnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($skillLoaderSnapshotExit -ne 0) {
+  Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  $skillLoaderSnapshot = $null
+  Write-Host "  could not snapshot PUI skill-loader extension; update aborted" -ForegroundColor Red
+  exit 1
+}
+$sessionTitleExtension = Join-Path $ScriptDir "lib\pui-session-title-extension.js"
+$sessionTitleSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-session-title-" + [guid]::NewGuid().ToString("N"))
+$sessionTitleSnapshotCommitted = $false
+New-Item -ItemType Directory -Path $sessionTitleSnapshot -Force | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionTitleExtension snapshot $sessionTitleSnapshot $ScriptDir 2>&1 | Out-Null; $sessionTitleSnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($sessionTitleSnapshotExit -ne 0) {
+  Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionTitleSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  $skillLoaderSnapshot = $null
+  $sessionTitleSnapshot = $null
+  Write-Host "  could not snapshot PUI session-title extension; update aborted" -ForegroundColor Red
+  exit 1
+}
 $backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
 $backgroundSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-background-task-" + [guid]::NewGuid().ToString("N"))
 $backgroundPatchCommitted = $false
@@ -54,8 +144,12 @@ try { & node $backgroundPatch snapshot $backgroundSnapshot 2>&1 | Out-Null; $bac
 finally { $ErrorActionPreference = $prev }
 if ($backgroundSnapshotExit -ne 0) {
   Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionTitleSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   $backgroundSnapshot = $null
-  Write-Host "  could not snapshot pi-background-tasks prompt artifacts; update aborted" -ForegroundColor Red
+  $skillLoaderSnapshot = $null
+  $sessionTitleSnapshot = $null
+  Write-Host "  could not snapshot pi-background-tasks compatibility artifacts; update aborted" -ForegroundColor Red
   exit 1
 }
 $subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
@@ -68,8 +162,11 @@ finally { $ErrorActionPreference = $prev }
 if ($subagentsSnapshotExit -ne 0) {
   Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $subagentsSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionTitleSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   $backgroundSnapshot = $null
   $subagentsSnapshot = $null
+  $sessionTitleSnapshot = $null
   Write-Host "  could not snapshot pi-subagents prompt artifacts; update aborted" -ForegroundColor Red
   exit 1
 }
@@ -87,15 +184,19 @@ if ($reasoningSnapshotExit -ne 0) {
   Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $subagentsSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $reasoningSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionTitleSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   $backgroundSnapshot = $null
   $subagentsSnapshot = $null
   $reasoningSnapshot = $null
+  $skillLoaderSnapshot = $null
+  $sessionTitleSnapshot = $null
   Write-Host "  could not snapshot Responses reasoning-summary artifacts; update aborted" -ForegroundColor Red
   exit 1
 }
 
 $backupFiles = @()
-foreach ($f in @($piWebAccess, $mcpShared, $piSettings, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig) | Where-Object { Test-Path $_ }) {
+foreach ($f in @($piWebAccess, $mcpShared, $piSettings, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig, $puiReasoningSummaries, $puiSessionTitles) | Where-Object { Test-Path $_ }) {
   $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
   try {
     $bkOutput = & node $Lib "backup" $f 2>&1
@@ -105,6 +206,24 @@ foreach ($f in @($piWebAccess, $mcpShared, $piSettings, $piFffFeatures, $piGoalS
   $bk = ($bkOutput | Select-Object -Last 1).ToString().Trim()
   Write-Host "  backed up: $bk"
   $backupFiles += $bk
+}
+if (Test-Path $puiReasoningSummaries) {
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $Lib "validate-reasoning-summary-modes" $puiReasoningSummaries 2>&1 | Out-Null; $reasoningSummaryPreflightExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+  if ($reasoningSummaryPreflightExit -ne 0) {
+    Write-Host "  invalid reasoning-summary configuration backed up and left unchanged: $puiReasoningSummaries" -ForegroundColor Red
+    exit 1
+  }
+}
+if (Test-Path $puiSessionTitles) {
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $Lib "validate-session-titles" $puiSessionTitles 2>&1 | Out-Null; $sessionTitlePreflightExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+  if ($sessionTitlePreflightExit -ne 0) {
+    Write-Host "  invalid session-title configuration backed up and left unchanged: $puiSessionTitles" -ForegroundColor Red
+    exit 1
+  }
 }
 
 # 2. update pi-web
@@ -296,18 +415,18 @@ function Test-ManagedPackageInstalled($spec, $packages) {
 foreach ($spec in @($Stack.retiredPiPackages)) {
   if (Test-ManagedPackageInstalled $spec $installedPackages) {
     Write-Host "  retiring $spec..."
-    $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    try { & pi remove $spec 2>&1 | ForEach-Object { Write-Host "    $_" }; $piExit = $LASTEXITCODE }
-    finally { $ErrorActionPreference = $prev }
+    $piRemove = Invoke-PiBounded -PiArgs @("remove", $spec)
+    if ($piRemove.out) { $piRemove.out -split "`r?`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } }
+    $piExit = $piRemove.exit
     if ($piExit -ne 0) { Write-Host "  failed to retire $spec" -ForegroundColor Red; exit 1 }
     $installedPackages = @($installedPackages | Where-Object { $_ -ne $spec -and -not $_.StartsWith("$spec@") })
   }
 }
 foreach ($spec in @($Stack.piPackages)) {
   Write-Host "  reconciling managed extension $spec..."
-  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-  try { & pi install $spec 2>&1 | ForEach-Object { Write-Host "    $_" }; $piExit = $LASTEXITCODE }
-  finally { $ErrorActionPreference = $prev }
+  $piInstall = Invoke-PiBounded -PiArgs @("install", $spec)
+  if ($piInstall.out) { $piInstall.out -split "`r?`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } }
+  $piExit = $piInstall.exit
   if ($piExit -ne 0) { Write-Host "  failed to install $spec" -ForegroundColor Red; exit 1 }
   & node (Join-Path $ScriptDir "lib\pui-config.js") set-package $piSettings $spec | Out-Null
   if ($LASTEXITCODE -ne 0) { Write-Host "  failed to set exact managed pin for $spec" -ForegroundColor Red; exit 1 }
@@ -324,6 +443,28 @@ try {
 } finally { Remove-Item $askGuidanceFile -Force -ErrorAction SilentlyContinue }
 if ($askGuidanceExit -ne 0) { Write-Host "  ask-user-question guidance reconciliation failed" -ForegroundColor Red; exit 1 }
 Write-Host "  ask-user-question guidance reconciled"
+
+$reasoningSummaryDefaults = $Stack.reasoningSummaries.modelModes | ConvertTo-Json -Depth 10 -Compress
+$reasoningSummaryDefaultsFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($reasoningSummaryDefaultsFile, $reasoningSummaryDefaults, [System.Text.UTF8Encoding]::new($false))
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $Lib "ensure-reasoning-summary-modes" $puiReasoningSummaries "@$reasoningSummaryDefaultsFile" 2>&1 | Out-Null; $reasoningSummaryConfigExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+} finally { Remove-Item $reasoningSummaryDefaultsFile -Force -ErrorAction SilentlyContinue }
+if ($reasoningSummaryConfigExit -ne 0) { Write-Host "  reasoning-summary configuration is invalid and was not overwritten" -ForegroundColor Red; exit 1 }
+Write-Host "  reasoning-summary modes ready: $puiReasoningSummaries"
+
+$sessionTitleDefaults = ConvertTo-Json -InputObject @($Stack.sessionTitles.models) -Compress
+$sessionTitleDefaultsFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($sessionTitleDefaultsFile, $sessionTitleDefaults, [System.Text.UTF8Encoding]::new($false))
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $Lib "ensure-session-titles" $puiSessionTitles "@$sessionTitleDefaultsFile" 2>&1 | Out-Null; $sessionTitleConfigExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+} finally { Remove-Item $sessionTitleDefaultsFile -Force -ErrorAction SilentlyContinue }
+if ($sessionTitleConfigExit -ne 0) { Write-Host "  session-title configuration is invalid and was not overwritten" -ForegroundColor Red; exit 1 }
+Write-Host "  session-title models ready: $puiSessionTitles"
 
 $subagentDefaults = $Stack.subagents.modelMappings | ConvertTo-Json -Depth 10 -Compress
 $subagentDefaultsFile = [System.IO.Path]::GetTempFileName()
@@ -380,8 +521,8 @@ if ($nativeExit -ne 0) { Write-Host "  pi-background-tasks native (node-pty) bin
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $backgroundPatch apply 2>&1 | Out-Null; $backgroundPatchExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
-if ($backgroundPatchExit -ne 0) { Write-Host "  pi-background-tasks compact prompt patch could not be applied (version or metadata drift); update aborted." -ForegroundColor Red; exit 1 }
-Write-Host "  pi-background-tasks compact model guidance applied"
+if ($backgroundPatchExit -ne 0) { Write-Host "  pi-background-tasks compatibility patch could not be applied (version or bundle drift); update aborted." -ForegroundColor Red; exit 1 }
+Write-Host "  pi-background-tasks compact guidance and runtime isolation applied"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch apply 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
@@ -425,11 +566,17 @@ Write-Host "  MCP footer status configured (mcpFooterStatus=$($Stack.mcp.footerS
 Assert-NoInjectedFailure "config-migration"
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") install $ScriptDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension replacement failed" -ForegroundColor Red; exit 1 }
+& node (Join-Path $ScriptDir "lib\pui-skill-loader-extension.js") install $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI skill loader extension replacement failed" -ForegroundColor Red; exit 1 }
+& node (Join-Path $ScriptDir "lib\pui-reasoning-summary-extension.js") install $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI reasoning-summary extension replacement failed" -ForegroundColor Red; exit 1 }
+& node (Join-Path $ScriptDir "lib\pui-session-title-extension.js") install $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI session-title extension replacement failed" -ForegroundColor Red; exit 1 }
 Assert-NoInjectedFailure "extension-replacement"
 
 # 6. refresh model catalogs
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-try { & pi update --models 2>&1 | ForEach-Object { Write-Host "    $_" }; $modelsExit = $LASTEXITCODE } catch { Write-Host "  pi update --models failed: $_" -ForegroundColor Red; $modelsExit = 1 }
+try { $modelsResult = Invoke-PiBounded -PiArgs @("update", "--models"); $modelsExit = $modelsResult.exit; if ($modelsResult.out) { $modelsResult.out -split "`r?`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } } } catch { Write-Host "  pi update --models failed: $_" -ForegroundColor Red; $modelsExit = 1 }
 finally { $ErrorActionPreference = $prev }
 if ($modelsExit -ne 0) { Write-Host "  model catalog refresh failed" -ForegroundColor Red; exit 1 }
 
@@ -541,6 +688,36 @@ if ($subagentsGuardExit -eq 75 -or $subagentsGuardExit -eq 76) {
   $subagentsPatchCommitted = $true
 }
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $skillLoaderExtension spawn-guard $skillLoaderSnapshot $puiVersion $ScriptDir 2>&1 | Out-Null; $skillLoaderGuardExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($skillLoaderGuardExit -eq 75 -or $skillLoaderGuardExit -eq 76) {
+  $skillLoaderSnapshotCommitted = $true
+  Remove-Item $skillLoaderSnapshot -Recurse -Force
+  $skillLoaderSnapshot = $null
+} elseif ($skillLoaderGuardExit -ne 0) {
+  throw "Could not start the outer-transaction skill-loader rollback guard"
+} else {
+  $skillLoaderGuardReady = Join-Path $skillLoaderSnapshot "guard-ready"
+  for ($guardWait = 0; $guardWait -lt 50 -and -not (Test-Path $skillLoaderGuardReady); $guardWait += 1) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path $skillLoaderGuardReady)) { throw "Skill-loader rollback guard did not become ready" }
+  $skillLoaderSnapshotCommitted = $true
+}
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionTitleExtension spawn-guard $sessionTitleSnapshot $puiVersion $ScriptDir 2>&1 | Out-Null; $sessionTitleGuardExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($sessionTitleGuardExit -eq 75 -or $sessionTitleGuardExit -eq 76) {
+  $sessionTitleSnapshotCommitted = $true
+  Remove-Item $sessionTitleSnapshot -Recurse -Force
+  $sessionTitleSnapshot = $null
+} elseif ($sessionTitleGuardExit -ne 0) {
+  throw "Could not start the outer-transaction session-title rollback guard"
+} else {
+  $sessionTitleGuardReady = Join-Path $sessionTitleSnapshot "guard-ready"
+  for ($guardWait = 0; $guardWait -lt 50 -and -not (Test-Path $sessionTitleGuardReady); $guardWait += 1) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path $sessionTitleGuardReady)) { throw "Session-title rollback guard did not become ready" }
+  $sessionTitleSnapshotCommitted = $true
+}
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $reasoningPatch spawn-guard $reasoningSnapshot $puiVersion $ScriptDir $reasoningPiWebRoot $reasoningStandaloneRoot 2>&1 | Out-Null; $reasoningGuardExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
 if ($reasoningGuardExit -eq 75 -or $reasoningGuardExit -eq 76) {
@@ -558,6 +735,24 @@ if ($reasoningGuardExit -eq 75 -or $reasoningGuardExit -eq 76) {
 
 Write-Host "`nUpdate complete: all doctor checks passed." -ForegroundColor Green
 } finally {
+  if ($sessionTitleSnapshot -and -not $sessionTitleSnapshotCommitted) {
+    $sessionTitleSnapshotResolved = $false
+    $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $sessionTitleExtension restore-snapshot $sessionTitleSnapshot $ScriptDir 2>&1 | Out-Null; $sessionTitleRestoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($sessionTitleRestoreExit -eq 0) { $sessionTitleSnapshotResolved = $true }
+    else { Write-Host "  FAILED to restore PUI session-title extension; recovery snapshot retained at $sessionTitleSnapshot" -ForegroundColor Red }
+    if ($sessionTitleSnapshotResolved) { Remove-Item $sessionTitleSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  if ($skillLoaderSnapshot -and -not $skillLoaderSnapshotCommitted) {
+    $skillLoaderSnapshotResolved = $false
+    $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $skillLoaderExtension restore-snapshot $skillLoaderSnapshot $ScriptDir 2>&1 | Out-Null; $skillLoaderRestoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($skillLoaderRestoreExit -eq 0) { $skillLoaderSnapshotResolved = $true }
+    else { Write-Host "  FAILED to restore PUI skill-loader extension; recovery snapshot retained at $skillLoaderSnapshot" -ForegroundColor Red }
+    if ($skillLoaderSnapshotResolved) { Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
   if ($reasoningSnapshot -and -not $reasoningPatchCommitted) {
     $reasoningSnapshotResolved = $false
     $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
@@ -582,7 +777,7 @@ Write-Host "`nUpdate complete: all doctor checks passed." -ForegroundColor Green
     try { & node $backgroundPatch restore-snapshot $backgroundSnapshot 2>&1 | Out-Null; $backgroundRestoreExit = $LASTEXITCODE }
     finally { $ErrorActionPreference = $previousPreference }
     if ($backgroundRestoreExit -eq 0) { $backgroundSnapshotResolved = $true }
-    else { Write-Host "  FAILED to restore pi-background-tasks prompt artifacts; recovery snapshot retained at $backgroundSnapshot" -ForegroundColor Red }
+    else { Write-Host "  FAILED to restore pi-background-tasks compatibility artifacts; recovery snapshot retained at $backgroundSnapshot" -ForegroundColor Red }
     if ($backgroundSnapshotResolved) { Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
   }
   Wait-IfInteractive

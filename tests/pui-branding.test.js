@@ -9,7 +9,7 @@ const vm = require("node:vm");
 
 const repoRoot = path.resolve(__dirname, "..");
 const brandingScript = path.join(repoRoot, "lib", "pui-branding.js");
-const { applyBranding, replaceBranding, replaceCssLayout } = require(brandingScript);
+const { applyBranding, replaceBranding, replaceCssLayout, replaceToolCallSummary } = require(brandingScript);
 
 function writeFixture(root, relativePath, content) {
   const target = path.join(root, relativePath);
@@ -191,6 +191,50 @@ test("apply patches the built CSS layout once and keeps the original", (t) => {
   applyBranding(root);
   assert.equal(fs.readFileSync(css, "utf8"), patched);
   assert.equal(fs.readdirSync(path.dirname(css)).filter((name) => name.endsWith(".pui-original")).length, 1);
+});
+
+test("tool-call summary names the skill and its references", () => {
+  // Pi Web renders every tool call header as `toolName summary`; its summary
+  // only recognizes bash/read-style arguments and otherwise stringifies the
+  // first argument, so a load_skill call shows only the skill name whether it
+  // loads a skill or a reference.
+  const summaryFunction = (id) =>
+    `function sum(${id}){let n=Object.keys(${id});return 0===n.length?"":"command"in ${id}?String(${id}.command).slice(0,120):"path"in ${id}?String(${id}.path).slice(0,120):String(${id}[n[0]]).slice(0,120)}`;
+  for (const id of ["t", "b"]) {
+    const patched = replaceToolCallSummary(summaryFunction(id));
+    assert.match(patched, new RegExp(`"reference"in ${id}&&"name"in ${id}`));
+    assert.match(patched, new RegExp(`"command"in ${id}\\?String\\(${id}\\.command\\)`));
+    assert.equal(
+      vm.runInNewContext(`${patched}\nsum({name:"prompting",reference:["evaluation.md","revision.md"]});`),
+      "prompting: evaluation.md, revision.md",
+    );
+    assert.equal(
+      vm.runInNewContext(`${patched}\nsum({name:"prompting",reference:"evaluation.md"});`),
+      "prompting: evaluation.md",
+    );
+    assert.equal(vm.runInNewContext(`${patched}\nsum({name:"prompting"});`), "prompting");
+    assert.equal(vm.runInNewContext(`${patched}\nsum({command:"ls -la"});`), "ls -la");
+    assert.equal(replaceToolCallSummary(patched), patched);
+  }
+});
+
+test("apply patches the tool-call summary in both Pi Web bundles once and keeps originals", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-branding-summary-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const clientSeam = 'function s(t){let n=Object.keys(t);return 0===n.length?"":"command"in t?String(t.command).slice(0,120):String(t[n[0]]).slice(0,120)}';
+  const serverSeam = 'function s(b){let c=Object.keys(b);return 0===c.length?"":"command"in b?String(b.command).slice(0,120):String(b[c[0]]).slice(0,120)}';
+  const serverPage = writeFixture(root, ".next/server/app/page.js", serverSeam);
+  const clientPage = writeFixture(root, ".next/static/chunks/app/page-hash.js", clientSeam);
+
+  applyBranding(root);
+  assert.match(fs.readFileSync(serverPage, "utf8"), /"reference"in b&&"name"in b/);
+  assert.match(fs.readFileSync(clientPage, "utf8"), /"reference"in t&&"name"in t/);
+  assert.equal(fs.readFileSync(`${serverPage}.pui-original`, "utf8"), serverSeam);
+  assert.equal(fs.readFileSync(`${clientPage}.pui-original`, "utf8"), clientSeam);
+
+  applyBranding(root);
+  assert.equal(fs.readFileSync(serverPage, "utf8").split('"reference"in b').length - 1, 1);
+  assert.equal(fs.readFileSync(clientPage, "utf8").split('"reference"in t').length - 1, 1);
 });
 
 test("every install and update entry point applies the shared branding helper", () => {

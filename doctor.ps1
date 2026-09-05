@@ -162,11 +162,11 @@ if (Test-Path $mcpShared) {
   Status "MCP footer status" "FAIL" "mcp.json missing (expected $($Stack.mcp.footerStatus))"
 }
 
-# pi-background-tasks compact model guidance and native node-pty binding
+# pi-background-tasks compact guidance, runtime isolation, and node-pty binding
 $backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $backgroundPatch verify 2>&1 | Out-Null; $backgroundPatchExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
-Status "pi-background-tasks prompt" $(if ($backgroundPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($backgroundPatchExit -eq 0) { "compact PUI guidance" } else { "missing or drifted" })
+Status "pi-background-tasks patch" $(if ($backgroundPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($backgroundPatchExit -eq 0) { "compact guidance; isolated runtime state" } else { "missing or drifted" })
 $nativeCheck = Join-Path $ScriptDir "lib\pui-native-check.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $nativeCheck verify (Join-Path $piAgentDir "npm") 2>&1 | Out-Null; $nativeExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
@@ -196,6 +196,20 @@ try {
 
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") verify $ScriptDir 2>$null | Out-Null
 Status "PUI installed identity" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "extension manifest"
+& node (Join-Path $ScriptDir "lib\pui-skill-loader-extension.js") verify $ScriptDir 2>$null | Out-Null
+Status "PUI skill loader" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "load_skill extension"
+& node (Join-Path $ScriptDir "lib\pui-reasoning-summary-extension.js") verify $ScriptDir 2>$null | Out-Null
+Status "PUI reasoning summaries" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "request policy extension"
+$puiReasoningSummaries = Expand-Path $Stack.configPaths.puiReasoningSummaries
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $Lib "validate-reasoning-summary-modes" $puiReasoningSummaries 2>&1 | Out-Null; $reasoningSummaryConfigExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+Status "reasoning-summary modes" $(if ($reasoningSummaryConfigExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($reasoningSummaryConfigExit -eq 0) { $puiReasoningSummaries } else { "missing or invalid: $puiReasoningSummaries" })
+& node (Join-Path $ScriptDir "lib\pui-session-title-extension.js") verify $ScriptDir 2>$null | Out-Null
+Status "PUI session titles" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "automatic title extension"
+$puiSessionTitles = Expand-Path $Stack.configPaths.puiSessionTitles
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $Lib "validate-session-titles" $puiSessionTitles 2>&1 | Out-Null; $sessionTitleConfigExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+Status "session-title models" $(if ($sessionTitleConfigExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($sessionTitleConfigExit -eq 0) { $puiSessionTitles } else { "missing or invalid: $puiSessionTitles" })
 if (Test-Command npm) {
   & node (Join-Path $ScriptDir "lib\pui-web-integration.js") verify $ScriptDir $piWebRoot 2>$null | Out-Null
   Status "PUI update bridge" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "Pi Web $($Stack.upstream.gui.version)"

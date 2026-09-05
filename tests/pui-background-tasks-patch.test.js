@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const crypto = require("node:crypto");
 
@@ -113,9 +114,42 @@ const EXPECTED_GUIDELINES = [
 ];
 
 function fixtureBundle() {
-  return `function register(pi){${Object.entries(ORIGINAL).map(([name, tool]) =>
+  const imports = Array.from(
+    { length: 15 },
+    (_, index) => `import{basename as __puiImport${index}}from"node:path";`,
+  ).join("");
+  const tools = Object.entries(ORIGINAL).map(([name, tool]) =>
     `pi.registerTool({name:${JSON.stringify(name)},description:${JSON.stringify(tool.description)},promptSnippet:${JSON.stringify(tool.snippet)},promptGuidelines:${JSON.stringify(tool.guidelines)},parameterDescriptions:${JSON.stringify(tool.parameters)}});`
-  ).join("")}}`;
+  ).join("");
+  return `${imports}let appendTaskSnapshotEntry=null,retainedTask="";import{basename as __puiLateImport}from"node:path";function ru(pi){const snapshotAppender=(task)=>pi.appendEntry(task);appendTaskSnapshotEntry=snapshotAppender;pi.on("session_start",()=>{retainedTask=pi.instanceId;appendTaskSnapshotEntry=snapshotAppender});pi.on("before_agent_start",()=>appendTaskSnapshotEntry?.(retainedTask));pi.on("session_shutdown",()=>{retainedTask="";appendTaskSnapshotEntry=null});${tools}}export{ru as default};\n//# sourceMappingURL=index.min.js.map\n`;
+}
+
+async function importFixture(text, dir, name) {
+  const file = path.join(dir, `${name}.mjs`);
+  fs.writeFileSync(file, text, "utf8");
+  return import(`${pathToFileURL(file).href}?${Date.now()}-${Math.random()}`);
+}
+
+function createFixturePi(instanceId) {
+  const handlers = new Map();
+  const entries = [];
+  return {
+    instanceId,
+    entries,
+    pi: {
+      instanceId,
+      appendEntry: (entry) => entries.push(entry),
+      on(event, handler) {
+        const registered = handlers.get(event) ?? [];
+        registered.push(handler);
+        handlers.set(event, registered);
+      },
+      registerTool() {},
+    },
+    async emit(event) {
+      for (const handler of handlers.get(event) ?? []) await handler();
+    },
+  };
 }
 
 function makePackage(version = "2.1.1") {
@@ -143,7 +177,44 @@ test("patchText replaces the complete background-task model guidance", () => {
   for (const guideline of EXPECTED_GUIDELINES) assert.equal(result.text.includes(guideline), true);
   const renderedGuidelineArrays = [...result.text.matchAll(/promptGuidelines:(\[[^\]]*\])/g)]
     .flatMap((match) => JSON.parse(match[1]));
-  assert.deepEqual(renderedGuidelineArrays, EXPECTED_GUIDELINES);
+  assert.deepEqual(renderedGuidelineArrays, [...EXPECTED_GUIDELINES, ...EXPECTED_GUIDELINES]);
+});
+
+test("patchText isolates cached extension factory instances", async (t) => {
+  const { patchText } = patchModule();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pui-bg-runtime-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const vulnerable = await importFixture(fixtureBundle(), dir, "vulnerable");
+  const vulnerableA = createFixturePi("session-a");
+  const vulnerableB = createFixturePi("session-b");
+  vulnerable.default(vulnerableA.pi);
+  await vulnerableA.emit("session_start");
+  vulnerable.default(vulnerableB.pi);
+  await vulnerableA.emit("before_agent_start");
+  assert.deepEqual(vulnerableA.entries, []);
+  assert.deepEqual(vulnerableB.entries, ["session-a"]);
+  await vulnerableB.emit("session_shutdown");
+  await vulnerableA.emit("before_agent_start");
+  assert.deepEqual(vulnerableA.entries, []);
+
+  const result = patchText(fixtureBundle());
+  assert.equal(result.patched, true);
+  assert.equal(result.text.includes("pui-background-tasks-runtime-isolation"), true);
+  assert.equal(result.text.includes("sourceMappingURL=index.min.js.map"), false);
+
+  const isolated = await importFixture(result.text, dir, "isolated");
+  const isolatedA = createFixturePi("session-a");
+  const isolatedB = createFixturePi("session-b");
+  isolated.default(isolatedA.pi);
+  await isolatedA.emit("session_start");
+  isolated.default(isolatedB.pi);
+  await isolatedA.emit("before_agent_start");
+  assert.deepEqual(isolatedA.entries, ["session-a"]);
+  assert.deepEqual(isolatedB.entries, []);
+  await isolatedB.emit("session_shutdown");
+  await isolatedA.emit("before_agent_start");
+  assert.deepEqual(isolatedA.entries, ["session-a", "session-a"]);
 });
 
 test("patchText is idempotent and fails closed on metadata drift", () => {

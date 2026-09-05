@@ -13,7 +13,13 @@ const {
   backupSubagentFilesForStacks,
   backupConfigFiles,
   backupConfigFilesForStacks,
+  backupSkillLoaderForStacks,
+  backupReasoningSummaryExtensionForStacks,
+  backupSessionTitleExtensionForStacks,
   restoreConfigFiles,
+  restoreSkillLoaderBackup,
+  restoreReasoningSummaryExtensionBackup,
+  restoreSessionTitleExtensionBackup,
   rollbackScriptWithRecovery,
   runScript,
   runTransaction,
@@ -24,6 +30,10 @@ const {
   piWebIdle,
   piWebLaunchSpec,
   readCertifiedManifest,
+  validateSkillLoaderIdentity,
+  validateReasoningSummaryExtensionIdentity,
+  validateSessionTitleExtensionIdentity,
+  validateInstalledExtensionIdentities,
 } = require(path.join(repoRoot, "lib", "pui-updater.js"));
 
 function certifiedManifest(root, files = { "updater.js": "placeholder" }) {
@@ -102,7 +112,7 @@ test("transaction backups include every managed JSON config surface", (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-all-config-"));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const configPaths = Object.fromEntries(
-    ["piSettings", "piWebAccess", "mcpShared", "piFffFeatures", "piGoal", "askUserQuestion", "puiSubagents"]
+    ["piSettings", "piWebAccess", "mcpShared", "piFffFeatures", "piGoal", "askUserQuestion", "puiSubagents", "puiReasoningSummaries", "puiSessionTitles"]
       .map((key) => [key, path.join(temp, `${key}.json`)]),
   );
   for (const file of Object.values(configPaths)) fs.writeFileSync(file, JSON.stringify({ file }));
@@ -113,6 +123,166 @@ test("transaction backups include every managed JSON config surface", (t) => {
   }, path.join(temp, "backups"));
 
   assert.deepEqual(new Set(backups.map((entry) => entry.file)), new Set(Object.values(configPaths)));
+});
+
+test("pre-1.3.0 validation accepts compositions without introduced extensions", () => {
+  assert.doesNotThrow(() => validateInstalledExtensionIdentities("1.2.2", {
+    skillLoader: path.join(os.tmpdir(), "missing-skill-loader"),
+    reasoningSummary: path.join(os.tmpdir(), "missing-reasoning-summary"),
+    sessionTitle: path.join(os.tmpdir(), "missing-session-title"),
+  }));
+  assert.throws(() => validateInstalledExtensionIdentities("1.3.0", {
+    skillLoader: path.join(os.tmpdir(), "missing-skill-loader"),
+    reasoningSummary: path.join(os.tmpdir(), "missing-reasoning-summary"),
+    sessionTitle: path.join(os.tmpdir(), "missing-session-title"),
+  }), /skill loader/i);
+});
+
+test("transaction validation rejects skill-loader identity drift", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-skill-loader-validation-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const target = path.join(temp, "pui-skill-loader");
+  require(path.join(repoRoot, "lib", "pui-skill-loader-extension.js")).installExtension({ repoRoot, target });
+  assert.doesNotThrow(() => validateSkillLoaderIdentity(require(path.join(repoRoot, "package.json")).version, target));
+  const manifestFile = path.join(target, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  manifest.unexpected = true;
+  fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+  assert.throws(() => validateSkillLoaderIdentity(require(path.join(repoRoot, "package.json")).version, target), /identity/);
+  delete manifest.unexpected;
+  fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+  fs.appendFileSync(path.join(target, "core.ts"), "\nmodified");
+  assert.throws(() => validateSkillLoaderIdentity(require(path.join(repoRoot, "package.json")).version, target), /mismatch/);
+  fs.rmSync(target, { recursive: true });
+  require(path.join(repoRoot, "lib", "pui-skill-loader-extension.js")).installExtension({ repoRoot, target });
+  fs.writeFileSync(path.join(target, "extra.ts"), "unowned");
+  assert.throws(() => validateSkillLoaderIdentity(require(path.join(repoRoot, "package.json")).version, target), /identity/);
+});
+
+test("transaction validation rejects reasoning-summary extension identity drift", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-reasoning-summary-validation-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const target = path.join(temp, "pui-reasoning-summary");
+  require(path.join(repoRoot, "lib", "pui-reasoning-summary-extension.js")).installExtension({ repoRoot, target });
+  assert.doesNotThrow(() => validateReasoningSummaryExtensionIdentity(require(path.join(repoRoot, "package.json")).version, target));
+  fs.appendFileSync(path.join(target, "core.ts"), "\nmodified");
+  assert.throws(() => validateReasoningSummaryExtensionIdentity(require(path.join(repoRoot, "package.json")).version, target), /mismatch/);
+  fs.rmSync(target, { recursive: true });
+  require(path.join(repoRoot, "lib", "pui-reasoning-summary-extension.js")).installExtension({ repoRoot, target });
+  fs.writeFileSync(path.join(target, "extra.ts"), "unowned");
+  assert.throws(() => validateReasoningSummaryExtensionIdentity(require(path.join(repoRoot, "package.json")).version, target), /identity/);
+});
+
+test("transaction validation rejects session-title extension identity drift", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-session-title-validation-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const target = path.join(temp, "pui-session-title");
+  require(path.join(repoRoot, "lib", "pui-session-title-extension.js")).installExtension({ repoRoot, target });
+  assert.doesNotThrow(() => validateSessionTitleExtensionIdentity(require(path.join(repoRoot, "package.json")).version, target));
+  fs.appendFileSync(path.join(target, "core.ts"), "\nmodified");
+  assert.throws(() => validateSessionTitleExtensionIdentity(require(path.join(repoRoot, "package.json")).version, target), /mismatch/);
+});
+
+test("transaction rollback restores the exact pre-update session-title extension", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-session-title-transaction-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-session-title");
+  fs.mkdirSync(live, { recursive: true });
+  fs.writeFileSync(path.join(live, "index.ts"), "old extension");
+  const backup = backupSessionTitleExtensionForStacks([
+    { sessionTitleExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  fs.rmSync(live, { recursive: true });
+  require(path.join(repoRoot, "lib", "pui-session-title-extension.js")).installExtension({ repoRoot, target: live });
+  restoreSessionTitleExtensionBackup(backup);
+  assert.equal(fs.readFileSync(path.join(live, "index.ts"), "utf8"), "old extension");
+});
+
+test("transaction rollback preserves post-backup session-title drift", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-session-title-drift-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-session-title");
+  require(path.join(repoRoot, "lib", "pui-session-title-extension.js")).installExtension({ repoRoot, target: live });
+  const backup = backupSessionTitleExtensionForStacks([
+    { sessionTitleExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  fs.appendFileSync(path.join(live, "core.ts"), "\nuser change");
+
+  assert.throws(() => restoreSessionTitleExtensionBackup(backup), /drift/i);
+  assert.match(fs.readFileSync(path.join(live, "core.ts"), "utf8"), /user change/);
+});
+
+test("transaction rollback removes a newly introduced session-title extension", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-session-title-introduced-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-session-title");
+  const backup = backupSessionTitleExtensionForStacks([
+    { sessionTitleExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  require(path.join(repoRoot, "lib", "pui-session-title-extension.js")).installExtension({ repoRoot, target: live });
+  restoreSessionTitleExtensionBackup(backup);
+  assert.equal(fs.existsSync(live), false);
+});
+
+test("transaction rollback restores the exact pre-update reasoning-summary extension", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-reasoning-summary-transaction-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-reasoning-summary");
+  fs.mkdirSync(live, { recursive: true });
+  fs.writeFileSync(path.join(live, "index.ts"), "old extension");
+  const backup = backupReasoningSummaryExtensionForStacks([
+    { reasoningSummaryExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  fs.rmSync(live, { recursive: true });
+  fs.mkdirSync(live, { recursive: true });
+  fs.writeFileSync(path.join(live, "index.ts"), "new extension");
+  restoreReasoningSummaryExtensionBackup(backup);
+  assert.equal(fs.readFileSync(path.join(live, "index.ts"), "utf8"), "old extension");
+});
+
+test("transaction rollback removes a newly introduced reasoning-summary extension", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-reasoning-summary-introduced-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-reasoning-summary");
+  const backup = backupReasoningSummaryExtensionForStacks([
+    { reasoningSummaryExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  fs.mkdirSync(live, { recursive: true });
+  restoreReasoningSummaryExtensionBackup(backup);
+  assert.equal(fs.existsSync(live), false);
+});
+
+test("transaction rollback restores the exact pre-update skill-loader directory", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-skill-loader-transaction-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-skill-loader");
+  fs.mkdirSync(live, { recursive: true });
+  fs.writeFileSync(path.join(live, "index.ts"), "old extension");
+  fs.writeFileSync(path.join(live, "manifest.json"), "old manifest");
+
+  const backup = backupSkillLoaderForStacks([
+    { skillLoaderExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  fs.rmSync(live, { recursive: true });
+  fs.mkdirSync(live, { recursive: true });
+  fs.writeFileSync(path.join(live, "index.ts"), "new extension");
+
+  restoreSkillLoaderBackup(backup);
+  assert.equal(fs.readFileSync(path.join(live, "index.ts"), "utf8"), "old extension");
+  assert.equal(fs.readFileSync(path.join(live, "manifest.json"), "utf8"), "old manifest");
+});
+
+test("transaction rollback removes a newly introduced skill-loader directory", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-skill-loader-introduced-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-skill-loader");
+  const backup = backupSkillLoaderForStacks([
+    { skillLoaderExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  fs.mkdirSync(live, { recursive: true });
+  fs.writeFileSync(path.join(live, "index.ts"), "new extension");
+  restoreSkillLoaderBackup(backup);
+  assert.equal(fs.existsSync(live), false);
 });
 
 test("transaction rollback restores the background-task bundle and ownership sidecars", (t) => {

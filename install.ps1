@@ -6,7 +6,7 @@
   Opinionated batteries-included composition profile for vanilla Pi.
   Installs Pi Web, vanilla Pi runtime, and the Pi packages listed in stack.json,
   configures free keyless web, Playwright MCP, native filesystem tools, and optional PWA autostart.
-  Installs a small inert update extension and Pi Web bridge; no PUI daemon or fork is added.
+  Installs a small inert update extension, lightweight skill loader, and Pi Web bridge; no PUI daemon or fork is added.
 .PARAMETER NoPwa
   Skip PWA/app integration and Pi Web autostart. Pi Web is still installed.
 .PARAMETER NoBrowser
@@ -33,6 +33,10 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# npm's bulk-advisory audit POST stalls indefinitely on pi's large package tree;
+# every npm child (including the one inside `pi install`) inherits this setting.
+$env:npm_config_audit = "false"
 $Lib = Join-Path $ScriptDir "lib\pui-config.js"
 $Stack = Get-Content (Join-Path $ScriptDir "stack.json") -Raw | ConvertFrom-Json
 $script:GateResults = [ordered]@{}
@@ -78,15 +82,60 @@ function Invoke-Npm {
   } finally { $ErrorActionPreference = $prev }
   return @{ exit = $code; out = ($out -join "`n") }
 }
-function Invoke-Pi {
-  param([string[]]$PiArgs)
-  $prev = $ErrorActionPreference
-  $ErrorActionPreference = "Continue"
+function Invoke-PiBounded {
+  param([string[]]$PiArgs, [int]$TimeoutMs = 120000)
+  # Network-facing `pi` commands spawn npm children that can stall indefinitely
+  # on the registry or on Windows file locks. Bound each call and kill the whole
+  # pi process tree on timeout so no orphaned npm survives.
+  $piCommands = @(Get-Command pi -All -ErrorAction SilentlyContinue)
+  if ($piCommands.Count -eq 0) { return @{ exit = 127; out = "pi not found on PATH" } }
+  $piSource = $piCommands[0].Source
+  foreach ($candidate in $piCommands) {
+    if ($candidate.Source -match '\.(cmd|bat|exe)$') { $piSource = $candidate.Source; break }
+  }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  if ($piSource -match '\.ps1$') {
+    $psi.FileName = (Join-Path $PSHOME "powershell.exe")
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $piSource + '"'
+  } else {
+    $psi.FileName = $piSource
+    $psi.Arguments = ""
+  }
+  foreach ($arg in $PiArgs) {
+    if ($psi.Arguments) { $psi.Arguments += " " }
+    if ($arg -match '[\s"]') { $psi.Arguments += '"' + ($arg -replace '"', '') + '"' } else { $psi.Arguments += $arg }
+  }
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  $outTask = $null
+  $errTask = $null
   try {
-    $out = & pi @PiArgs 2>&1
-    $code = $LASTEXITCODE
-  } finally { $ErrorActionPreference = $prev }
-  return @{ exit = $code; out = ($out -join "`n") }
+    $proc.Start() | Out-Null
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit($TimeoutMs)) {
+      # The process may exit in the race window before taskkill runs; suppress
+      # the failure so ErrorActionPreference=Stop cannot abort the lifecycle.
+      $killPreference = $ErrorActionPreference
+      $ErrorActionPreference = "Continue"
+      try { & taskkill /PID $proc.Id /T /F *> $null } catch {}
+      $ErrorActionPreference = $killPreference
+      $proc.WaitForExit(15000) | Out-Null
+      $code = 124
+    } else { $code = $proc.ExitCode }
+  } finally {
+    if ($outTask) { try { $outTask.Wait(15000) | Out-Null } catch {} }
+    if ($errTask) { try { $errTask.Wait(15000) | Out-Null } catch {} }
+  }
+  $out = ""
+  if ($outTask -and $outTask.IsCompleted) { $out += $outTask.Result }
+  if ($errTask -and $errTask.IsCompleted -and $errTask.Result) { if ($out) { $out += "`n" }; $out += $errTask.Result }
+  if ($code -eq 124) { if ($out) { $out += "`n" }; $out += "pi $($PiArgs -join ' ') timed out after $($TimeoutMs / 1000)s" }
+  return @{ exit = $code; out = $out }
 }
 function Expand-Path($p) {
   if ($p -match '^~') { return (Join-Path $env:USERPROFILE ($p -replace '^~[\\/]?','')) }
@@ -128,6 +177,8 @@ $mcpShared = Expand-Path $Stack.configPaths.mcpShared
 $piFffFeatures = Expand-Path $Stack.configPaths.piFffFeatures
 $piGoalSettings = Expand-Path $Stack.configPaths.piGoal
 $puiSubagentsConfig = Expand-Path $Stack.configPaths.puiSubagents
+$puiReasoningSummaries = Expand-Path $Stack.configPaths.puiReasoningSummaries
+$puiSessionTitles = Expand-Path $Stack.configPaths.puiSessionTitles
 
 # ----------------------------------------------------------------------------
 # Phase 1 — prerequisite detection (G1)
@@ -185,22 +236,34 @@ finally { $ErrorActionPreference = $prev }
 $askUserConfig = [string]($askResolved)
 $askUserConfig = $askUserConfig.Trim()
 if ($askResolveExit -ne 0 -or -not $askUserConfig) { Write-Host "  ask-user-question config path resolution failed: $askUserConfig" -ForegroundColor Red; exit 1 }
-$filesToChange = @($piSettings, $piWebAccess, $mcpShared, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig) | Select-Object -Unique
+$filesToChange = @($piSettings, $piWebAccess, $mcpShared, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig, $puiReasoningSummaries, $puiSessionTitles) | Select-Object -Unique
 foreach ($f in $filesToChange) {
   if (Test-Path $f) {
-    # validate parse
+    $bk = Invoke-NodeConfig -CfgArgs @("backup", $f)
+    if ($bk.exit -ne 0) {
+      Write-Host "  backup failed: $f — $($bk.out)" -ForegroundColor Red
+      $g2 = $false
+      continue
+    }
+    Write-Host "  backed up: $($bk.out.Trim())"
     $r = Invoke-NodeConfig -CfgArgs @("validate", $f)
     if ($r.exit -ne 0) {
       Write-Host "  INVALID JSON (not overwritten): $f" -ForegroundColor Red
       Write-Host "    $($r.out)" -ForegroundColor Red
       $g2 = $false
-    } else {
-      $bk = Invoke-NodeConfig -CfgArgs @("backup", $f)
-      if ($bk.exit -ne 0) {
-        Write-Host "  backup failed: $f — $($bk.out)" -ForegroundColor Red
+    } elseif ($f -eq $puiReasoningSummaries) {
+      $r = Invoke-NodeConfig -CfgArgs @("validate-reasoning-summary-modes", $f)
+      if ($r.exit -ne 0) {
+        Write-Host "  INVALID reasoning-summary configuration (not overwritten): $f" -ForegroundColor Red
+        Write-Host "    $($r.out)" -ForegroundColor Red
         $g2 = $false
-      } else {
-        Write-Host "  backed up: $($bk.out.Trim())"
+      }
+    } elseif ($f -eq $puiSessionTitles) {
+      $r = Invoke-NodeConfig -CfgArgs @("validate-session-titles", $f)
+      if ($r.exit -ne 0) {
+        Write-Host "  INVALID session-title configuration (not overwritten): $f" -ForegroundColor Red
+        Write-Host "    $($r.out)" -ForegroundColor Red
+        $g2 = $false
       }
     }
   }
@@ -259,7 +322,7 @@ if (-not (Test-Command pi-web)) { Write-Host "  pi-web not on PATH"; $g3 = $fals
 # private dependency tree. Install it first, then verify PATH and parity.
 $piRuntimeSpec = "$($Stack.upstream.agentRuntime.npm)@$piWebCodingAgentVer"
 $piVer = $null
-if (Test-Command pi) { $piVer = ((Invoke-Pi -PiArgs @("--version")).out -replace '[^0-9.]','') }
+if (Test-Command pi) { $piVer = ((Invoke-PiBounded -PiArgs @("--version")).out -replace '[^0-9.]','') }
 if (-not $piVer -or ($piWebCodingAgentVer -and $piVer -ne $piWebCodingAgentVer)) {
   Write-Host "  installing standalone pi from $piRuntimeSpec..."
   $r = Invoke-Npm -NpmArgs @("install","-g","--ignore-scripts",$piRuntimeSpec)
@@ -270,7 +333,7 @@ if (-not (Test-Command pi)) {
   Write-Host "  pi not on PATH"
   $g3 = $false
 } else {
-  $piVer = ((Invoke-Pi -PiArgs @("--version")).out -replace '[^0-9.]','')
+  $piVer = ((Invoke-PiBounded -PiArgs @("--version")).out -replace '[^0-9.]','')
   Write-Host "  pi --version: $piVer"
   if ($piWebCodingAgentVer -and $piVer -ne $piWebCodingAgentVer) {
     Write-Host "  runtime mismatch: pi=$piVer pi-web=$piWebCodingAgentVer" -ForegroundColor Red
@@ -353,12 +416,12 @@ Write-Phase 4 "Pi packages"
 $g4 = $true
 $pkgs = $Stack.piPackages
 # Remove packages that PUI previously managed but has explicitly retired.
-$r = Invoke-Pi -PiArgs @("list")
+$r = Invoke-PiBounded -PiArgs @("list")
 if ($r.exit -eq 0) {
   foreach ($spec in @($Stack.retiredPiPackages)) {
     if ($r.out -match [regex]::Escape($spec)) {
       Write-Host "  retiring $spec"
-      $remove = Invoke-Pi -PiArgs @("remove",$spec)
+      $remove = Invoke-PiBounded -PiArgs @("remove", $spec)
       if ($remove.out) { $remove.out -split "`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } }
       if ($remove.exit -ne 0) { Write-Host "  FAILED to retire: $spec" -ForegroundColor Red; $g4 = $false }
     }
@@ -366,7 +429,7 @@ if ($r.exit -eq 0) {
 }
 foreach ($spec in $pkgs) {
   Write-Host "  pi install $spec"
-  $r = Invoke-Pi -PiArgs @("install",$spec)
+  $r = Invoke-PiBounded -PiArgs @("install", $spec)
   if ($r.out) { $r.out -split "`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } }
   if ($r.exit -ne 0) { Write-Host "  FAILED: $spec" -ForegroundColor Red; $g4 = $false }
   else {
@@ -377,6 +440,15 @@ foreach ($spec in $pkgs) {
 $extensionScript = Join-Path $ScriptDir "lib\pui-update-extension.js"
 & node $extensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension install failed" -ForegroundColor Red; $g4 = $false }
+$skillLoaderScript = Join-Path $ScriptDir "lib\pui-skill-loader-extension.js"
+& node $skillLoaderScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI skill loader extension install failed" -ForegroundColor Red; $g4 = $false }
+$reasoningSummaryExtensionScript = Join-Path $ScriptDir "lib\pui-reasoning-summary-extension.js"
+& node $reasoningSummaryExtensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI reasoning-summary extension install failed" -ForegroundColor Red; $g4 = $false }
+$sessionTitleExtensionScript = Join-Path $ScriptDir "lib\pui-session-title-extension.js"
+& node $sessionTitleExtensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI session-title extension install failed" -ForegroundColor Red; $g4 = $false }
 
 $askGuidance = $Stack.askUserQuestion.guidance | ConvertTo-Json -Depth 10 -Compress
 $askGuidanceFile = [System.IO.Path]::GetTempFileName()
@@ -386,6 +458,24 @@ try {
 } finally { Remove-Item $askGuidanceFile -Force -ErrorAction SilentlyContinue }
 if ($r.exit -ne 0) { Write-Host "  ask-user-question guidance reconciliation failed: $($r.out)" -ForegroundColor Red; $g4 = $false }
 else { Write-Host "  ask-user-question guidance configured" }
+
+$reasoningSummaryDefaults = $Stack.reasoningSummaries.modelModes | ConvertTo-Json -Depth 10 -Compress
+$reasoningSummaryDefaultsFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($reasoningSummaryDefaultsFile, $reasoningSummaryDefaults, [System.Text.UTF8Encoding]::new($false))
+  $r = Invoke-NodeConfig -CfgArgs @("ensure-reasoning-summary-modes", $puiReasoningSummaries, "@$reasoningSummaryDefaultsFile")
+} finally { Remove-Item $reasoningSummaryDefaultsFile -Force -ErrorAction SilentlyContinue }
+if ($r.exit -ne 0) { Write-Host "  reasoning-summary configuration is invalid and was not overwritten: $($r.out)" -ForegroundColor Red; $g4 = $false }
+else { Write-Host "  reasoning-summary modes ready: $puiReasoningSummaries" }
+
+$sessionTitleDefaults = ConvertTo-Json -InputObject @($Stack.sessionTitles.models) -Compress
+$sessionTitleDefaultsFile = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($sessionTitleDefaultsFile, $sessionTitleDefaults, [System.Text.UTF8Encoding]::new($false))
+  $r = Invoke-NodeConfig -CfgArgs @("ensure-session-titles", $puiSessionTitles, "@$sessionTitleDefaultsFile")
+} finally { Remove-Item $sessionTitleDefaultsFile -Force -ErrorAction SilentlyContinue }
+if ($r.exit -ne 0) { Write-Host "  session-title configuration is invalid and was not overwritten: $($r.out)" -ForegroundColor Red; $g4 = $false }
+else { Write-Host "  session-title models ready: $puiSessionTitles" }
 
 $subagentDefaults = $Stack.subagents.modelMappings | ConvertTo-Json -Depth 10 -Compress
 $subagentDefaultsFile = [System.IO.Path]::GetTempFileName()
@@ -423,8 +513,8 @@ $backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $backgroundPatch apply 2>&1 | ForEach-Object { Write-Host "    $_" }; $backgroundPatchExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
-if ($backgroundPatchExit -ne 0) { Write-Host "  pi-background-tasks compact prompt patch could not be applied (version or metadata drift); install aborted." -ForegroundColor Red; $g4 = $false }
-else { Write-Host "  pi-background-tasks compact model guidance applied" }
+if ($backgroundPatchExit -ne 0) { Write-Host "  pi-background-tasks compatibility patch could not be applied (version or bundle drift); install aborted." -ForegroundColor Red; $g4 = $false }
+else { Write-Host "  pi-background-tasks compact guidance and runtime isolation applied" }
 $subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch apply 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE }
@@ -432,7 +522,7 @@ finally { $ErrorActionPreference = $prev }
 if ($subagentsPatchExit -ne 0) { Write-Host "  pi-subagents policy patch could not be applied (version or metadata drift); install aborted." -ForegroundColor Red; $g4 = $false }
 else { Write-Host "  pi-subagents policy applied" }
 # Verify packages are visible (pi list)
-$r = Invoke-Pi -PiArgs @("list")
+$r = Invoke-PiBounded -PiArgs @("list")
 if ($r.exit -eq 0) {
   Write-Host "  pi list:"; $r.out -split "`n" | ForEach-Object { if ($_) { Write-Host "    $_" } }
   foreach ($p in @("pi-subagents","pi-web-access","pi-mcp-adapter","pi-goal","pi-accounts","pi-usage","rpiv-ask-user-question","pi-fff","pi-background-tasks")) {
@@ -652,7 +742,7 @@ $g9 = $true
 $smoke = @()
 
 # 1. Pi CLI starts
-$r = Invoke-Pi -PiArgs @("--version")
+$r = Invoke-PiBounded -PiArgs @("--version")
 if ($r.exit -eq 0) { $smoke += "[PASS] 1. pi --version: $($r.out.Trim())" } else { $smoke += "[FAIL] 1. pi --version"; $g9 = $false }
 
 # 2. Pi Web serves
@@ -666,14 +756,14 @@ if ($NoPwa) {
 }
 
 # 3. runtime parity
-$piVer = ((Invoke-Pi -PiArgs @("--version")).out -replace '[^0-9.]','')
+$piVer = ((Invoke-PiBounded -PiArgs @("--version")).out -replace '[^0-9.]','')
 $pwCA = Get-PiWebCodingAgentVersion
 if ($pwCA -and $piVer -eq $pwCA) { $smoke += "[PASS] 3. runtime parity ($piVer)" }
 elseif (-not $pwCA) { $smoke += "[WARN] 3. runtime parity (pi-web coding-agent version not resolvable)" }
 else { $smoke += "[WARN] 3. runtime parity: pi=$piVer vs pi-web=$pwCA" }
 
 # 4. Required Pi packages load
-$r = Invoke-Pi -PiArgs @("list")
+$r = Invoke-PiBounded -PiArgs @("list")
 $piListStr = ""
 if ($r.exit -eq 0) {
   $piListStr = $r.out
@@ -740,7 +830,7 @@ if ($script:Failures.Count -gt 0) {
   exit 1
 }
 
-Write-Host "`nPUI setup complete. Pi remains the runtime; the inert PUI update extension and Pi Web integration stay installed." -ForegroundColor Green
+Write-Host "`nPUI setup complete. Pi remains the runtime; the update extension and Pi Web integration stay installed, along with the skill-loader extension." -ForegroundColor Green
 if (-not $NoPwa -and -not $NoBrowser) {
   Write-Host "Complete PWA installation with the browser's 'Install app' action on the page that opened." -ForegroundColor Yellow
 }

@@ -55,6 +55,41 @@ test("Unix branding does not depend on platform-specific sed -i", () => {
   }
 });
 
+test("lifecycle scripts disable npm's stall-prone audit step for pi-managed installs", () => {
+  for (const file of ["install.sh", "update.sh", "install.ps1", "update.ps1"]) {
+    const content = read(file);
+    assert.match(content, /npm_config_audit\s*=\s*"?false"?/, `${file}: audit disabled before any npm or pi usage`);
+    const disableIndex = content.search(/npm_config_audit\s*=\s*"?false"?/);
+    const firstNpmUse = content.search(/(?:& npm |npm install|run_pi_bounded|Invoke-PiBounded)/);
+    assert.ok(disableIndex !== -1 && firstNpmUse !== -1 && disableIndex < firstNpmUse, `${file}: npm_config_audit must be set before the first npm/pi invocation`);
+  }
+});
+
+test("network-facing pi commands are watchdog-bounded in every lifecycle script", () => {
+  for (const file of ["install.sh", "update.sh"]) {
+    const content = read(file);
+    assert.match(content, /run_pi_bounded\(\) \{/, `${file}: bounded pi runner`);
+    assert.match(content, /PI_TIMEOUT_SECONDS=120/, `${file}: per-call timeout`);
+    assert.match(content, /kill -TERM -- "-\$pid"/, `${file}: watchdog kills the pi process group`);
+    for (const verb of ["install", "remove"]) {
+      assert.doesNotMatch(content, new RegExp(`(?<![\\w/-])pi ${verb} "\\.\\$spec"`), `${file}: raw pi ${verb} must go through the bounded runner`);
+    }
+    if (file === "update.sh") {
+      assert.doesNotMatch(content, /(?<![-\w])pi update --models/, "update.sh: raw model refresh must go through the bounded runner");
+    }
+  }
+  for (const file of ["install.ps1", "update.ps1"]) {
+    const content = read(file);
+    assert.match(content, /function Invoke-PiBounded/, `${file}: bounded pi runner`);
+    assert.match(content, /WaitForExit\(\$TimeoutMs\)/, `${file}: bounded wait`);
+    assert.match(content, /taskkill \/PID \$proc\.Id \/T \/F/, `${file}: watchdog kills the pi process tree`);
+    assert.match(content, /timed out after/, `${file}: timeout surfaces a clear message`);
+    assert.match(content, /Invoke-PiBounded -PiArgs @\("install", \$spec\)/, `${file}: pi install goes through the bounded runner`);
+    assert.doesNotMatch(content, /& pi (install|remove)/, `${file}: raw pi install/remove is forbidden`);
+    if (file === "update.ps1") assert.doesNotMatch(content, /& pi update --models/, "update.ps1: raw model refresh is forbidden");
+  }
+});
+
 test("updaters delegate to the shared transaction worker and retain only model refresh", () => {
   const shell = read("update.sh");
   assert.match(shell, /lib\/pui-updater\.js/);
@@ -167,8 +202,12 @@ test("introducing staged updates locally roll back all managed prompt artifacts"
   const psCommit = powershell.indexOf("$backgroundPatchCommitted = $true");
   const psTarget = powershell.indexOf("target-validation");
   const psSubagentSnapshot = powershell.indexOf("snapshot $subagentsSnapshot");
+  const psSkillSnapshot = powershell.indexOf("snapshot $skillLoaderSnapshot");
+  const psTitleSnapshot = powershell.indexOf("snapshot $sessionTitleSnapshot");
   assert.ok(psSnapshot !== -1 && psSnapshot < psPackages, "update.ps1: background snapshot must precede package mutation");
   assert.ok(psSubagentSnapshot !== -1 && psSubagentSnapshot < psPackages, "update.ps1: subagent snapshot must precede package mutation");
+  assert.ok(psSkillSnapshot !== -1 && psSkillSnapshot < psPackages, "update.ps1: skill-loader snapshot must precede package mutation");
+  assert.ok(psTitleSnapshot !== -1 && psTitleSnapshot < psPackages, "update.ps1: session-title snapshot must precede package mutation");
   assert.ok(psGuard > psTarget && psCommit > psGuard, "update.ps1: outer-transaction guard must own the snapshot after target validation");
   assert.match(powershell, /backgroundGuardExit -eq 76/, "update.ps1: checkpoint routes reuse one transaction guard");
   assert.match(powershell, /guard-ready/, "update.ps1: guard startup must be acknowledged before return");
@@ -181,14 +220,20 @@ test("introducing staged updates locally roll back all managed prompt artifacts"
   const shCommit = shell.indexOf("BACKGROUND_PATCH_COMMITTED=1");
   const shTarget = shell.indexOf("target-validation");
   const shSubagentSnapshot = shell.indexOf('snapshot "$SUBAGENTS_SNAPSHOT"');
+  const shSkillSnapshot = shell.indexOf('snapshot "$SKILL_LOADER_SNAPSHOT"');
+  const shTitleSnapshot = shell.indexOf('snapshot "$SESSION_TITLE_SNAPSHOT"');
   assert.ok(shSnapshot !== -1 && shSnapshot < shPackages, "update.sh: background snapshot must precede package mutation");
   assert.ok(shSubagentSnapshot !== -1 && shSubagentSnapshot < shPackages, "update.sh: subagent snapshot must precede package mutation");
+  assert.ok(shSkillSnapshot !== -1 && shSkillSnapshot < shPackages, "update.sh: skill-loader snapshot must precede package mutation");
+  assert.ok(shTitleSnapshot !== -1 && shTitleSnapshot < shPackages, "update.sh: session-title snapshot must precede package mutation");
   assert.ok(shGuard > shTarget && shCommit > shGuard, "update.sh: outer-transaction guard must own the snapshot after target validation");
   assert.match(shell, /BACKGROUND_GUARD_EXIT" -eq 76/, "update.sh: checkpoint routes reuse one transaction guard");
   assert.match(shell, /guard-ready/, "update.sh: guard startup must be acknowledged before return");
   assert.match(shell, /trap restore_background_patch_on_exit EXIT/, "update.sh: failure trap restores prompt artifacts");
   assert.ok(powershell.indexOf("$subagentsPatchCommitted = $true") > psTarget, "update.ps1: subagents guard must own its snapshot after target validation");
   assert.ok(shell.indexOf("SUBAGENTS_PATCH_COMMITTED=1") > shTarget, "update.sh: subagents guard must own its snapshot after target validation");
+  assert.ok(powershell.indexOf("$skillLoaderSnapshotCommitted = $true") > psTarget, "update.ps1: skill-loader guard must own its snapshot after target validation");
+  assert.ok(shell.indexOf("SKILL_LOADER_SNAPSHOT_COMMITTED=1") > shTarget, "update.sh: skill-loader guard must own its snapshot after target validation");
   const subagentsPatch = fs.readFileSync(path.join(repoRoot, "lib", "pui-subagents-patch.js"), "utf8");
   assert.match(subagentsPatch, /command === "guard-snapshot"/, "subagents guard exposes the guard-snapshot command");
   assert.match(subagentsPatch, /writeFileSync\(path\.join\(stateDir, "guard-ready"\)/, "subagents guard writes its ready marker");

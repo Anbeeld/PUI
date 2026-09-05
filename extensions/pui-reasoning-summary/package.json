@@ -1,0 +1,10 @@
+{
+  "name": "pui-reasoning-summary",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -22,6 +22,8 @@ const {
   writeJson,
   reconcileModelMappings,
   validateModelMappingsConfig,
+  validateReasoningSummaryModesConfig,
+  validateSessionTitlesConfig,
 } = require(LIB);
 
 function tmpdir() {
@@ -690,4 +692,76 @@ test("path-with-spaces fixture: CLI merge works on dirs with spaces", () => {
   const res = runCli(["default-tools-merge", f, JSON.stringify(["read", "bash"])]);
   assert.equal(res.exit, 0, res.out);
   assert.deepEqual(rj(d, "settings.json").defaultTools, ["read", "bash"]);
+});
+
+test("session-title config accepts an ordered exact-or-fuzzy model list", () => {
+  assert.equal(validateSessionTitlesConfig({ schemaVersion: 1, models: ["openai-codex/gpt-5.6-luna", "haiku"] }).ok, true);
+  for (const value of [
+    null,
+    {},
+    { schemaVersion: 2, models: [] },
+    { schemaVersion: 1, models: {} },
+    { schemaVersion: 1, models: [""] },
+    { schemaVersion: 1, models: [" luna"] },
+    { schemaVersion: 1, models: ["luna", "LUNA"] },
+  ]) assert.equal(validateSessionTitlesConfig(value).ok, false, JSON.stringify(value));
+});
+
+test("session-title config is created only when missing", () => {
+  const d = tmpdir(); const f = path.join(d, "session-titles.json");
+  const first = runCli(["ensure-session-titles", f, JSON.stringify(["luna"])]);
+  assert.equal(first.exit, 0, first.out);
+  assert.deepEqual(rj(d, "session-titles.json"), { schemaVersion: 1, models: ["luna"] });
+
+  const exact = '{\n  "schemaVersion": 1,\n  "models": ["haiku"],\n  "userField": true\n}\n';
+  fs.writeFileSync(f, exact);
+  const second = runCli(["ensure-session-titles", f, JSON.stringify([])]);
+  assert.equal(second.exit, 0, second.out);
+  assert.equal(fs.readFileSync(f, "utf8"), exact);
+});
+
+test("invalid existing session-title config fails without overwriting", () => {
+  const d = tmpdir(); const f = path.join(d, "session-titles.json");
+  const invalid = '{"schemaVersion":1,"models":["luna","LUNA"]}\n';
+  fs.writeFileSync(f, invalid);
+  const result = runCli(["ensure-session-titles", f, "[]"]);
+  assert.notEqual(result.exit, 0);
+  assert.equal(fs.readFileSync(f, "utf8"), invalid);
+});
+
+test("reasoning-summary config accepts only the versioned mode contract", () => {
+  assert.equal(validateReasoningSummaryModesConfig({ schemaVersion: 1, modelModes: {
+    "gpt-5.6-sol": "auto", "gpt-5.6-terra": "concise", "gpt-5.6-luna": "detailed", other: "none",
+  }}).ok, true);
+  for (const value of [
+    null,
+    {},
+    { schemaVersion: 2, modelModes: {} },
+    { schemaVersion: 1, modelModes: [] },
+    { schemaVersion: 1, modelModes: { model: "verbose" } },
+    { schemaVersion: 1, modelModes: { "": "auto" } },
+  ]) assert.equal(validateReasoningSummaryModesConfig(value).ok, false, JSON.stringify(value));
+});
+
+test("reasoning-summary config is created only when missing", () => {
+  const d = tmpdir(); const f = path.join(d, "reasoning-summaries.json");
+  const defaults = { "gpt-5.6-sol": "detailed", "gpt-5.6-terra": "detailed", "gpt-5.6-luna": "detailed" };
+  const first = runCli(["ensure-reasoning-summary-modes", f, JSON.stringify(defaults)]);
+  assert.equal(first.exit, 0, first.out);
+  assert.deepEqual(rj(d, "reasoning-summaries.json"), { schemaVersion: 1, modelModes: defaults });
+
+  const exact = '{\n  "schemaVersion": 1,\n  "modelModes": {\n    "gpt-5.6-sol": "none"\n  },\n  "userField": true\n}\n';
+  fs.writeFileSync(f, exact);
+  const second = runCli(["ensure-reasoning-summary-modes", f, JSON.stringify(defaults)]);
+  assert.equal(second.exit, 0, second.out);
+  assert.equal(fs.readFileSync(f, "utf8"), exact);
+});
+
+test("invalid existing reasoning-summary config fails without overwriting", () => {
+  const d = tmpdir(); const f = path.join(d, "reasoning-summaries.json");
+  const invalid = '{"schemaVersion":1,"modelModes":{"gpt-5.6-sol":"verbose"}}\n';
+  fs.writeFileSync(f, invalid);
+  const result = runCli(["ensure-reasoning-summary-modes", f, '{"gpt-5.6-sol":"detailed"}']);
+  assert.notEqual(result.exit, 0);
+  assert.equal(fs.readFileSync(f, "utf8"), invalid);
 });

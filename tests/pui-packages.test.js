@@ -32,7 +32,7 @@ test("PUI manages pi-goal and retires pi-vcc", () => {
 test("PUI owns subagent taxonomy, capabilities, completion delivery, model mapping, and reasoning inheritance", () => {
   assert.deepEqual(stack.subagentsPromptPatch, {
     schemaVersion: 1,
-    revision: 11,
+    revision: 14,
     packagePath: "node_modules/@gotgenes/pi-subagents",
     files: [
       "src/tools/agent-tool.ts",
@@ -48,6 +48,10 @@ test("PUI owns subagent taxonomy, capabilities, completion delivery, model mappi
       "src/settings.ts",
       "src/lifecycle/concurrency-limiter.ts",
       "src/lifecycle/subagent-manager.ts",
+      "src/lifecycle/subagent-session.ts",
+      "src/lifecycle/subagent-state.ts",
+      "src/observation/renderer.ts",
+      "src/tools/get-result-report.ts",
     ],
     backupSuffix: ".pui-original",
     manifest: ".pui-subagents-prompt-manifest.json",
@@ -58,7 +62,9 @@ test("PUI owns subagent taxonomy, capabilities, completion delivery, model mappi
     maxConcurrent: 128,
     maxQueued: 512,
     modelMappings: {
+      "openai-codex/gpt-6-astra": "openai-codex/gpt-5.6-luna",
       "openai-codex/gpt-5.6-sol": "openai-codex/gpt-5.6-luna",
+      "openai-codex/gpt-5.6-terra": "openai-codex/gpt-5.6-luna",
     },
   });
   assert.equal(fs.existsSync(path.join(repoRoot, "lib", "pui-subagents-patch.js")), true);
@@ -233,7 +239,7 @@ test("PUI hides the MCP footer status from the extension bar", () => {
   }
 });
 
-test("PUI manages background tasks, compact model guidance, and node-pty", () => {
+test("PUI manages background tasks, compact guidance, runtime isolation, and node-pty", () => {
   assert.deepEqual(stack.upstream.backgroundTasks, {
     npm: "@99percentpeople/pi-background-tasks",
     version: "2.1.1",
@@ -241,7 +247,7 @@ test("PUI manages background tasks, compact model guidance, and node-pty", () =>
   });
   assert.deepEqual(stack.backgroundTasksPromptPatch, {
     schemaVersion: 1,
-    revision: 1,
+    revision: 2,
     packagePath: "node_modules/@99percentpeople/pi-background-tasks",
     bundle: "index.min.js",
     backupSuffix: ".pui-original",
@@ -252,7 +258,7 @@ test("PUI manages background tasks, compact model guidance, and node-pty", () =>
   for (const script of ["install.ps1", "install.sh", "update.ps1", "update.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
     assert.match(content, /pi-background-tasks/, `${script}: pi-background-tasks reference`);
-    assert.match(content, /pui-background-tasks-patch\.js/, `${script}: compact prompt patch`);
+    assert.match(content, /pui-background-tasks-patch\.js/, `${script}: compatibility patch`);
     assert.match(content, /node-pty/, `${script}: node-pty handling`);
     if (script.endsWith("install.ps1")) {
       assert.match(content, /if \(\$backgroundPatchExit -ne 0\) \{[^}]*\$g4 = \$false/s, `${script}: prompt patch failure fails G4`);
@@ -265,7 +271,7 @@ test("PUI manages background tasks, compact model guidance, and node-pty", () =>
   }
   for (const script of ["update.ps1", "update.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
-    assert.match(content, /pui-background-tasks-patch\.js/, `${script}: compact prompt patch`);
+    assert.match(content, /pui-background-tasks-patch\.js/, `${script}: compatibility patch`);
     assert.match(content, /pui-native-check\.js/, `${script}: pui-native-check.js invocation`);
     if (script.endsWith("update.ps1")) {
       assert.match(content, /if \(\$backgroundPatchExit -ne 0\) \{[^}]*exit 1/s, `${script}: prompt patch failure aborts update`);
@@ -278,13 +284,13 @@ test("PUI manages background tasks, compact model guidance, and node-pty", () =>
   }
   for (const script of ["doctor.ps1", "doctor.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
-    assert.match(content, /pi-background-tasks prompt/, `${script}: prompt patch verification`);
+    assert.match(content, /pi-background-tasks patch/, `${script}: compatibility patch verification`);
     assert.match(content, /pi-background-tasks native/, `${script}: node-pty native status check`);
   }
   for (const script of ["uninstall.ps1", "uninstall.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
-    assert.match(content, /pui-background-tasks-patch\.js/, `${script}: prompt patch helper`);
-    assert.match(content, /(?:pui-background-tasks-patch\.js"|\$backgroundPatch) remove/, `${script}: owned prompt restoration`);
+    assert.match(content, /pui-background-tasks-patch\.js/, `${script}: compatibility patch helper`);
+    assert.match(content, /(?:pui-background-tasks-patch\.js"|\$backgroundPatch) remove/, `${script}: owned patch restoration`);
   }
 });
 
@@ -300,11 +306,12 @@ test("Playwright exposes six common tools directly and keeps proxy discovery ena
   assert.equal(Object.hasOwn(stack.mcp, "disableProxyTool"), false);
 });
 
-test("all lifecycle entry points manage installed identity and Pi Web integration", () => {
-  for (const script of ["install.ps1", "install.sh", "doctor.ps1", "doctor.sh", "uninstall.ps1", "uninstall.sh"]) {
+test("all lifecycle entry points manage installed identity, skill loading, and Pi Web integration", () => {
+  for (const script of ["install.ps1", "install.sh", "update.ps1", "update.sh", "doctor.ps1", "doctor.sh", "uninstall.ps1", "uninstall.sh"]) {
     const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
     assert.match(content, /pui-update-extension\.js/, script);
-    assert.match(content, /pui-web-integration\.js/, script);
+    assert.match(content, /pui-skill-loader-extension\.js/, script);
+    if (!script.startsWith("update.")) assert.match(content, /pui-web-integration\.js/, script);
   }
 });
 
@@ -341,4 +348,61 @@ test("fresh installs provision standalone Pi before requiring it on PATH", () =>
     shell.indexOf('npm install -g --ignore-scripts "$PI_SPEC"') <
       shell.indexOf('has_cmd pi || { echo "  pi not on PATH"'),
   );
+});
+
+test("PUI owns automatic session-title configuration and extension lifecycle", () => {
+  assert.deepEqual(stack.sessionTitles, { schemaVersion: 1, models: [] });
+  assert.equal(stack.configPaths.puiSessionTitles, "~/.config/pui/session-titles.json");
+  assert.deepEqual(stack.sessionTitleExtension, {
+    schemaVersion: 1,
+    target: "~/.pi/agent/extensions/pui-session-title",
+    files: ["core.ts", "index.ts", "package.json"],
+    manifest: "manifest.json",
+  });
+  for (const script of ["install.ps1", "install.sh", "update.ps1", "update.sh"]) {
+    const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
+    assert.match(content, /ensure-session-titles/, `${script}: create-only config`);
+    assert.match(content, /pui-session-title-extension\.js/, `${script}: extension install`);
+  }
+  for (const script of ["doctor.ps1", "doctor.sh"]) {
+    const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
+    assert.match(content, /validate-session-titles/, `${script}: config validation`);
+    assert.match(content, /pui-session-title-extension\.js/, `${script}: extension verification`);
+  }
+  for (const script of ["uninstall.ps1", "uninstall.sh"]) {
+    assert.match(fs.readFileSync(path.join(repoRoot, script), "utf8"), /pui-session-title-extension\.js/, `${script}: extension removal`);
+  }
+});
+
+test("PUI owns per-model Responses reasoning-summary modes", () => {
+  assert.deepEqual(stack.reasoningSummaries, {
+    schemaVersion: 1,
+    modelModes: {
+      "gpt-5.6-sol": "detailed",
+      "gpt-5.6-terra": "detailed",
+      "gpt-5.6-luna": "detailed",
+    },
+  });
+  assert.equal(stack.configPaths.puiReasoningSummaries, "~/.config/pui/reasoning-summaries.json");
+  assert.deepEqual(stack.reasoningSummaryExtension, {
+    schemaVersion: 1,
+    target: "~/.pi/agent/extensions/pui-reasoning-summary",
+    files: ["core.ts", "index.ts", "package.json"],
+    manifest: "manifest.json",
+  });
+  for (const script of ["install.ps1", "install.sh", "update.ps1", "update.sh"]) {
+    const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
+    assert.match(content, /ensure-reasoning-summary-modes/, `${script}: create-only config`);
+    assert.match(content, /pui-reasoning-summary-extension\.js/, `${script}: extension install`);
+  }
+  for (const script of ["doctor.ps1", "doctor.sh"]) {
+    const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
+    assert.match(content, /validate-reasoning-summary-modes/, `${script}: config validation`);
+    assert.match(content, /pui-reasoning-summary-extension\.js/, `${script}: extension verification`);
+  }
+  for (const script of ["uninstall.ps1", "uninstall.sh"]) {
+    const content = fs.readFileSync(path.join(repoRoot, script), "utf8");
+    assert.match(content, /pui-reasoning-summary-extension\.js/, `${script}: guarded extension removal`);
+    assert.doesNotMatch(content, /rm .*reasoning-summaries|Remove-Item .*reasoning-summaries/i, `${script}: preserve user config`);
+  }
 });

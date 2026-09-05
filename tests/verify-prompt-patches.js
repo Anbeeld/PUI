@@ -43,32 +43,44 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   const toolSource = fs.readFileSync(path.join(packageDir, "src", "tools", "agent-tool.ts"), "utf8");
   assert.match(toolSource, new RegExp(JSON.stringify(subagentsPatch.POLICY_GUIDELINE).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   for (const rule of subagentsPatch.PARENT_OWNERSHIP_GUIDELINES) assert.equal(toolSource.split(rule).length - 1, 1);
-  assert.match(toolSource, /By default, launch a background specialist only for a substantial independent track that can run alongside main work or another agent\./);
+  assert.match(toolSource, /Default: launch background specialists only for substantial independent work concurrent with main or another agent\./);
   assert.doesNotMatch(toolSource, /Profile fit selects a capability only after the parallelism gate passes/);
-  assert.equal(toolSource.split("set run_in_background: true").length - 1, 1);
+  assert.equal(toolSource.split("Default is background").length - 1, 1);
   assert.doesNotMatch(toolSource, /autonomously handle complex tasks|Run background agents in parallel only when/);
-  assert.match(toolSource, /Keep critical-path execution, judgment, architecture, planning, synthesis, integration, verification, and final response in main\./);
-  assert.match(toolSource, /Default: delegate a substantial independent background track alongside substantial main work, or two or more such tracks concurrently\. Otherwise work in main\./);
-  assert.match(toolSource, /Argument\/profile default determines mode; naming alone cannot authorize foreground\. Foreground requires explicit user request\./);
-  assert.match(toolSource, /Reload resolves profile changes\./);
-  assert.equal(toolSource.split("Resume only with new information/direction").length - 1, 1);
+  assert.match(toolSource, /Never delegate decisions\./);
+  assert.match(toolSource, /delegate only with substantial disjoint main work or at least two independent concurrent children; otherwise stay in main/);
+  assert.match(toolSource, /Preassign disjoint ownership: bounded deliverable, owned\/excluded files\/sources\/actions/);
+  assert.match(toolSource, /After dispatch, do reserved main work before waiting/);
+  assert.match(toolSource, /Until collection, do not duplicate child evidence, edits, or checks/);
+  assert.match(toolSource, /route by capability: readable static files → Explore; external\/current sources → Research; commands, Git, builds, tests, experiments, or edits → Worker\/main/);
+  assert.match(toolSource, /foreground requires explicit user request, not profile naming\./);
+  assert.match(toolSource, /Reload resolves changes\./);
+  assert.equal(toolSource.split("Resume only with new direction").length - 1, 1);
   assert.doesNotMatch(toolSource, /Use resume with an agent ID to continue a previous agent's work/);
-  assert.match(toolSource, /A commit, PR, or Git ref is not readable merely because it exists/);
-  assert.match(toolSource, /sole-critical-path follow-ups stay in main/);
-  assert.match(toolSource, /spawn-only parameters are ignored/);
-  assert.match(toolSource, /Set a finite limit for a narrow or bounded question/);
-  assert.match(toolSource, /their description best matches/);
+  assert.match(toolSource, /Give Explore an other-revision diff or checkout; otherwise use Worker\/main/);
+  assert.match(toolSource, /Match results to deliverables and fields/);
+  assert.match(toolSource, /missing status\/coverage/);
+  assert.match(toolSource, /errors, empty output, aborts, stops, limit steering, or residual work are incomplete/);
+  assert.match(toolSource, /critical-path follow-ups stay in main/);
+  assert.match(toolSource, /other fields are ignored/);
+  assert.match(toolSource, /A circuit breaker, not task sizing/);
+  assert.match(toolSource, /A limit stop is incomplete/);
+  assert.match(toolSource, /Custom agents use same gate unless user-named/);
   assert.match(toolSource, /Omitted uses the selected profile default \(PUI built-ins: background; no profile default: foreground\)\. Use false only for an explicit user request\./);
   assert.doesNotMatch(toolSource, /Use foreground when|substantial intermediate output justifies|work would consume many tool calls|Default routes: local static evidence|sequence them through main|PUI built-ins: false|target count|concurrency limit|max concurrency|capacity is available/);
   const defaultsSource = fs.readFileSync(path.join(packageDir, "src", "config", "default-agents.ts"), "utf8");
   assert.match(defaultsSource, /\["web_search", "source_check", "fetch_content", "get_search_content"\]/);
-  assert.match(defaultsSource, /Your available tools are exactly: read, bash, edit, write, grep, find, and ls\./);
-  assert.match(defaultsSource, /Your available tools are exactly: read, grep, find, and ls\./);
-  assert.match(defaultsSource, /Your available tools are exactly: read, grep, find, ls, web_search, source_check, fetch_content, and get_search_content\./);
-  assert.match(defaultsSource, /Check evidence accessibility before searching\./);
-  assert.match(defaultsSource, /Never cite one revision as evidence for another\./);
-  assert.match(defaultsSource, /do not replace execution with a proposed experiment\./);
+  assert.match(defaultsSource, /Your available tools are exactly: read, bash, edit, write, grep, find, ls, and load_skill\./);
+  assert.match(defaultsSource, /Your available tools are exactly: read, grep, find, ls, and load_skill\./);
+  assert.match(defaultsSource, /Never choose, recommend, rank, approve, assign severity, or decide what to use or port\./);
+  assert.match(defaultsSource, /If asked, return only supporting evidence and mark the decision out of scope\./);
+  assert.match(defaultsSource, /Your available tools are exactly: read, grep, find, ls, load_skill, web_search, source_check, fetch_content, and get_search_content\./);
+  assert.match(defaultsSource, /Check accessibility before searching\./);
+  assert.match(defaultsSource, /Never cite one revision for another\./);
+  assert.match(defaultsSource, /do not substitute a proposed experiment\./);
   assert.match(defaultsSource, /not invitations to propose unexecuted experiments\./);
+  assert.match(defaultsSource, /Use the smallest sufficient evidence set; do not repeat equivalent scans once evidence suffices\./);
+  assert.equal(defaultsSource.split("Return all fields (none if empty):").length - 1, 3);
   assert.equal(defaultsSource.split("runInBackground: true").length - 1, 3);
   assert.doesNotMatch(defaultsSource, /anthropic\/claude-haiku/);
   const agentTypesSource = fs.readFileSync(path.join(packageDir, "src", "config", "agent-types.ts"), "utf8");
@@ -80,6 +92,7 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   const invocationSource = fs.readFileSync(invocationFile, "utf8");
   assert.match(invocationSource, /modelInput: params\.model,/);
   assert.match(invocationSource, /thinking: params\.thinking as ThinkingLevel/);
+  assert.match(invocationSource, /maxTurns: params\.max_turns \?\? agentConfig\?\.maxTurns/);
   assert.match(invocationSource, /runInBackground: params\.run_in_background \?\? agentConfig\?\.runInBackground \?\? false/);
   assert.doesNotMatch(invocationSource, /agentConfig\?\.(model|thinking)/);
   const spawnFile = path.join(packageDir, "src", "tools", "spawn-config.ts");
@@ -107,6 +120,20 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   const managerSource = fs.readFileSync(path.join(packageDir, "src", "lifecycle", "subagent-manager.ts"), "utf8");
   assert.match(managerSource, /!this\.limiter\.canSchedule\(\)/);
   assert.match(managerSource, /Background agent queue is full/);
+  const subagentSessionFile = path.join(packageDir, "src", "lifecycle", "subagent-session.ts");
+  const subagentSessionSource = fs.readFileSync(subagentSessionFile, "utf8");
+  assert.match(subagentSessionSource, /last\.stopReason === "error"/);
+  assert.match(subagentSessionSource, /Partial output:/);
+  assert.match(subagentSessionSource, /Subagent completed without output/);
+  const subagentStateSource = fs.readFileSync(path.join(packageDir, "src", "lifecycle", "subagent-state.ts"), "utf8");
+  assert.match(subagentStateSource, /\|\| status === "steered"/);
+  assert.doesNotMatch(subagentStateSource, /excludes the successful `steered`/);
+  assert.match(fs.readFileSync(path.join(packageDir, "src", "observation", "notification.ts"), "utf8"), /Incomplete \(turn limit\)/);
+  const rendererSource = fs.readFileSync(path.join(packageDir, "src", "observation", "renderer.ts"), "utf8");
+  assert.match(rendererSource, /"incomplete \(turn limit\)"/);
+  assert.doesNotMatch(rendererSource, /"completed \(steered\)"/);
+  const resultReportFile = path.join(packageDir, "src", "tools", "get-result-report.ts");
+  assert.match(fs.readFileSync(resultReportFile, "utf8"), /return report\.result\?\.trim\(\) \|\| "No output\."/);
 
   const runtimeCheckDir = path.join(runtimeRoot, "prompt-patch-runtime-check");
   fs.mkdirSync(runtimeCheckDir, { recursive: true });
@@ -211,6 +238,52 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   ], { cwd: runtimeRoot, encoding: "utf8", windowsHide: true });
   assert.equal(importCheck.status, 0, importCheck.stderr || importCheck.stdout);
 
+  const resultIntegrityCheck = spawnSync(process.execPath, [
+    "--eval",
+    `
+      const path = require("node:path");
+      const createJiti = require(process.argv[1]);
+      const jiti = createJiti(path.join(process.argv[2], "result-integrity-check.cjs"), { moduleCache: false, tryNative: false });
+      jiti.import(process.argv[3]).then(async ({ SubagentSession }) => {
+        async function run(message) {
+          let completed = 0;
+          const session = {
+            messages: [],
+            subscribe() { return () => {}; },
+            async prompt() { this.messages.push(message); },
+          };
+          const wrapped = new SubagentSession(session, {
+            outputFile: undefined,
+            sessionId: "test",
+            sessionDir: "test",
+            agentName: "Explore",
+            agentMaxTurns: undefined,
+            parentContext: undefined,
+            lifecycle: { completed() { completed++; } },
+          });
+          try {
+            const result = await wrapped.runTurnLoop("test", {});
+            return { result, completed };
+          } catch (error) {
+            return { error: error.message, completed };
+          }
+        }
+        const providerError = await run({ role: "assistant", content: [], stopReason: "error", errorMessage: "usage exhausted" });
+        if (providerError.error !== "usage exhausted" || providerError.completed !== 0) throw new Error("provider error became completion: " + JSON.stringify(providerError));
+        const partial = await run({ role: "assistant", content: [{ type: "text", text: "useful partial" }], stopReason: "error", errorMessage: "usage exhausted" });
+        if (partial.error !== "usage exhausted\\n\\nPartial output:\\nuseful partial" || partial.completed !== 0) throw new Error("provider partial output was lost: " + JSON.stringify(partial));
+        const empty = await run({ role: "assistant", content: [], stopReason: "stop" });
+        if (empty.error !== "Subagent completed without output." || empty.completed !== 0) throw new Error("empty response became completion: " + JSON.stringify(empty));
+        const success = await run({ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" });
+        if (success.result?.responseText !== "done" || success.completed !== 1) throw new Error("valid response failed: " + JSON.stringify(success));
+      }).catch((error) => { console.error(error); process.exit(1); });
+    `,
+    jitiFile,
+    runtimeRoot,
+    subagentSessionFile,
+  ], { cwd: runtimeRoot, encoding: "utf8", windowsHide: true });
+  assert.equal(resultIntegrityCheck.status, 0, resultIntegrityCheck.stderr || resultIntegrityCheck.stdout);
+
   const profileRoot = path.join(runtimeRoot, "profile-overlay-check");
   const profileProject = path.join(profileRoot, "project");
   fs.mkdirSync(path.join(profileRoot, "agents"), { recursive: true });
@@ -239,10 +312,10 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         const names = [...DEFAULT_AGENTS.keys()];
         if (JSON.stringify(names) !== JSON.stringify(["Worker", "Explore", "Research"])) throw new Error("default taxonomy drifted: " + JSON.stringify(names));
         const registry = new AgentTypeRegistry(() => new Map());
-        const builtins = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+        const builtins = ["read", "bash", "edit", "write", "grep", "find", "ls", "load_skill"];
         if (JSON.stringify(registry.getToolNamesForType("Worker")) !== JSON.stringify(builtins)) throw new Error("Worker tools drifted");
-        if (JSON.stringify(registry.getToolNamesForType("Explore")) !== JSON.stringify(["read", "grep", "find", "ls"])) throw new Error("Explore tools drifted");
-        if (JSON.stringify(registry.getToolNamesForType("Research")) !== JSON.stringify(["read", "grep", "find", "ls", "web_search", "source_check", "fetch_content", "get_search_content"])) throw new Error("Research tools drifted");
+        if (JSON.stringify(registry.getToolNamesForType("Explore")) !== JSON.stringify(["read", "grep", "find", "ls", "load_skill"])) throw new Error("Explore tools drifted");
+        if (JSON.stringify(registry.getToolNamesForType("Research")) !== JSON.stringify(["read", "grep", "find", "ls", "load_skill", "web_search", "source_check", "fetch_content", "get_search_content"])) throw new Error("Research tools drifted");
         if (registry.resolveType("Plan") !== undefined || registry.resolveType("general-purpose") !== undefined) throw new Error("removed built-in alias remains");
         const customRegistry = new AgentTypeRegistry(() => new Map([
           ["Plan", { name: "Plan", description: "custom", systemPrompt: "custom", promptMode: "append" }],
@@ -279,9 +352,9 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         ].join("\\n") + skillBlock;
         const inherited = { systemPrompt: parentPrompt, cwd: "C:/repo" };
         const exactTools = {
-          Worker: "read, bash, edit, write, grep, find, and ls",
-          Explore: "read, grep, find, and ls",
-          Research: "read, grep, find, ls, web_search, source_check, fetch_content, and get_search_content",
+          Worker: "read, bash, edit, write, grep, find, ls, and load_skill",
+          Explore: "read, grep, find, ls, and load_skill",
+          Research: "read, grep, find, ls, load_skill, web_search, source_check, fetch_content, and get_search_content",
         };
         for (const name of names) {
           const config = DEFAULT_AGENTS.get(name);
@@ -311,7 +384,7 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         if (definition.description.includes("Use Plan for architecture")) throw new Error("Plan route remains");
         if (definition.description.includes("Provide clear, detailed prompts so the agent can work autonomously")) throw new Error("redundant generic prompt guidance remains");
         const promptDescription = definition.parameters.properties.prompt.description;
-        if (!promptDescription.includes("delegated parallel track") || !promptDescription.includes("selected agent type's prompt recipe")) throw new Error("prompt parameter does not enforce a parallel type recipe");
+        if (!promptDescription.includes("One distinct delegated deliverable") || !promptDescription.includes("Name ownership, exclusions, evidence, output, stop, and any reserved main track")) throw new Error("prompt parameter does not enforce distinct ownership");
         const backgroundDescription = definition.parameters.properties.run_in_background.description;
         if (!backgroundDescription.includes("PUI built-ins: background; no profile default: foreground") || !backgroundDescription.includes("Omitted uses the selected profile default") || !backgroundDescription.includes("explicit user request")) throw new Error("background parameter does not document execution-mode resolution");
         const typeDescription = definition.parameters.properties.subagent_type.description;
@@ -343,13 +416,54 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   assert.equal(fs.existsSync(path.join(packageDir, config.manifest)), false, "subagent ownership manifest remains");
 }
 
-function assertBackgroundTasksArtifact(packageDir) {
+async function assertBackgroundTasksArtifact(packageDir) {
   const config = stack.backgroundTasksPromptPatch;
   const file = path.join(packageDir, config.bundle);
   const original = fs.readFileSync(file, "utf8");
   assert.equal(backgroundTasksPatch.apply(packageDir).action, "patched");
   assert.equal(backgroundTasksPatch.verify(packageDir).ok, true);
   assert.equal(backgroundTasksPatch.apply(packageDir).action, "already-patched");
+
+  const patched = fs.readFileSync(file, "utf8");
+  assert.equal(patched.split(backgroundTasksPatch.RUNTIME_ISOLATION_SENTINEL).length - 1, 1);
+  assert.doesNotMatch(patched, /^[ \t]*\/\/[#@]\s*sourceMappingURL=/m);
+  const runtimeCheck = spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { EventEmitter } from "node:events";
+const loaded = await import(${JSON.stringify(`${pathToFileURL(file).href}?pui-runtime-isolation=${Date.now()}`)});
+const registrations = () => {
+  const tools = new Map(), handlers = new Map();
+  const api = new Proxy({
+    events: { on() {} },
+    on(event, handler) { const registered = handlers.get(event) ?? []; registered.push(handler); handlers.set(event, registered); },
+    registerTool(tool) { tools.set(tool.name, tool); },
+  }, { get(target, property) { return property in target ? target[property] : () => {}; } });
+  const spawnProcess = () => {
+    const child = new EventEmitter();
+    child.pid = 12345;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {}, write() {} };
+    queueMicrotask(() => child.emit("spawn"));
+    return child;
+  };
+  loaded.default(api, { spawnProcess });
+  return { tools, handlers };
+};
+const first = registrations(), second = registrations();
+const expected = ["bg_kill", "bg_logs", "bg_send", "bg_start", "bg_status", "bg_wait"];
+if (JSON.stringify([...first.tools.keys()].sort()) !== JSON.stringify(expected) || JSON.stringify([...second.tools.keys()].sort()) !== JSON.stringify(expected)) throw new Error("background-task tool registration drift");
+if (first.handlers.size !== 9 || second.handlers.size !== 9) throw new Error("background-task lifecycle registration drift");
+const context = { cwd: process.cwd(), isProjectTrusted: () => true, hasUI: false, ui: { getToolsExpanded: () => false, setWidget() {}, notify() {} } };
+const signal = new AbortController().signal;
+await first.tools.get("bg_start").execute("pui-start", { name: "isolated-a", command: "echo ok" }, signal, () => {}, context);
+const firstStatus = await first.tools.get("bg_status").execute("pui-status-a", {}, signal, () => {}, context);
+const secondStatus = await second.tools.get("bg_status").execute("pui-status-b", {}, signal, () => {}, context);
+if (firstStatus.details.tasks.length !== 1 || secondStatus.details.tasks.length !== 0) throw new Error("background-task runtime state crossed factory instances");`,
+  ], { cwd: packageDir, encoding: "utf8", windowsHide: true });
+  assert.equal(runtimeCheck.status, 0, runtimeCheck.stderr || runtimeCheck.stdout);
+
   assert.equal(backgroundTasksPatch.remove(packageDir).action, "restored");
   assert.equal(fs.readFileSync(file, "utf8"), original);
   assert.equal(fs.existsSync(`${file}${config.backupSuffix}`), false, "background-task backup remains");
@@ -387,16 +501,19 @@ function installArtifacts(root) {
   if (result.status !== 0) throw new Error(`npm install failed with exit ${result.status}`);
 }
 
-function main() {
+async function main() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-prompt-patches-artifact-"));
   try {
     installArtifacts(temp);
     assertSubagentsArtifact(packageDir(temp, stack.subagentsPromptPatch.packagePath), temp);
-    assertBackgroundTasksArtifact(packageDir(temp, stack.backgroundTasksPromptPatch.packagePath));
+    await assertBackgroundTasksArtifact(packageDir(temp, stack.backgroundTasksPromptPatch.packagePath));
     console.log(`Published ${stack.upstream.subagents.npm}@${stack.upstream.subagents.version} and ${stack.upstream.backgroundTasks.npm}@${stack.upstream.backgroundTasks.version} prompt patch artifacts passed`);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

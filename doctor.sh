@@ -70,6 +70,8 @@ fi
 
 PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
 PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
+PUI_REASONING_SUMMARIES="$(expand_path "$(jget configPaths.puiReasoningSummaries)")"
+PUI_SESSION_TITLES="$(expand_path "$(jget configPaths.puiSessionTitles)")"
 PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
 PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
@@ -120,11 +122,11 @@ else
   status_line "MCP footer status" "FAIL" "mcp.json missing (expected $(jget mcp.footerStatus))"
 fi
 
-# pi-background-tasks compact model guidance and native node-pty binding
+# pi-background-tasks compact guidance, runtime isolation, and node-pty binding
 if node "$SCRIPT_DIR/lib/pui-background-tasks-patch.js" verify >/dev/null 2>&1; then
-  status_line "pi-background-tasks prompt" "PASS" "compact PUI guidance"
+  status_line "pi-background-tasks patch" "PASS" "compact guidance; isolated runtime state"
 else
-  status_line "pi-background-tasks prompt" "FAIL" "missing or drifted"
+  status_line "pi-background-tasks patch" "FAIL" "missing or drifted"
 fi
 if node "$SCRIPT_DIR/lib/pui-native-check.js" verify "$PI_AGENT_DIR/npm" >/dev/null 2>&1; then
   status_line "pi-background-tasks native" "PASS" "node-pty loads"
@@ -143,6 +145,19 @@ else
   status_line "subagent policy" "FAIL" "missing or drifted"
 fi
 node "$SCRIPT_DIR/lib/pui-update-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI installed identity" "PASS" "extension manifest" || status_line "PUI installed identity" "FAIL" "missing or mismatched"
+node "$SCRIPT_DIR/lib/pui-skill-loader-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI skill loader" "PASS" "load_skill extension" || status_line "PUI skill loader" "FAIL" "missing or mismatched"
+node "$SCRIPT_DIR/lib/pui-reasoning-summary-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI reasoning summaries" "PASS" "request policy extension" || status_line "PUI reasoning summaries" "FAIL" "extension missing or mismatched"
+if node "$LIB" validate-reasoning-summary-modes "$PUI_REASONING_SUMMARIES" >/dev/null 2>&1; then
+  status_line "reasoning-summary modes" "PASS" "$PUI_REASONING_SUMMARIES"
+else
+  status_line "reasoning-summary modes" "FAIL" "missing or invalid: $PUI_REASONING_SUMMARIES"
+fi
+node "$SCRIPT_DIR/lib/pui-session-title-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI session titles" "PASS" "automatic title extension" || status_line "PUI session titles" "FAIL" "extension missing or mismatched"
+if node "$LIB" validate-session-titles "$PUI_SESSION_TITLES" >/dev/null 2>&1; then
+  status_line "session-title models" "PASS" "$PUI_SESSION_TITLES"
+else
+  status_line "session-title models" "FAIL" "missing or invalid: $PUI_SESSION_TITLES"
+fi
 node "$SCRIPT_DIR/lib/pui-web-integration.js" verify "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null 2>&1 && status_line "PUI update bridge" "PASS" "Pi Web $(jget upstream.gui.version)" || status_line "PUI update bridge" "FAIL" "missing or mismatched"
 
 AUTOSTART_REGISTERED=0

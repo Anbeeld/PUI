@@ -10,7 +10,7 @@ PUI-managed configuration, build overrides, and patch ownership are documented i
 |---|---|---|---|
 | Agent runtime | `@earendil-works/pi-coding-agent` | Pi settings | Standalone CLI aligned to Pi Web's bundled version |
 | GUI | `@agegr/pi-web` | Pi Web build | Loopback `127.0.0.1:30141`; `--no-open` for autostart |
-| Subagents | `@gotgenes/pi-subagents` | Pi package entry + PUI-owned source patch + user mapping config | Parallel-only default delegation with background `Worker`, local read-only `Explore`, and external read-only `Research`; profile tools and readable inputs are checked before spawn/resume, narrow questions are bounded, and sole-critical-path follow-ups stay in main; built-in children retain authority/project instructions without parent-only capability metadata or duplicate skills and fail early on inaccessible evidence or execution; fail-closed routing, 128 running/512 queued agents, completion delivery, model mapping, and reasoning inheritance |
+| Subagents | `@gotgenes/pi-subagents` | Pi package entry + PUI-owned source patch + user mapping config | Parallel-only default delegation with background `Worker`, local read-only `Explore`, and external read-only `Research`; each child receives one scoped deliverable with named ownership, exclusions, and a stopping condition and never chooses or decides, while main completes named non-overlapping work before waiting or at least two children run concurrently; tools and readable inputs are checked before spawn/resume, sole-critical-path work stays in main, repeated equivalent Worker scans stop when evidence suffices, and stopped, provider-errored, empty, missing-field, or missing-coverage results remain incomplete with partial output preserved; turn-limit wrap-ups classify as incomplete; built-in children retain authority/project instructions without duplicate parent metadata or skills; fail-closed routing, bounded capacity, completion delivery, model mapping, and reasoning inheritance |
 | Web search and fetch | `pi-web-access` | `~/.pi/web-search.json` | Anonymous Exa, DuckDuckGo fallback, direct HTTP fetch |
 | MCP adapter | `pi-mcp-adapter` | `~/.config/mcp/mcp.json` | Proxy-first MCP layer with selected direct tools; footer status hidden (`mcpFooterStatus=off`) |
 | Browser automation | `@playwright/mcp` | `~/.config/mcp/mcp.json` | Lazy, headless Chrome; `browser_navigate` and five other common tools direct, long tail proxied |
@@ -20,6 +20,8 @@ PUI-managed configuration, build overrides, and patch ownership are documented i
 | Structured questions | `@juicesharp/rpiv-ask-user-question` | `~/.config/rpiv-ask-user-question/config.json` | Typed choices, free-form answers, and compact PUI-managed model guidance |
 | Fuzzy file navigation | `pi-fff` | Extension-owned feature state | Fuzzy references, path resolution, and indexed content search; startup notices and custom agent tools suppressed via PUI-managed feature config |
 | Background tasks | `@99percentpeople/pi-background-tasks` | Pi package entry + PUI-owned prompt patch + native dependency | `bg_*` pipe and PTY tasks with compact model guidance; install/update verifies and can rebuild `node-pty` |
+| Reasoning-summary modes | PUI-owned `pui-reasoning-summary` extension | `~/.config/pui/reasoning-summaries.json` | Per-model Responses request modes with provider-qualified precedence; create-only defaults set all three GPT-5.6 variants to `detailed` |
+| Automatic session titles | PUI-owned `pui-session-title` extension | `~/.config/pui/session-titles.json` | Concurrent first-prompt naming through ordered exact-or-fuzzy model selectors with active-model fallback |
 | PUI update identity | PUI-owned `pui-update` extension | `~/.pi/agent/extensions/pui-update/manifest.json` | Inert unless invoked; no polling or daemon |
 
 ## Repository layout
@@ -32,7 +34,10 @@ PUI/
 |-- package.json               test commands
 |-- assets/icons/              committed browser, PWA, and Apple icons
 |-- assets/pui-update-client.js update-card client
-|-- extensions/pui-update/     installed extension source
+|-- extensions/pui-update/     installed update extension source
+|-- extensions/pui-skill-loader/ installed skill-loader source
+|-- extensions/pui-reasoning-summary/ installed request-policy source
+|-- extensions/pui-session-title/ installed automatic-title source
 |-- lib/
 |   |-- pui-config.js          structural JSON merge helper
 |   |-- pui-stack.js           stack value reader for shell scripts
@@ -45,6 +50,8 @@ PUI/
 |   |-- pui-background-tasks-patch.js compact model-guidance patch and restore helper
 |   |-- pui-subagents-patch.js taxonomy/routing/capability/model/reasoning/completion policy helper
 |   |-- pui-pi-8782-backport.js temporary Pi #8782 Pi Web runtime patch and restore helper
+|   |-- pui-reasoning-summary-extension.js request-policy extension ownership helper
+|   |-- pui-session-title-extension.js automatic-title extension ownership helper
 |   |-- pui-reasoning-summary-patch.js Responses summary display patch and ownership helper
 |   |-- pui-native-check.js    node-pty verification and rebuild helper
 |   `-- recolor-icons.cjs      icon regeneration utility

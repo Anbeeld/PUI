@@ -15,8 +15,32 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.2.2");
-  assert.equal(release.stack.reasoningSummaryPatch.revision, 15, "v1.2.2 must retain the revision-15 reasoning transform");
+  assert.equal(release.version, "1.3.0");
+  assert.equal(release.stack.reasoningSummaryPatch.revision, 17, "v1.3.0 must refresh the selected session live for session_info_changed");
+  assert.deepEqual(release.stack.skillLoaderExtension, {
+    schemaVersion: 1,
+    target: "~/.pi/agent/extensions/pui-skill-loader",
+    files: ["core.ts", "index.ts", "package.json", "pui-extension-transaction.cjs"],
+    manifest: "manifest.json",
+  });
+  assert.deepEqual(release.stack.reasoningSummaryExtension, {
+    schemaVersion: 1,
+    target: "~/.pi/agent/extensions/pui-reasoning-summary",
+    files: ["core.ts", "index.ts", "package.json"],
+    manifest: "manifest.json",
+  });
+  assert.deepEqual(release.stack.sessionTitleExtension, {
+    schemaVersion: 1,
+    target: "~/.pi/agent/extensions/pui-session-title",
+    files: ["core.ts", "index.ts", "package.json"],
+    manifest: "manifest.json",
+  });
+  assert.deepEqual(release.stack.sessionTitles, { schemaVersion: 1, models: [] });
+  assert.deepEqual(release.stack.reasoningSummaries.modelModes, {
+    "gpt-5.6-sol": "detailed",
+    "gpt-5.6-terra": "detailed",
+    "gpt-5.6-luna": "detailed",
+  });
   for (const spec of Object.values(release.managed)) {
     assert.match(spec, /@\d+\.\d+\.\d+$/);
     assert.doesNotMatch(spec, /@latest$/);
@@ -54,9 +78,31 @@ test("release validation rejects rolling managed versions", () => {
     ambiguousMappings.stack.subagents.modelMappings = modelMappings;
     assert.match(validateRelease(ambiguousMappings).join("\n"), /subagents\.modelMappings/i);
   }
+  const invalidReasoningModes = loadRelease(repoRoot);
+  invalidReasoningModes.stack.reasoningSummaries.modelModes["gpt-5.6-sol"] = "verbose";
+  assert.match(validateRelease(invalidReasoningModes).join("\n"), /reasoningSummaries\.modelModes/i);
+  const invalidReasoningExtension = loadRelease(repoRoot);
+  invalidReasoningExtension.stack.reasoningSummaryExtension.files = ["index.ts"];
+  assert.match(validateRelease(invalidReasoningExtension).join("\n"), /reasoningSummaryExtension\.files/i);
+  const invalidReasoningPath = loadRelease(repoRoot);
+  invalidReasoningPath.stack.configPaths.puiReasoningSummaries = "~/.pi/other.json";
+  assert.match(validateRelease(invalidReasoningPath).join("\n"), /puiReasoningSummaries/i);
+  const invalidTitleModels = loadRelease(repoRoot);
+  invalidTitleModels.stack.sessionTitles.models = ["luna", "LUNA"];
+  assert.match(validateRelease(invalidTitleModels).join("\n"), /sessionTitles\.models/i);
+  const invalidTitleExtension = loadRelease(repoRoot);
+  invalidTitleExtension.stack.sessionTitleExtension.target = "~/.pi/agent/extensions/other";
+  assert.match(validateRelease(invalidTitleExtension).join("\n"), /sessionTitleExtension/i);
+  const invalidTitlePath = loadRelease(repoRoot);
+  invalidTitlePath.stack.configPaths.puiSessionTitles = "~/.pi/other.json";
+  assert.match(validateRelease(invalidTitlePath).join("\n"), /puiSessionTitles/i);
+
   const invalidFooter = loadRelease(repoRoot);
   invalidFooter.stack.mcp.footerStatus = "visible";
   assert.match(validateRelease(invalidFooter).join("\n"), /mcp\.footerStatus/i);
+  const invalidSkillLoader = loadRelease(repoRoot);
+  invalidSkillLoader.stack.skillLoaderExtension.target = "~/.pi/agent/extensions/other";
+  assert.match(validateRelease(invalidSkillLoader).join("\n"), /skillLoaderExtension/i);
 });
 
 test("active releases require the Pi #8782 backport helper", (t) => {
@@ -72,7 +118,7 @@ test("active releases require the Pi #8782 backport helper", (t) => {
 test("release validation permits future prompt revisions with the stable ownership schema", () => {
   const future = loadRelease(repoRoot);
   future.version = "1.2.2";
-  future.stack.backgroundTasksPromptPatch.revision = 2;
+  future.stack.backgroundTasksPromptPatch.revision = 3;
   future.stack.subagentsPromptPatch.revision = 5;
   assert.deepEqual(validateRelease(future), []);
 });

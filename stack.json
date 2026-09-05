@@ -70,7 +70,7 @@
   },
   "reasoningSummaryPatch": {
     "schemaVersion": 1,
-    "revision": 15,
+    "revision": 17,
     "piWebPackage": "@agegr/pi-web",
     "piWebVersion": "0.8.11",
     "codingAgentPackage": "@earendil-works/pi-coding-agent",
@@ -82,7 +82,7 @@
   },
   "subagentsPromptPatch": {
     "schemaVersion": 1,
-    "revision": 11,
+    "revision": 14,
     "packagePath": "node_modules/@gotgenes/pi-subagents",
     "files": [
       "src/tools/agent-tool.ts",
@@ -97,22 +97,71 @@
       "src/index.ts",
       "src/settings.ts",
       "src/lifecycle/concurrency-limiter.ts",
-      "src/lifecycle/subagent-manager.ts"
+      "src/lifecycle/subagent-manager.ts",
+      "src/lifecycle/subagent-session.ts",
+      "src/lifecycle/subagent-state.ts",
+      "src/observation/renderer.ts",
+      "src/tools/get-result-report.ts"
     ],
     "backupSuffix": ".pui-original",
     "manifest": ".pui-subagents-prompt-manifest.json"
+  },
+  "skillLoaderExtension": {
+    "schemaVersion": 1,
+    "target": "~/.pi/agent/extensions/pui-skill-loader",
+    "files": [
+      "core.ts",
+      "index.ts",
+      "package.json",
+      "pui-extension-transaction.cjs"
+    ],
+    "manifest": "manifest.json"
+  },
+  "reasoningSummaryExtension": {
+    "schemaVersion": 1,
+    "target": "~/.pi/agent/extensions/pui-reasoning-summary",
+    "files": [
+      "core.ts",
+      "index.ts",
+      "package.json"
+    ],
+    "manifest": "manifest.json"
+  },
+  "sessionTitleExtension": {
+    "schemaVersion": 1,
+    "target": "~/.pi/agent/extensions/pui-session-title",
+    "files": [
+      "core.ts",
+      "index.ts",
+      "package.json"
+    ],
+    "manifest": "manifest.json"
+  },
+  "sessionTitles": {
+    "schemaVersion": 1,
+    "models": []
+  },
+  "reasoningSummaries": {
+    "schemaVersion": 1,
+    "modelModes": {
+      "gpt-5.6-sol": "detailed",
+      "gpt-5.6-terra": "detailed",
+      "gpt-5.6-luna": "detailed"
+    }
   },
   "subagents": {
     "schemaVersion": 1,
     "maxConcurrent": 128,
     "maxQueued": 512,
     "modelMappings": {
-      "openai-codex/gpt-5.6-sol": "openai-codex/gpt-5.6-luna"
+      "openai-codex/gpt-6-astra": "openai-codex/gpt-5.6-luna",
+      "openai-codex/gpt-5.6-sol": "openai-codex/gpt-5.6-luna",
+      "openai-codex/gpt-5.6-terra": "openai-codex/gpt-5.6-luna"
     }
   },
   "backgroundTasksPromptPatch": {
     "schemaVersion": 1,
-    "revision": 1,
+    "revision": 2,
     "packagePath": "node_modules/@99percentpeople/pi-background-tasks",
     "bundle": "index.min.js",
     "backupSuffix": ".pui-original",
@@ -220,7 +269,9 @@
     "piFffFeatures": "~/.pi/agent/extensions/pi-fff.json",
     "piGoal": "~/.pi/agent/pi-goal.json",
     "askUserQuestion": "~/.config/rpiv-ask-user-question/config.json",
-    "puiSubagents": "~/.config/pui/subagents.json"
+    "puiSubagents": "~/.config/pui/subagents.json",
+    "puiReasoningSummaries": "~/.config/pui/reasoning-summaries.json",
+    "puiSessionTitles": "~/.config/pui/session-titles.json"
   },
   "minimumNode": "22.19.0"
 }

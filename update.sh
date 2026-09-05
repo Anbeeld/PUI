@@ -13,6 +13,42 @@ expand_path() { echo "${1/#\~/$HOME}"; }
 jget() { node "$STACK_READER" "$STACK" "$1"; }
 pui_fail() { [ "${PUI_FAIL_AT:-}" = "$1" ] && { echo "Injected update failure at $1" >&2; exit 97; }; return 0; }
 
+# npm's bulk-advisory audit POST stalls indefinitely on pi's large package tree;
+# every npm child (including the one inside `pi install`) inherits this setting.
+export npm_config_audit=false
+
+PI_TIMEOUT_SECONDS=120
+# Run a network-facing `pi` command with a hard watchdog. `pi` spawns npm
+# children that can stall indefinitely on the registry or on file locks; the
+# watchdog kills the whole pi process group on timeout so no orphan survives.
+run_pi_bounded() {
+  local tmp pid watchdog code=0
+  tmp="$(mktemp)"
+  set -m
+  pi "$@" >"$tmp" 2>&1 &
+  pid=$!
+  set +m
+  (
+    for _ in $(seq 1 "$PI_TIMEOUT_SECONDS"); do
+      sleep 1
+      kill -0 "$pid" 2>/dev/null || exit 0
+    done
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+    sleep 15
+    kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+  ) &
+  watchdog=$!
+  if wait "$pid"; then code=0; else code=$?; fi
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  sed 's/^/    /' "$tmp"
+  rm -f -- "$tmp"
+  if [ "$code" -eq 143 ] || [ "$code" -eq 137 ]; then
+    echo "  pi $* timed out after ${PI_TIMEOUT_SECONDS}s" >&2
+  fi
+  return "$code"
+}
+
 # ---- OS detection ----
 OS_TYPE="$(uname -s)"
 case "$OS_TYPE" in
@@ -45,6 +81,8 @@ PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
 PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
 PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
 PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
+PUI_REASONING_SUMMARIES="$(expand_path "$(jget configPaths.puiReasoningSummaries)")"
+PUI_SESSION_TITLES="$(expand_path "$(jget configPaths.puiSessionTitles)")"
 ASK_USER_CONFIG="$(node "$LIB" resolve-config-path "$(jget configPaths.askUserQuestion)" "$(jget askUserQuestion.configRelativePath)")" || { echo "  ask-user-question config path resolution failed" >&2; exit 1; }
 PIWEB_URL="$(jget piWeb.url)"
 
@@ -60,20 +98,36 @@ GLOBAL_ROOT="$(npm root -g)"
 REASONING_PATCH="$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js"
 REASONING_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-reasoning-summary.XXXXXX")"
 REASONING_PATCH_COMMITTED=0
+SKILL_LOADER_EXTENSION="$SCRIPT_DIR/lib/pui-skill-loader-extension.js"
+SKILL_LOADER_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-skill-loader.XXXXXX")"
+SKILL_LOADER_SNAPSHOT_COMMITTED=0
+SESSION_TITLE_EXTENSION="$SCRIPT_DIR/lib/pui-session-title-extension.js"
+SESSION_TITLE_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-session-title.XXXXXX")"
+SESSION_TITLE_SNAPSHOT_COMMITTED=0
 REASONING_PIWEB_ROOT="${GLOBAL_ROOT}/@agegr/pi-web"
 REASONING_STANDALONE_ROOT="${GLOBAL_ROOT}/@earendil-works/pi-coding-agent"
+if ! node "$SKILL_LOADER_EXTENSION" snapshot "$SKILL_LOADER_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
+  echo "  could not snapshot PUI skill-loader extension; update aborted" >&2
+  exit 1
+fi
+if ! node "$SESSION_TITLE_EXTENSION" snapshot "$SESSION_TITLE_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
+  echo "  could not snapshot PUI session-title extension; update aborted" >&2
+  exit 1
+fi
 if ! node "$BACKGROUND_PATCH" snapshot "$BACKGROUND_SNAPSHOT" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT"
-  echo "  could not snapshot pi-background-tasks prompt artifacts; update aborted" >&2
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
+  echo "  could not snapshot pi-background-tasks compatibility artifacts; update aborted" >&2
   exit 1
 fi
 if ! node "$SUBAGENTS_PATCH" snapshot "$SUBAGENTS_SNAPSHOT" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT"
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
   echo "  could not snapshot pi-subagents prompt artifacts; update aborted" >&2
   exit 1
 fi
 if ! node "$REASONING_PATCH" snapshot "$REASONING_SNAPSHOT" "$SCRIPT_DIR" "$REASONING_PIWEB_ROOT" "$REASONING_STANDALONE_ROOT" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT"
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
   echo "  could not snapshot Responses reasoning-summary artifacts; update aborted" >&2
   exit 1
 fi
@@ -85,7 +139,7 @@ restore_background_patch_on_exit() {
     if node "$BACKGROUND_PATCH" restore-snapshot "$BACKGROUND_SNAPSHOT" >/dev/null 2>&1; then
       snapshot_resolved=1
     else
-      echo "  FAILED to restore pi-background-tasks prompt artifacts; recovery snapshot retained at $BACKGROUND_SNAPSHOT" >&2
+      echo "  FAILED to restore pi-background-tasks compatibility artifacts; recovery snapshot retained at $BACKGROUND_SNAPSHOT" >&2
       status=1
     fi
   fi
@@ -110,17 +164,45 @@ restore_background_patch_on_exit() {
     fi
   fi
   if [ "$reasoning_resolved" -eq 1 ]; then rm -rf -- "$REASONING_SNAPSHOT"; fi
+  skill_loader_resolved=0
+  if [ "$SKILL_LOADER_SNAPSHOT_COMMITTED" -eq 0 ]; then
+    if node "$SKILL_LOADER_EXTENSION" restore-snapshot "$SKILL_LOADER_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+      skill_loader_resolved=1
+    else
+      echo "  FAILED to restore PUI skill-loader extension; recovery snapshot retained at $SKILL_LOADER_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  if [ "$skill_loader_resolved" -eq 1 ]; then rm -rf -- "$SKILL_LOADER_SNAPSHOT"; fi
+  session_title_resolved=0
+  if [ "$SESSION_TITLE_SNAPSHOT_COMMITTED" -eq 0 ]; then
+    if node "$SESSION_TITLE_EXTENSION" restore-snapshot "$SESSION_TITLE_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+      session_title_resolved=1
+    else
+      echo "  FAILED to restore PUI session-title extension; recovery snapshot retained at $SESSION_TITLE_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  if [ "$session_title_resolved" -eq 1 ]; then rm -rf -- "$SESSION_TITLE_SNAPSHOT"; fi
   exit "$status"
 }
 trap restore_background_patch_on_exit EXIT
 
-for f in "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_SETTINGS" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG"; do
+for f in "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_SETTINGS" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG" "$PUI_REASONING_SUMMARIES" "$PUI_SESSION_TITLES"; do
   if [ -f "$f" ]; then
     BK="$(node "$LIB" backup "$f" | tail -1)" || { echo "  backup failed: $f" >&2; exit 1; }
     echo "  backed up: $BK"
     BACKUP_FILES+=("$BK")
   fi
 done
+if [ -f "$PUI_REASONING_SUMMARIES" ] && ! node "$LIB" validate-reasoning-summary-modes "$PUI_REASONING_SUMMARIES" >/dev/null 2>&1; then
+  echo "  invalid reasoning-summary configuration backed up and left unchanged: $PUI_REASONING_SUMMARIES" >&2
+  exit 1
+fi
+if [ -f "$PUI_SESSION_TITLES" ] && ! node "$LIB" validate-session-titles "$PUI_SESSION_TITLES" >/dev/null 2>&1; then
+  echo "  invalid session-title configuration backed up and left unchanged: $PUI_SESSION_TITLES" >&2
+  exit 1
+fi
 
 # Final fail-safe idle check must happen while the server can still report its
 # active sessions. If a running Pi Web cannot report activity, fail closed.
@@ -261,12 +343,12 @@ package_installed() {
 for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.retiredPiPackages||[])console.log(p)' "$STACK"); do
   if package_installed "$spec"; then
     echo "  retiring $spec..."
-    pi remove "$spec" 2>&1 | sed 's/^/    /' || { echo "  failed to retire $spec" >&2; exit 1; }
+    if ! run_pi_bounded remove "$spec"; then echo "  failed to retire $spec" >&2; exit 1; fi
   fi
 done
 for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPackages)console.log(p)' "$STACK"); do
   echo "  reconciling managed extension $spec..."
-  pi install "$spec" 2>&1 | sed 's/^/    /' || { echo "  failed to install $spec" >&2; exit 1; }
+  if ! run_pi_bounded install "$spec"; then echo "  failed to install $spec" >&2; exit 1; fi
   node "$SCRIPT_DIR/lib/pui-config.js" set-package "$PI_SETTINGS" "$spec" >/dev/null || { echo "  failed to set exact managed pin for $spec" >&2; exit 1; }
 done
 pui_fail package-reconciliation
@@ -274,6 +356,14 @@ pui_fail package-reconciliation
 ASK_GUIDANCE="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.askUserQuestion.guidance))' "$STACK")"
 node "$LIB" set-owned-fields "$ASK_USER_CONFIG" guidance "$ASK_GUIDANCE" >/dev/null || { echo "  ask-user-question guidance reconciliation failed" >&2; exit 1; }
 echo "  ask-user-question guidance reconciled"
+
+REASONING_SUMMARY_DEFAULTS="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.reasoningSummaries.modelModes))' "$STACK")"
+node "$LIB" ensure-reasoning-summary-modes "$PUI_REASONING_SUMMARIES" "$REASONING_SUMMARY_DEFAULTS" >/dev/null || { echo "  reasoning-summary configuration is invalid and was not overwritten" >&2; exit 1; }
+echo "  reasoning-summary modes ready: $PUI_REASONING_SUMMARIES"
+
+SESSION_TITLE_DEFAULTS="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.sessionTitles.models))' "$STACK")"
+node "$LIB" ensure-session-titles "$PUI_SESSION_TITLES" "$SESSION_TITLE_DEFAULTS" >/dev/null || { echo "  session-title configuration is invalid and was not overwritten" >&2; exit 1; }
+echo "  session-title models ready: $PUI_SESSION_TITLES"
 
 SUBAGENT_DEFAULT_MAPPINGS="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.subagents.modelMappings))' "$STACK")"
 node "$LIB" reconcile-model-mappings "$PUI_SUBAGENTS_CONFIG" "$SUBAGENT_DEFAULT_MAPPINGS" >/dev/null || { echo "  subagent model mapping reconciliation failed" >&2; exit 1; }
@@ -302,10 +392,10 @@ if ! node "$SCRIPT_DIR/lib/pui-native-check.js" ensure "$PI_AGENT_DIR/npm" >/dev
   exit 1
 fi
 if ! node "$BACKGROUND_PATCH" apply >/dev/null 2>&1; then
-  echo "  pi-background-tasks compact prompt patch could not be applied (version or metadata drift); update aborted." >&2
+  echo "  pi-background-tasks compatibility patch could not be applied (version or bundle drift); update aborted." >&2
   exit 1
 fi
-echo "  pi-background-tasks compact model guidance applied"
+echo "  pi-background-tasks compact guidance and runtime isolation applied"
 if ! node "$SUBAGENTS_PATCH" apply >/dev/null 2>&1; then
   echo "  pi-subagents policy patch could not be applied (version or metadata drift); update aborted." >&2
   exit 1
@@ -332,9 +422,12 @@ node "$LIB" merge-object "$MCP_SHARED" "$MCP_FOOTER_CFG" >/dev/null || { echo " 
 echo "  MCP footer status configured (mcpFooterStatus=$MCP_FOOTER_STATUS)"
 pui_fail config-migration
 node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI update extension replacement failed" >&2; exit 1; }
+node "$SCRIPT_DIR/lib/pui-skill-loader-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI skill loader extension replacement failed" >&2; exit 1; }
+node "$SCRIPT_DIR/lib/pui-reasoning-summary-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI reasoning-summary extension replacement failed" >&2; exit 1; }
+node "$SCRIPT_DIR/lib/pui-session-title-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI session-title extension replacement failed" >&2; exit 1; }
 pui_fail extension-replacement
 echo "  refreshing model catalogs..."
-pi update --models 2>&1 | sed 's/^/    /' || { echo "  model catalog refresh failed" >&2; exit 1; }
+if ! run_pi_bounded update --models; then echo "  model catalog refresh failed" >&2; exit 1; fi
 
 # Restart Pi Web only through the configured service manager. Refresh the
 # definition so both managers inherit the active Node/Pi Web bin directory.
@@ -482,6 +575,44 @@ else
   done
   [ -f "$SUBAGENTS_GUARD_READY" ] || { echo "  subagents prompt rollback guard did not become ready" >&2; exit 1; }
   SUBAGENTS_PATCH_COMMITTED=1
+fi
+set +e
+node "$SKILL_LOADER_EXTENSION" spawn-guard "$SKILL_LOADER_SNAPSHOT" "$PUI_VERSION" "$SCRIPT_DIR" >/dev/null
+SKILL_LOADER_GUARD_EXIT=$?
+set -e
+if [ "$SKILL_LOADER_GUARD_EXIT" -eq 75 ] || [ "$SKILL_LOADER_GUARD_EXIT" -eq 76 ]; then
+  SKILL_LOADER_SNAPSHOT_COMMITTED=1
+  rm -rf -- "$SKILL_LOADER_SNAPSHOT"
+elif [ "$SKILL_LOADER_GUARD_EXIT" -ne 0 ]; then
+  echo "  could not start the outer-transaction skill-loader rollback guard" >&2
+  exit 1
+else
+  SKILL_LOADER_GUARD_READY="$SKILL_LOADER_SNAPSHOT/guard-ready"
+  for _ in $(seq 1 50); do
+    [ -f "$SKILL_LOADER_GUARD_READY" ] && break
+    sleep 0.1
+  done
+  [ -f "$SKILL_LOADER_GUARD_READY" ] || { echo "  skill-loader rollback guard did not become ready" >&2; exit 1; }
+  SKILL_LOADER_SNAPSHOT_COMMITTED=1
+fi
+set +e
+node "$SESSION_TITLE_EXTENSION" spawn-guard "$SESSION_TITLE_SNAPSHOT" "$PUI_VERSION" "$SCRIPT_DIR" >/dev/null
+SESSION_TITLE_GUARD_EXIT=$?
+set -e
+if [ "$SESSION_TITLE_GUARD_EXIT" -eq 75 ] || [ "$SESSION_TITLE_GUARD_EXIT" -eq 76 ]; then
+  SESSION_TITLE_SNAPSHOT_COMMITTED=1
+  rm -rf -- "$SESSION_TITLE_SNAPSHOT"
+elif [ "$SESSION_TITLE_GUARD_EXIT" -ne 0 ]; then
+  echo "  could not start the outer-transaction session-title rollback guard" >&2
+  exit 1
+else
+  SESSION_TITLE_GUARD_READY="$SESSION_TITLE_SNAPSHOT/guard-ready"
+  for _ in $(seq 1 50); do
+    [ -f "$SESSION_TITLE_GUARD_READY" ] && break
+    sleep 0.1
+  done
+  [ -f "$SESSION_TITLE_GUARD_READY" ] || { echo "  session-title rollback guard did not become ready" >&2; exit 1; }
+  SESSION_TITLE_SNAPSHOT_COMMITTED=1
 fi
 set +e
 node "$REASONING_PATCH" spawn-guard "$REASONING_SNAPSHOT" "$PUI_VERSION" "$SCRIPT_DIR" "$REASONING_PIWEB_ROOT" "$REASONING_STANDALONE_ROOT" >/dev/null

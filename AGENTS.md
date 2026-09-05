@@ -2,9 +2,9 @@
 
 ## Purpose and boundaries
 
-PUI is a composition profile for vanilla Pi. It installs exact upstream components without a separate PUI runtime process, persistent service, retained checkout, or Pi fork. A small inert update extension and an exact Pi Web integration remain installed.
+PUI is a composition profile for vanilla Pi. It installs exact upstream components without a separate PUI runtime process, persistent service, retained checkout, or Pi fork. A small inert update extension, a lightweight skill-loader extension, and an exact Pi Web integration remain installed.
 
-- Treat `stack.json` as the source of truth for exact managed package versions, retired packages, paths, tools, MCP configuration (including `mcpFooterStatus`), web routing, shipped subagent model-mapping defaults, pi-goal continuation limits, and the Pi Web endpoint. `package.json.version` is the source release version; the installed update-extension manifest is the installed identity.
+- Treat `stack.json` as the source of truth for exact managed package versions, retired packages, paths, tools, MCP configuration (including `mcpFooterStatus`), web routing, shipped subagent model-mapping defaults, pi-goal continuation limits, PUI-owned extension metadata, and the Pi Web endpoint. `package.json.version` is the source release version; the installed update-extension manifest is the installed identity.
 - Preserve unrelated user configuration. Back up existing JSON before changing it, validate inputs, and use structural merges instead of textual replacement.
 - Perform installation and update mutations through the repository entry points. Do not document or introduce a manual sequence that bypasses `install.*` or `update.*`.
 - Do not modify user projects, sessions, authentication, skills, model/provider configuration, or unrelated MCP entries.
@@ -19,7 +19,7 @@ PUI is a composition profile for vanilla Pi. It installs exact upstream componen
 - `lib/pui-config.js` owns JSON backup and merge operations.
 - `lib/pui-stack.js` returns typed `stack.json` values to shell scripts; string values must remain unquoted.
 - PUI-owned patches and build overrides are summarized in `README.md` under **Patches** and documented in detail in `docs/patches.md`, including managed files, ownership boundaries, lifecycle behavior, rollback, and uninstall. Keep patch-specific behavior in those files rather than expanding this instruction file.
-- `lib/pui-release.js`, `lib/pui-updater.js`, `lib/pui-update-extension.js`, and `lib/pui-web-integration.js` own release validation, transaction/rollback, installed identity, and the exact Pi Web bridge.
+- `lib/pui-release.js`, `lib/pui-updater.js`, `lib/pui-update-extension.js`, `lib/pui-skill-loader-extension.js`, and `lib/pui-web-integration.js` own release validation, transaction/rollback, installed identity, the skill-loader lifecycle, and the exact Pi Web bridge.
 - `assets/icons/` contains the complete committed icon source set. Do not edit installed copies as the source of truth.
 
 Keep the PowerShell and shell workflows behaviorally equivalent except for platform-specific autostart. When changing a lifecycle phase, inspect and update both implementations and their tests.

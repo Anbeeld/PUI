@@ -392,7 +392,7 @@ test("projects Responses context and deferred-thinking API responses", () => {
   assert.match(routeResult.text, /"text"===g\.type\?g\.text:""/);
 });
 
-const LIVE_CUSTOM_WEB_SOURCE = 'function live(e){switch(e.type){case"connected":end({type:"end"}),!0===e.isStreaming&&(cancel(),active.current=!0,running.current=!0,setRunning(!0),setPhase({kind:"waiting_model"}));break;case"agent_start":cancel(),active.current=!0,running.current=!0,setRunning(!0),setPhase({kind:"waiting_model"}),end({type:"start"});break;case"agent_end":if(!running.current)break;setPhase(null),setRetry(null),end({type:"end"}),sid.current&&(load(sid.current),fetch(`/api/agent/${encodeURIComponent(sid.current)}`));break;case"agent_settled":{let was=active.current;if(active.current=!1,!was||rpc.current)break;settle()}case"prompt_done":{let run=runId.current,was=rpc.current;rpc.current=!1,optimistic.current=null;let first=notify(run);if(!was&&!first)break;let current=sid.current;current&&load(current),!active.current&&(settle(),current&&close(current))}break;case"message_start":case"message_update":if(!running.current)break;if("message_start"===e.type){let msg=e.message;if(msg?.role==="user")break;msg?.role==="assistant"?(dispatch({type:"snapshot",message:msg}),msg.content.length>0&&setPhase(null)):msg&&setPhase(null)}else{let delta=e.assistantMessageEvent;delta&&dispatch({type:"delta",event:delta})}break;}}';
+const LIVE_CUSTOM_WEB_SOURCE = 'async function wait(){let response=await state(),current=response.state;if(!response.running||!current||!current.isStreaming&&!current.isPromptRunning)return void await finish()}async function reconcile(){let response=await state(),current=response.state;if(response.running&&current&&(current.isStreaming||current.isPromptRunning||current.isCompacting)){active.current=!!current.isStreaming;return}await finish()}function live(e){switch(e.type){case"connected":end({type:"end"}),!0===e.isStreaming&&(cancel(),active.current=!0,running.current=!0,setRunning(!0),setPhase({kind:"waiting_model"}));break;case"agent_start":cancel(),active.current=!0,running.current=!0,setRunning(!0),setPhase({kind:"waiting_model"}),end({type:"start"});break;case"agent_end":if(!running.current)break;setPhase(null),setRetry(null),end({type:"end"}),sid.current&&(load(sid.current),fetch(`/api/agent/${encodeURIComponent(sid.current)}`));break;case"agent_settled":{let was=active.current;if(active.current=!1,!was||rpc.current)break;settle()}case"prompt_done":{let run=runId.current,was=rpc.current;rpc.current=!1,optimistic.current=null;let first=notify(run);if(!was&&!first)break;let current=sid.current;current&&load(current),!active.current&&(settle(),current&&close(current))}break;case"message_start":case"message_update":if(!running.current)break;if("message_start"===e.type){let msg=e.message;if(msg?.role==="user")break;msg?.role==="assistant"?(dispatch({type:"snapshot",message:msg}),msg.content.length>0&&setPhase(null)):msg&&setPhase(null)}else{let delta=e.assistantMessageEvent;delta&&dispatch({type:"delta",event:delta})}break;}}';
 const CUSTOM_MESSAGE_WEB_SOURCE = 'function custom({message:a,cwd:b,onOpenFile:c}){let d,{t:e}=useI18n(),f=!1===a.display,[g,h]=(0,R.useState)(!f),[i,j]=(0,R.useState)(!1),k=text(a.content),o=void 0!==a.details,q=a.customType||"extension",r=time(a.timestamp);return view({background:f?"hidden-card-color":"visible-card-color",children:[header({style:{borderBottom:"1px solid var(--border)"},children:[title(q),r&&timestamp(r)]}),g?markdown({className:"markdown-custom-message",children:k}):button({onClick:()=>h(!0),children:preview(k)}),footer({children:[copy(k),(o||f)&&jsx("button",{onClick:()=>{f?h(a=>!a):j(a=>!a)},style:{marginLeft:"auto",padding:"3px 7px"},children:e(f?g?"i18n.collapse":"i18n.expand":i?"i18n.hideDetails":"i18n.showDetails")})]}),o&&(f&&g||!f&&i)&&details(a.details)]})}';
 
 test("makes only subagent notifications a reversible collapsed custom-message spoiler", () => {
@@ -446,26 +446,89 @@ test("uses compaction typography only for Goal complete custom messages", () => 
   assert.equal((result.text.match(/markdown-compaction-message/g) || []).length, 1, "compaction typography leaked to another generic custom-message path");
 });
 
-test("reconciles persisted custom prompts when Pi Web reconnects to an extension-started run", () => {
+test("classifies only goal commands and queues that can start a generated turn", () => {
+  const { goalStartCommandFromPrompt, hasQueuedGoalTurn, isGoalTurnCommandKey } = patchModule();
+  const key = (text) => JSON.stringify({ text, images: [] });
+
+  for (const command of [
+    "/goal ship release",
+    "/goal --tokens 100k ship release",
+    "/goal resume",
+    "/goal edit revised objective",
+  ]) assert.equal(isGoalTurnCommandKey(key(command)), true, command);
+
+  for (const command of [
+    "/goal",
+    "/goal status",
+    "/goal pause",
+    "/goal clear",
+    "/goal stop",
+    "/goal resume extra",
+    "ordinary prompt",
+  ]) assert.equal(isGoalTurnCommandKey(key(command)), false, command);
+  assert.equal(isGoalTurnCommandKey("not-json"), false);
+
+  const generated = initialGoalPrompt("queued objective");
+  assert.equal(goalStartCommandFromPrompt(generated), "/goal queued objective");
+  assert.equal(hasQueuedGoalTurn({ queuedMessages: { followUp: [generated] } }), true);
+  assert.equal(hasQueuedGoalTurn({ queuedMessages: { followUp: ["ordinary follow-up"] } }), false);
+  assert.equal(hasQueuedGoalTurn(undefined), false);
+});
+
+test("refreshes the selected session immediately for session_info_changed without completion side effects", () => {
   const { patchPiWebLiveCustomMessages } = patchModule();
+  const source = LIVE_CUSTOM_WEB_SOURCE;
+  const result = patchPiWebLiveCustomMessages(source);
+  assert.equal(result.changed, true);
+  assert.match(result.text, /case"session_info_changed":if\(!sid\.current\)break;load\(sid\.current\);break;case"agent_start":/);
+
+  const calls = [];
+  let completions = 0;
+  const context = {
+    globalThis: {}, sid: { current: "session-1" }, running: { current: false }, active: { current: false }, rpc: { current: false },
+    end() {}, cancel() {}, setRunning() {}, setPhase() {}, setRetry() {}, dispatch() {}, settle() { completions += 1; },
+    load: (sessionId) => calls.push(sessionId), fetch() {}, encodeURIComponent, runId: { current: 1 }, optimistic: { current: null },
+    notify() { completions += 1; }, close() {}, puiIsGoalTurnCommandKey() { return false; }, puiHasQueuedGoalTurn() { return false; },
+  };
+  vm.runInNewContext(`${result.text};globalThis.live=live;`, context);
+  context.globalThis.live({ type: "session_info_changed", sessionId: "session-1" });
+  assert.deepEqual(calls, ["session-1"]);
+  assert.equal(completions, 0);
+  assert.equal(patchPiWebLiveCustomMessages(result.text).reason, "already-patched");
+  assert.throws(
+    () => patchPiWebLiveCustomMessages(source.replace('case"agent_start":', 'case"other_event":')),
+    /streaming reconnect seam|drift|not found/i,
+  );
+});
+
+test("reconciles persisted custom prompts when Pi Web reconnects to an extension-started run", async () => {
+  const { hasQueuedGoalTurn, isGoalTurnCommandKey, patchPiWebLiveCustomMessages } = patchModule();
   const result = patchPiWebLiveCustomMessages(LIVE_CUSTOM_WEB_SOURCE);
   assert.equal(result.changed, true);
   assert.match(result.text, /sid\.puiCustomMessageReconcile=!0/);
   assert.match(result.text, /sid\.puiCustomMessageReconcile&&\(sid\.puiCustomMessageReconcile=!1,sid\.current&&void load\(sid\.current\)\)/);
-  assert.match(result.text, /current&&!active\.current&&load\(current\)/);
+  assert.match(result.text, /puiIsGoalTurnCommandKey\(optimistic\.current\)/);
+  assert.match(result.text, /current&&!puiIsGoalTurnCommandKey\(optimistic\.current\)&&!active\.current&&load\(current\)/);
+  assert.match(result.text, /!current\|\|!puiHasQueuedGoalTurn\(current\)&&\(!response\.running\|\|!current\.isStreaming&&!current\.isPromptRunning\)/);
+  assert.match(result.text, /response\.running&&current&&\(current\.isStreaming\|\|current\.isPromptRunning\|\|current\.isCompacting\)\|\|puiHasQueuedGoalTurn\(current\)/);
   assert.equal(patchPiWebLiveCustomMessages(result.text).reason, "already-patched");
 
   const calls = [];
+  let settlements = 0;
+  let idleFinishes = 0;
+  let serverState = { running: false, state: undefined };
   const context = {
     globalThis: {},
     end() {}, cancel() {}, active: { current: false }, running: { current: false },
-    setRunning() {}, setPhase() {}, setRetry() {}, dispatch() {}, settle() {},
+    setRunning() {}, setPhase() {}, setRetry() {}, dispatch() {}, settle() { settlements += 1; },
     sid: { current: "session-1" }, rpc: { current: false },
     runId: { current: 1 }, optimistic: { current: "prompt" },
     load: (sessionId) => calls.push(sessionId), fetch() {}, encodeURIComponent,
-    notify: () => true, close() {},
+    notify: () => true, close() {}, puiIsGoalTurnCommandKey: isGoalTurnCommandKey,
+    puiHasQueuedGoalTurn: hasQueuedGoalTurn,
+    state: async () => serverState, finish: async () => { idleFinishes += 1; },
   };
-  vm.runInNewContext(`${result.text};globalThis.live=live`, context);
+  vm.runInNewContext(`${result.text};globalThis.live=live;globalThis.wait=wait;globalThis.reconcile=reconcile`, context);
   context.globalThis.live({ type: "connected", isStreaming: false });
   context.globalThis.live({ type: "message_start", message: { role: "assistant", content: [] } });
   assert.deepEqual(calls, [], "idle reconnects must not reload the transcript");
@@ -494,8 +557,26 @@ test("reconciles persisted custom prompts when Pi Web reconnects to an extension
 
   context.active.current = false;
   context.rpc.current = true;
+  context.optimistic.current = JSON.stringify({ text: "/goal ship release", images: [] });
+  const settlementsBeforeGoal = settlements;
+  context.globalThis.live({ type: "prompt_done" });
+  assert.deepEqual(calls, ["session-1"], "prompt_done before agent_start reloaded a stale Goal transcript");
+  assert.notEqual(context.optimistic.current, null, "prompt_done cleared the Goal command before its generated message could reconcile it");
+  assert.equal(settlements, settlementsBeforeGoal, "prompt_done settled the UI before the queued Goal turn started");
+
+  context.optimistic.current = "prompt";
+  context.rpc.current = true;
   context.globalThis.live({ type: "prompt_done" });
   assert.deepEqual(calls, ["session-1", "session-1"], "ordinary completed prompts must still reconcile immediately");
+
+  serverState = { running: false, state: { queuedMessages: { followUp: [initialGoalPrompt("queued objective")] } } };
+  await context.globalThis.wait();
+  await context.globalThis.reconcile();
+  assert.equal(idleFinishes, 0, "server-state recovery treated a queued generated Goal prompt as idle");
+
+  serverState = { running: false, state: { queuedMessages: { followUp: [] } } };
+  await context.globalThis.wait();
+  assert.equal(idleFinishes, 1, "server-state recovery did not settle a genuinely idle command");
 });
 
 test("Pi Web patching fails closed when any required display seam is absent", () => {

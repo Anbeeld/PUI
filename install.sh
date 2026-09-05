@@ -23,6 +23,10 @@ for arg in "$@"; do
   esac
 done
 
+# npm's bulk-advisory audit POST stalls indefinitely on pi's large package tree;
+# every npm child (including the one inside `pi install`) inherits this setting.
+export npm_config_audit=false
+
 # ---- OS detection ----
 OS_TYPE="$(uname -s)"
 case "$OS_TYPE" in
@@ -43,6 +47,39 @@ node_version_ok() {
 write_phase() { echo; echo "=== Phase $1 — $2 ==="; }
 gate() { GATE_RESULTS+=("$1:$2:$3"); if [ "$3" = "1" ]; then echo "[GATE $1 PASS] $2"; else echo "[GATE $1 FAIL] $2"; FAILURES+=("$1"); fi; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+PI_TIMEOUT_SECONDS=120
+# Run a network-facing `pi` command with a hard watchdog. `pi` spawns npm
+# children that can stall indefinitely on the registry or on file locks; the
+# watchdog kills the whole pi process group on timeout so no orphan survives.
+run_pi_bounded() {
+  local tmp pid watchdog code=0
+  tmp="$(mktemp)"
+  set -m
+  pi "$@" >"$tmp" 2>&1 &
+  pid=$!
+  set +m
+  (
+    for _ in $(seq 1 "$PI_TIMEOUT_SECONDS"); do
+      sleep 1
+      kill -0 "$pid" 2>/dev/null || exit 0
+    done
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+    sleep 15
+    kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+  ) &
+  watchdog=$!
+  if wait "$pid"; then code=0; else code=$?; fi
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  sed 's/^/    /' "$tmp"
+  rm -f -- "$tmp"
+  if [ "$code" -eq 143 ] || [ "$code" -eq 137 ]; then
+    echo "  pi $* timed out after ${PI_TIMEOUT_SECONDS}s" >&2
+  fi
+  return "$code"
+}
+
 PLIST_LABEL="com.pui.piweb"
 SERVICE_NAME="pui-piweb"
 
@@ -75,6 +112,8 @@ MCP_FOOTER_STATUS="$(jget mcp.footerStatus)"
 PI_FFF_FEATURES="$(expand_path "$(jget configPaths.piFffFeatures)")"
 PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
 PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
+PUI_REASONING_SUMMARIES="$(expand_path "$(jget configPaths.puiReasoningSummaries)")"
+PUI_SESSION_TITLES="$(expand_path "$(jget configPaths.puiSessionTitles)")"
 ASK_USER_CONFIG="$(node_config resolve-config-path "$(jget configPaths.askUserQuestion)" "$(jget askUserQuestion.configRelativePath)")" || { echo "  ask-user-question config path resolution failed" >&2; exit 1; }
 MIN_NODE="$(jget minimumNode)"
 PIWEB_URL="$(jget piWeb.url)"
@@ -108,15 +147,22 @@ fi
 # ---- Phase 2: preserve (G2) ----
 write_phase 2 "preserve existing state"
 G2=1
-for f in "$PI_SETTINGS" "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG"; do
+for f in "$PI_SETTINGS" "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG" "$PUI_REASONING_SUMMARIES" "$PUI_SESSION_TITLES"; do
   if [ -f "$f" ]; then
+    BK="$(node_config backup "$f" | tail -1)" || { echo "  backup failed: $f" >&2; G2=0; continue; }
+    echo "  backed up: $BK"
     if ! node_config validate "$f" >/dev/null 2>&1; then
       echo "  INVALID JSON (not overwritten): $f" >&2
       node_config validate "$f" >&2 || true
       G2=0
-    else
-      BK="$(node_config backup "$f" | tail -1)" || { echo "  backup failed: $f" >&2; G2=0; continue; }
-      echo "  backed up: $BK"
+    elif [ "$f" = "$PUI_REASONING_SUMMARIES" ] && ! node_config validate-reasoning-summary-modes "$f" >/dev/null 2>&1; then
+      echo "  INVALID reasoning-summary configuration (not overwritten): $f" >&2
+      node_config validate-reasoning-summary-modes "$f" >&2 || true
+      G2=0
+    elif [ "$f" = "$PUI_SESSION_TITLES" ] && ! node_config validate-session-titles "$f" >/dev/null 2>&1; then
+      echo "  INVALID session-title configuration (not overwritten): $f" >&2
+      node_config validate-session-titles "$f" >&2 || true
+      G2=0
     fi
   fi
 done
@@ -275,24 +321,41 @@ PI_LIST_BEFORE="$(pi list 2>&1 || true)"
 for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.retiredPiPackages||[])console.log(p)' "$STACK"); do
   if printf '%s\n' "$PI_LIST_BEFORE" | grep -Fq "$spec"; then
     echo "  retiring $spec"
-    if ! pi remove "$spec"; then echo "  FAILED to retire: $spec"; G4=0; fi
+    if ! run_pi_bounded remove "$spec"; then echo "  FAILED to retire: $spec"; G4=0; fi
   fi
 done
 for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPackages)console.log(p)' "$STACK"); do
   echo "  pi install $spec"
-  if pi install "$spec"; then
+  if run_pi_bounded install "$spec"; then
     node_config set-package "$PI_SETTINGS" "$spec" >/dev/null || G4=0
   else
     echo "  FAILED: $spec"; G4=0
   fi
 done
 node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI update extension install failed" >&2; G4=0; }
+node "$SCRIPT_DIR/lib/pui-skill-loader-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI skill loader extension install failed" >&2; G4=0; }
+node "$SCRIPT_DIR/lib/pui-reasoning-summary-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI reasoning-summary extension install failed" >&2; G4=0; }
+node "$SCRIPT_DIR/lib/pui-session-title-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI session-title extension install failed" >&2; G4=0; }
 
 ASK_GUIDANCE="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.askUserQuestion.guidance))' "$STACK")"
 if node_config set-owned-fields "$ASK_USER_CONFIG" guidance "$ASK_GUIDANCE" >/dev/null; then
   echo "  ask-user-question guidance configured"
 else
   echo "  ask-user-question guidance reconciliation failed" >&2; G4=0
+fi
+
+REASONING_SUMMARY_DEFAULTS="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.reasoningSummaries.modelModes))' "$STACK")"
+if node_config ensure-reasoning-summary-modes "$PUI_REASONING_SUMMARIES" "$REASONING_SUMMARY_DEFAULTS" >/dev/null; then
+  echo "  reasoning-summary modes ready: $PUI_REASONING_SUMMARIES"
+else
+  echo "  reasoning-summary configuration is invalid and was not overwritten" >&2; G4=0
+fi
+
+SESSION_TITLE_DEFAULTS="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.sessionTitles.models))' "$STACK")"
+if node_config ensure-session-titles "$PUI_SESSION_TITLES" "$SESSION_TITLE_DEFAULTS" >/dev/null; then
+  echo "  session-title models ready: $PUI_SESSION_TITLES"
+else
+  echo "  session-title configuration is invalid and was not overwritten" >&2; G4=0
 fi
 
 SUBAGENT_DEFAULT_MAPPINGS="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.subagents.modelMappings))' "$STACK")"
@@ -319,13 +382,13 @@ if ! node "$SCRIPT_DIR/lib/pui-native-check.js" ensure "$PI_AGENT_DIR/npm" >/dev
   echo "  pi-background-tasks native (node-pty) binding could not be verified or rebuilt; install aborted. Install the required compiler toolchain and rerun install.sh." >&2
   G4=0
 fi
-# Replace the pinned package's verbose, overlapping model guidance with the
-# exact PUI-owned compact descriptions, snippets, schema text, and guidelines.
+# Replace the pinned package's verbose model guidance and isolate its mutable
+# runtime state per cached extension-factory instance.
 if ! node "$SCRIPT_DIR/lib/pui-background-tasks-patch.js" apply >/dev/null 2>&1; then
-  echo "  pi-background-tasks compact prompt patch could not be applied (version or metadata drift); install aborted." >&2
+  echo "  pi-background-tasks compatibility patch could not be applied (version or bundle drift); install aborted." >&2
   G4=0
 else
-  echo "  pi-background-tasks compact model guidance applied"
+  echo "  pi-background-tasks compact guidance and runtime isolation applied"
 fi
 # Apply PUI's subagent taxonomy, capabilities, routing, model, and reasoning policy.
 if ! node "$SCRIPT_DIR/lib/pui-subagents-patch.js" apply >/dev/null 2>&1; then
@@ -568,7 +631,7 @@ echo "=== PUI install summary ==="
 for g in "${GATE_RESULTS[@]}"; do echo "  $g"; done
 if [ "${#FAILURES[@]}" -gt 0 ]; then echo "Failed gates: ${FAILURES[*]}"; exit 1; fi
 echo
-echo "PUI setup complete. Pi remains the runtime; the inert PUI update extension and Pi Web integration stay installed."
+echo "PUI setup complete. Pi remains the runtime; the update extension and Pi Web integration stay installed, along with the skill-loader extension."
 if [ "$NO_PWA" -eq 0 ] && [ "$NO_BROWSER" -eq 0 ]; then
   if [ "$OS_NAME" = "macOS" ]; then
     echo "Complete PWA installation via Safari 'Add to Dock' on the opened page."

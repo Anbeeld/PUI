@@ -1,6 +1,6 @@
 {
   "name": "pui",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "private": true,
   "description": "Opinionated batteries-included composition profile for vanilla Pi with explicit transactional self-update.",
   "license": "MIT",

@@ -156,8 +156,8 @@ $backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $backgroundPatch remove 2>&1 | Out-Null; $backgroundRemoveExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
-if ($backgroundRemoveExit -eq 0) { Write-Host "  removed the PUI-owned pi-background-tasks prompt override when present" }
-else { Write-Host "  pi-background-tasks prompt override differs from its PUI-owned shape; preserving." -ForegroundColor Yellow }
+if ($backgroundRemoveExit -eq 0) { Write-Host "  removed the PUI-owned pi-background-tasks compatibility patch when present" }
+else { Write-Host "  pi-background-tasks compatibility patch differs from its PUI-owned shape; preserving." -ForegroundColor Yellow }
 $subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch remove 2>&1 | Out-Null; $subagentsRemoveExit = $LASTEXITCODE }
@@ -167,6 +167,12 @@ else { Write-Host "  pi-subagents policy patch differs from its PUI-owned shape;
 
 & node (Join-Path $ScriptDir "lib\pui-update-extension.js") remove $ScriptDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI update extension differs from its owned shape; preserving." -ForegroundColor Yellow }
+& node (Join-Path $ScriptDir "lib\pui-skill-loader-extension.js") remove $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI skill loader extension differs from its owned shape; preserving." -ForegroundColor Yellow }
+& node (Join-Path $ScriptDir "lib\pui-reasoning-summary-extension.js") remove $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI reasoning-summary extension differs from its owned shape; preserving." -ForegroundColor Yellow }
+& node (Join-Path $ScriptDir "lib\pui-session-title-extension.js") remove $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI session-title extension differs from its owned shape; preserving." -ForegroundColor Yellow }
 
 # 4. optionally remove PUI-selected Pi packages
 if ($Full) {

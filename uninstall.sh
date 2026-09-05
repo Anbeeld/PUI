@@ -151,9 +151,9 @@ if command -v npm >/dev/null 2>&1; then
   fi
 fi
 if node "$SCRIPT_DIR/lib/pui-background-tasks-patch.js" remove >/dev/null 2>&1; then
-  echo "  removed the PUI-owned pi-background-tasks prompt override when present"
+  echo "  removed the PUI-owned pi-background-tasks compatibility patch when present"
 else
-  echo "  pi-background-tasks prompt override differs from its PUI-owned shape; preserving."
+  echo "  pi-background-tasks compatibility patch differs from its PUI-owned shape; preserving."
 fi
 if node "$SCRIPT_DIR/lib/pui-subagents-patch.js" remove >/dev/null 2>&1; then
   echo "  removed the PUI-owned pi-subagents policy patch when present"
@@ -161,6 +161,9 @@ else
   echo "  pi-subagents policy patch differs from its PUI-owned shape; preserving."
 fi
 node "$SCRIPT_DIR/lib/pui-update-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI update extension differs from its owned shape; preserving."
+node "$SCRIPT_DIR/lib/pui-skill-loader-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI skill loader extension differs from its owned shape; preserving."
+node "$SCRIPT_DIR/lib/pui-reasoning-summary-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI reasoning-summary extension differs from its owned shape; preserving."
+node "$SCRIPT_DIR/lib/pui-session-title-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI session-title extension differs from its owned shape; preserving."
 
 if [ "$FULL" -eq 1 ]; then
   echo "  --full: removing PUI-selected Pi packages..."

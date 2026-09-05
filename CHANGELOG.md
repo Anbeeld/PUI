@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.0
+
+- Added automatic session titles with configurable exact or fuzzy model priorities and active-model fallback. Generation runs alongside the first turn, requests no reasoning when supported and otherwise uses the model's lightest advertised reasoning level, uses a direct-prohibition prompt and a 1,024-token output ceiling so reasoning models can still reach visible title text, and preserves manual renames.
+- Added per-model reasoning-summary policy for Responses APIs. Exact provider/model settings override bare model IDs, and new configs default the GPT-5.6 variants to `detailed`.
+- Added a PUI-owned `load_skill` tool for explicit skill and reference loading. It accepts one or several references per call and includes the parent skill when needed; built-in subagents can use it, and Pi Web distinguishes reference loads in tool-call headers. Its prompt directs loading at task start and material phase changes, including matching parts of mixed tasks and required references.
+- Tightened subagent routing around independent, non-duplicated deliverables while keeping decisions in main. Lone-child dispatches now name child-owned and excluded inputs plus concurrent main work, main performs reserved work before waiting, repeated equivalent Worker scans stop once evidence suffices, and missing handoff fields remain incomplete. Provider errors, blank responses, and turn-limit results no longer count as completed, explicit `max_turns` values override profile defaults, and GPT-6 Astra plus GPT-5.6 Sol and Terra now default their subagents to GPT-5.6 Luna.
+- Isolated background-task runtime state per extension instance to prevent cross-session task and callback leakage.
+- Added 120-second watchdogs for install and update package/model commands and disabled npm audits in those workflows.
+- Kept optimistic `/goal` start, edit, and resume commands visible until the generated goal turn or idle recovery takes over, regardless of event order.
+
 ## v1.2.2
 
 - Consolidated subagent guidance and added capability and readable-input checks before spawning or resuming. Parents now keep sole-critical-path follow-ups and verdicts in main and bound narrow investigations; built-in agents declare their exact tools, preserve inherited authority and project instructions without duplicate parent metadata, and stop early when required evidence or execution is unavailable.
