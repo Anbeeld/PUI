@@ -412,7 +412,7 @@ test("makes only subagent notifications a reversible collapsed custom-message sp
   const headerToggle = result.text.slice(headerToggleStart, headerToggleEnd);
   assert.doesNotMatch(headerToggle, /children:e\(/, "collapsed header still uses an Expand text action");
   assert.match(headerToggle, /marginLeft:r\?0:"auto"/, "timestamp and chevron are not grouped at the right edge");
-  assert.match(result.text, /\("subagent-notification"!==a\.customType\|\|g\)&&\(g\?markdown\(\{className:/);
+  assert.match(result.text, /\("subagent-notification"!==a\.customType\|\|g\)&&\(\("Goal complete"===a\.customType\|\|g\)\?markdown\(\{className:/);
   assert.match(result.text, /\("subagent-notification"!==a\.customType\|\|g\)&&footer/);
   assert.doesNotMatch(result.text, /footer\(\{children:\[copy\(k\),"subagent-notification"===/, "content toggle remained in the footer");
   assert.match(result.text, /\(o\|\|f\)&&(?:jsx\("button"|button)/, "existing Details visibility rule changed");
@@ -436,12 +436,12 @@ test("makes only subagent notifications a reversible collapsed custom-message sp
   );
 });
 
-test("uses compaction typography only for Goal complete custom messages", () => {
+test("keeps Goal complete expanded when React reuses a collapsed custom-message component", () => {
   const { patchPiWebCustomMessageSpoiler } = patchModule();
   const result = patchPiWebCustomMessageSpoiler(CUSTOM_MESSAGE_WEB_SOURCE);
   assert.match(
     result.text,
-    /className:"Goal complete"===a\.customType\?"markdown-compaction-message":"markdown-custom-message"/,
+    /\("Goal complete"===a\.customType\|\|g\)\?markdown\(\{className:"Goal complete"===a\.customType\?"markdown-compaction-message":"markdown-custom-message"/,
   );
   assert.equal((result.text.match(/markdown-compaction-message/g) || []).length, 1, "compaction typography leaked to another generic custom-message path");
 });

@@ -80,8 +80,8 @@ test("initial load returns SKILL.md and a compact sorted reference list", async 
 
   const original = formatOriginalSkills([skill]);
   const changed = await configure(pi, skill, `${original}\nCurrent working directory: ${skill.baseDir}`);
-  assert.match(changed.systemPrompt, /At the start of each task and whenever the task or phase materially changes, use `load_skill`/);
-  assert.match(changed.systemPrompt, /Pass `reference` as one listed filename or a list \(`\.md` optional\)/);
+  assert.doesNotMatch(changed.systemPrompt, /At the start of each task and whenever the task or phase materially changes/);
+  assert.doesNotMatch(changed.systemPrompt, /Pass `reference` as one listed filename or a list/);
   assert.doesNotMatch(changed.systemPrompt, /<location>|Use the read tool/);
   assert.match(changed.systemPrompt, /<name>prompting<\/name>/);
 
@@ -92,7 +92,21 @@ test("initial load returns SKILL.md and a compact sorted reference list", async 
   assert.equal(result.details.kind, "skill");
 });
 
-test("routing prompt covers mixed tasks, identification, required references, and context reuse", async (t) => {
+test("routing policy is registered as constant base-system-prompt guidance", async () => {
+  const { registerPuiSkillLoader } = await loadCore();
+  const pi = fakePi();
+  registerPuiSkillLoader(pi, fakeType());
+
+  assert.deepEqual(pi.tool.promptGuidelines, [
+    "At the start of each task and at every material task or phase change, call `load_skill` for every directly matching skill, including each matching part of a mixed task. Skill descriptions are routing metadata for this selection.",
+    "If a skill match is unclear, inspect only enough of the work to decide whether to call `load_skill`.",
+    "After `load_skill` returns a skill, follow its instructions and load any required references before starting that work.",
+    "Do not call `load_skill` for skills merely adjacent to the work or for content already in context.",
+    "For skill references, pass `reference` to `load_skill` as one listed filename or a list (`.md` optional). Resolve other relative paths from the returned skill directory.",
+  ]);
+});
+
+test("prompt rewrite changes only the discovered skill catalog", async (t) => {
   const { registerPuiSkillLoader, formatOriginalSkills } = await loadCore();
   const skill = makeSkill(t);
   const pi = fakePi();
@@ -100,15 +114,10 @@ test("routing prompt covers mixed tasks, identification, required references, an
   const footer = `Current working directory: ${skill.baseDir}`;
   const changed = await configure(pi, skill, `Preserve project instructions.${formatOriginalSkills([skill])}\n${footer}`);
 
-  assert.match(changed.systemPrompt, /At the start of each task and whenever the task or phase materially changes, use `load_skill` for skills whose descriptions directly match the work, including matching parts of mixed tasks\./);
-  assert.match(changed.systemPrompt, /If needed, inspect only enough to identify the work first\./);
-  assert.match(changed.systemPrompt, /Follow the loaded instructions and load references they require for the current work before proceeding\./);
-  assert.match(changed.systemPrompt, /Do not load merely adjacent skills or content already in context\./);
-  assert.match(changed.systemPrompt, /Resolve other relative paths from the returned skill directory\./);
   assert.ok(changed.systemPrompt.startsWith("Preserve project instructions."));
   assert.ok(changed.systemPrompt.endsWith(footer));
   assert.match(changed.systemPrompt, /<name>prompting<\/name>\n\s*<description>Design AI-facing instructions\.<\/description>/);
-  assert.doesNotMatch(changed.systemPrompt, /Use the read tool|Before starting work that matches a description/);
+  assert.doesNotMatch(changed.systemPrompt, /use `load_skill`|Use the read tool|Before starting work that matches a description/);
 });
 
 test("tool metadata leads with skill selection and documents loading results", async () => {
@@ -122,6 +131,7 @@ test("tool metadata leads with skill selection and documents loading results", a
   assert.match(pi.tool.description, /Requests already satisfied in active context return an already-loaded notice\./);
   assert.match(pi.tool.description, /Names must be exact; references must be filenames, not paths\./);
   assert.equal(pi.tool.promptSnippet, "Load matching skills and required references before their work begins");
+  assert.equal(pi.tool.promptGuidelines.length, 5);
 });
 
 test("reference accepts an optional .md suffix after the skill is loaded", async (t) => {
@@ -314,8 +324,7 @@ test("prompt rewrite replaces a noncanonical skill block instead of retaining re
     "Available specialist instructions:",
   );
   const changed = await configure(pi, skill, `${modified}\nCurrent working directory: ${skill.baseDir}`);
-  assert.match(changed.systemPrompt, /use `load_skill`/);
-  assert.doesNotMatch(changed.systemPrompt, /Use the read tool|<location>/);
+  assert.doesNotMatch(changed.systemPrompt, /use `load_skill`|Use the read tool|<location>/);
   assert.equal((changed.systemPrompt.match(/<available_skills>/g) || []).length, 1);
 });
 
@@ -326,7 +335,8 @@ test("prompt rewrite is idempotent over an already rewritten block", async (t) =
   registerPuiSkillLoader(pi, fakeType());
   const first = await configure(pi, skill, `Current working directory: ${skill.baseDir}`);
   const second = await configure(pi, skill, `First section.\n\n${first.systemPrompt}`);
-  assert.equal(second.systemPrompt.split("routing metadata").length - 1, 1);
+  assert.equal((second.systemPrompt.match(/<available_skills>/g) || []).length, 1);
+  assert.equal(second.systemPrompt.split("Available skills:").length - 1, 1);
 });
 
 test("prompt rewrite is gated by active loader and model-invocable skills", async (t) => {

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.1
+
+- Gave Explore `bash` access for code inspection, Git revision comparison, and PR retrieval without a command whitelist. Its assignment remains read-only; shell access is not a sandbox. Worker now covers decided changes, builds, tests, and experiments rather than command-based investigation.
+- Revised subagent system and tool guidance to assign one owner per evidence question, merge overlapping investigations, defer parent revalidation until collection, and require coverage evidence rather than completion labels. Explore must account for every assigned audit item and relevant tests, and stop repeating scans once no unresolved question remains.
+- Added regression coverage for Explore capabilities, routing and handoff contracts, and migration/restoration of the previous subagent patch revision.
+- Kept live `Goal complete` cards expanded when Pi Web reuses a previously collapsed custom-message component; they now match their correctly expanded state after session reload.
+- Hardened automatic session titles by requiring the final value inside strict `<pui-session-title>` markers, ignoring explanatory text outside them, and rejecting malformed or oversized marked values instead of persisting truncated prose.
+- Moved skill-loading process guidance into the base system prompt's tool guidelines; the per-turn skill-loader hook now contributes only the discovered skill catalog.
+
 ## v1.3.0
 
 - Added automatic session titles with configurable exact or fuzzy model priorities and active-model fallback. Generation runs alongside the first turn, requests no reasoning when supported and otherwise uses the model's lightest advertised reasoning level, uses a direct-prohibition prompt and a 1,024-token output ceiling so reasoning models can still reach visible title text, and preserves manual renames.

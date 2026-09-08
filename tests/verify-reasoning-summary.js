@@ -180,6 +180,7 @@ async function main() {
     assert.match(clientText, /points:"2 3\.5 5 6\.5 8 3\.5"/, "subagent notification header chevron is missing");
     assert.match(clientText, /marginLeft:[A-Za-z_$][\w$]*\?0:"auto"/, "subagent notification timestamp is not grouped with its chevron");
     assert.match(clientText, /borderBottom:"subagent-notification"===[A-Za-z_$][\w$]*\.customType&&!/, "collapsed subagent notification is not a single header row");
+    assert.match(clientText, /\("Goal complete"===[A-Za-z_$][\w$]*\.customType\|\|[A-Za-z_$][\w$]*\)\?/, "Goal completion is not forced expanded during live rendering");
     assert.match(clientText, /className:"Goal complete"===[A-Za-z_$][\w$]*\.customType\?"markdown-compaction-message":"markdown-custom-message"/, "Goal completion does not reuse compaction typography");
     assert.match(clientText, /case"connected":[^;]+isStreaming&&\([^;]+\.puiCustomMessageReconcile=!0/, "streaming reconnect does not schedule custom-prompt reconciliation");
     assert.match(clientText, /\.puiCustomMessageReconcile&&\([^;]+\.puiCustomMessageReconcile=!1,[A-Za-z_$][\w$]*\.current&&void [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\.current\)/, "first assistant snapshot does not recover persisted custom prompts");

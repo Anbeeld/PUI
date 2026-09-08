@@ -77,6 +77,10 @@ function response(text, stopReason = "stop") {
   };
 }
 
+function titleResponse(title, stopReason = "stop") {
+  return response(`<pui-session-title>${title}</pui-session-title>`, stopReason);
+}
+
 async function eventually(predicate) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;
@@ -130,17 +134,28 @@ test("effective input removes bulky fenced code and uses a small head-tail budge
   assert.ok([...effectiveInput(codeOnly)].length <= 800);
 });
 
-test("title cleanup removes terminal controls and validates the truncated result", async () => {
+test("title cleanup removes terminal controls and rejects malformed output", async () => {
   const { cleanTitle } = await loadCore();
   assert.equal(cleanTitle('  <title>"Fix checkout retries."</title>\nExplanation'), "Fix checkout retries");
   assert.equal(cleanTitle("<think>analysis</think>\nTitle: `Repair session loading!`"), "Repair session loading");
   assert.equal(cleanTitle('```json\n{"title":"Repair session loading."}\n```'), "Repair session loading");
   assert.equal(cleanTitle("标题：修复会话加载。"), "修复会话加载");
-  assert.equal(cleanTitle("x".repeat(100)), "x".repeat(80));
+  assert.equal(cleanTitle("x".repeat(100)), undefined);
+  assert.equal(cleanTitle("The user wants a concise 3-5 word title in the language of the request (English)"), undefined);
+  assert.equal(cleanTitle("The user wants a concise title.\n\nTitle ideas: Repair parser loading\n\nRepair Parser Loading"), undefined);
   assert.equal(cleanTitle("\u001b]52;c;Zm9v\u0007Safe title"), "Safe title");
   assert.equal(cleanTitle(".".repeat(80) + "a"), undefined);
   assert.equal(cleanTitle("<think>only reasoning</think>"), undefined);
   assert.equal(cleanTitle("..."), undefined);
+});
+
+test("strict title markers extract the final non-nested title and reject unstructured output", async () => {
+  const { extractMarkedTitle } = await loadCore();
+  assert.equal(extractMarkedTitle("analysis\n<pui-session-title>Repair Session Loading</pui-session-title>"), "Repair Session Loading");
+  assert.equal(extractMarkedTitle("<pui-session-title>Draft</pui-session-title> prose <pui-session-title>Final Session Title</pui-session-title>"), "Final Session Title");
+  assert.equal(extractMarkedTitle("<pui-session-title>outer <pui-session-title>Nested</pui-session-title>"), "Nested");
+  assert.equal(extractMarkedTitle("Repair Session Loading"), undefined);
+  assert.equal(extractMarkedTitle("<pui-session-title>" + "word ".repeat(13) + "</pui-session-title>"), undefined);
 });
 
 test("generation starts concurrently, tries configured models in order, and falls back to the active model", async (t) => {
@@ -157,8 +172,10 @@ test("generation starts concurrently, tries configured models in order, and fall
       await firstPending;
       throw new Error("provider unavailable");
     }
-    if (selected === second) return response("   ");
-    return response("Resolve checkout failures.");
+    if (selected === second) {
+      return response("The user wants a concise title.\n\nTitle ideas: Resolve checkout failures\n\nResolve Checkout Failures");
+    }
+    return titleResponse("Resolve checkout failures.");
   });
   const pi = fakePi();
   registerPuiSessionTitle(pi, {
@@ -183,6 +200,8 @@ test("generation starts concurrently, tries configured models in order, and fall
     assert.doesNotMatch(titleRequest, /<request>/);
     assert.match(titleRequest, /^Do not reason, analyze, deliberate, explain, or produce scratch work\./);
     assert.match(titleRequest, /Immediately output a concise 3-5 word title/);
+    assert.match(titleRequest, /<pui-session-title>/);
+    assert.match(titleRequest, /<\/pui-session-title>/);
     assert.equal(attempt.options.reasoningEffort, "none");
     assert.equal(attempt.options.maxTokens, 1024);
     assert.equal(attempt.options.maxRetries, 2);
@@ -218,7 +237,7 @@ test("generation sends the model's lightest supported reasoning level", async (t
   let sentOptions;
   const modelRegistry = registry([active], async (_model, _request, options) => {
     sentOptions = options;
-    return response("Audit Session Suggestions");
+    return titleResponse("Audit Session Suggestions");
   });
   const pi = fakePi();
   registerPuiSessionTitle(pi, { configPath: writeConfig(t, { schemaVersion: 1, models: [] }) });
@@ -237,7 +256,7 @@ test("request framing cannot be closed by user-provided XML delimiters", async (
   let sent;
   const modelRegistry = registry([active], async (_model, request) => {
     sent = request.messages[0].content[0].text;
-    return response("Safe title");
+    return titleResponse("Safe title");
   });
   const pi = fakePi();
   registerPuiSessionTitle(pi, { configPath: writeConfig(t, { schemaVersion: 1, models: [] }) });
@@ -252,7 +271,7 @@ test("an image-only first turn does not block the first later text prompt", asyn
   const { registerPuiSessionTitle } = await loadCore();
   const active = model("openai-codex", "gpt-5.6-sol");
   let calls = 0;
-  const modelRegistry = registry([active], async () => { calls += 1; return response("Describe screenshot"); });
+  const modelRegistry = registry([active], async () => { calls += 1; return titleResponse("Describe screenshot"); });
   const pi = fakePi();
   registerPuiSessionTitle(pi, { configPath: writeConfig(t, { schemaVersion: 1, models: [] }) });
   const imageOnly = [{ type: "message", message: { role: "user", content: [{ type: "image", data: "x", mimeType: "image/png" }] } }];
@@ -273,7 +292,7 @@ test("a Pi Web rename persisted through another session manager wins the race", 
   fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "session", timestamp: new Date().toISOString(), cwd: root })}\n`);
   let completeTitle;
   const pending = new Promise((resolve) => { completeTitle = resolve; });
-  const modelRegistry = registry([active], async () => { await pending; return response("Generated title"); });
+  const modelRegistry = registry([active], async () => { await pending; return titleResponse("Generated title"); });
   const pi = fakePi();
   registerPuiSessionTitle(pi, { configPath: writeConfig(t, { schemaVersion: 1, models: [] }) });
 
@@ -360,7 +379,7 @@ test("only a new unnamed session attempts generation and a concurrent explicit n
   const modelRegistry = registry([active], async () => {
     calls += 1;
     await pending;
-    return response("Generated title");
+    return titleResponse("Generated title");
   });
   const pi = fakePi();
   registerPuiSessionTitle(pi, { configPath: writeConfig(t, { schemaVersion: 1, models: [] }) });

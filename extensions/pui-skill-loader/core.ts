@@ -4,9 +4,15 @@ import path from "node:path";
 export const MAX_OUTPUT_BYTES = 50 * 1024;
 export const MAX_OUTPUT_LINES = 2000;
 
-export const SYSTEM_PROMPT = `The following skills provide specialized instructions; their descriptions are routing metadata. At the start of each task and whenever the task or phase materially changes, use \`load_skill\` for skills whose descriptions directly match the work, including matching parts of mixed tasks. If needed, inspect only enough to identify the work first. Follow the loaded instructions and load references they require for the current work before proceeding. Do not load merely adjacent skills or content already in context.
+export const PROMPT_GUIDELINES = [
+  "At the start of each task and at every material task or phase change, call `load_skill` for every directly matching skill, including each matching part of a mixed task. Skill descriptions are routing metadata for this selection.",
+  "If a skill match is unclear, inspect only enough of the work to decide whether to call `load_skill`.",
+  "After `load_skill` returns a skill, follow its instructions and load any required references before starting that work.",
+  "Do not call `load_skill` for skills merely adjacent to the work or for content already in context.",
+  "For skill references, pass `reference` to `load_skill` as one listed filename or a list (`.md` optional). Resolve other relative paths from the returned skill directory.",
+];
 
-Pass \`reference\` as one listed filename or a list (\`.md\` optional). Resolve other relative paths from the returned skill directory.`;
+const CATALOG_HEADING = "Available skills:";
 
 export const TOOL_DESCRIPTION = "Load a directly matching skill or its required Markdown references before starting that work. `name` alone returns SKILL.md, its directory, and reference filenames. `reference` accepts one listed filename or a list (`.md` optional), including the parent skill when absent from active context. Requests already satisfied in active context return an already-loaded notice. Names must be exact; references must be filenames, not paths.";
 
@@ -80,7 +86,7 @@ export function formatOriginalSkills(skills: Skill[]): string {
 export function formatPuiSkills(skills: Skill[]): string {
   const visible = visibleSkills(skills);
   if (visible.length === 0) return "";
-  const lines = [`\n\n${SYSTEM_PROMPT}`, "", "<available_skills>"];
+  const lines = [`\n\n${CATALOG_HEADING}`, "", "<available_skills>"];
   for (const skill of visible) {
     lines.push("  <skill>");
     lines.push(`    <name>${escapeXml(skill.name)}</name>`);
@@ -96,13 +102,16 @@ function replaceSkillPrompt(prompt: string, skills: Skill[]): string {
   if (!replacement) return prompt;
   const original = formatOriginalSkills(skills);
   if (original && prompt.includes(original)) return prompt.replace(original, replacement);
-  if (prompt.includes(SYSTEM_PROMPT)) return prompt;
   const opening = prompt.indexOf("<available_skills>");
   const closing = opening < 0 ? -1 : prompt.indexOf("</available_skills>", opening);
   if (closing >= 0) {
+    const heading = prompt.lastIndexOf(`\n\n${CATALOG_HEADING}`, opening);
+    const headingEnd = heading < 0 ? -1 : heading + 2 + CATALOG_HEADING.length;
     const guidance = prompt.lastIndexOf("\nUse the read tool to load a skill's file", opening);
     const paragraph = prompt.lastIndexOf("\n\n", guidance >= 0 ? guidance : opening);
-    const start = paragraph >= 0 ? paragraph : opening;
+    const start = heading >= 0 && prompt.slice(headingEnd, opening).trim().length === 0
+      ? heading
+      : paragraph >= 0 ? paragraph : opening;
     return `${prompt.slice(0, start).trimEnd()}${replacement}${prompt.slice(closing + "</available_skills>".length)}`;
   }
   const footer = "Current working directory:";
@@ -198,6 +207,7 @@ export function registerPuiSkillLoader(pi: ExtensionApi, Type: TypeApi): void {
     label: "Load Skill",
     description: TOOL_DESCRIPTION,
     promptSnippet: "Load matching skills and required references before their work begins",
+    promptGuidelines: PROMPT_GUIDELINES,
     parameters: Type.Object({
       name: Type.String({ description: "Exact skill name from <available_skills>." }),
       reference: Type.Optional(Type.Union([

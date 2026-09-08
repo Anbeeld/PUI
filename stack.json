@@ -70,7 +70,7 @@
   },
   "reasoningSummaryPatch": {
     "schemaVersion": 1,
-    "revision": 17,
+    "revision": 18,
     "piWebPackage": "@agegr/pi-web",
     "piWebVersion": "0.8.11",
     "codingAgentPackage": "@earendil-works/pi-coding-agent",
@@ -82,7 +82,7 @@
   },
   "subagentsPromptPatch": {
     "schemaVersion": 1,
-    "revision": 14,
+    "revision": 15,
     "packagePath": "node_modules/@gotgenes/pi-subagents",
     "files": [
       "src/tools/agent-tool.ts",

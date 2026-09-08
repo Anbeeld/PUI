@@ -49,17 +49,17 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   assert.doesNotMatch(toolSource, /autonomously handle complex tasks|Run background agents in parallel only when/);
   assert.match(toolSource, /Never delegate decisions\./);
   assert.match(toolSource, /delegate only with substantial disjoint main work or at least two independent concurrent children; otherwise stay in main/);
-  assert.match(toolSource, /Preassign disjoint ownership: bounded deliverable, owned\/excluded files\/sources\/actions/);
+  assert.match(toolSource, /Preassign one owner per evidence question or change/);
   assert.match(toolSource, /After dispatch, do reserved main work before waiting/);
-  assert.match(toolSource, /Until collection, do not duplicate child evidence, edits, or checks/);
-  assert.match(toolSource, /route by capability: readable static files → Explore; external\/current sources → Research; commands, Git, builds, tests, experiments, or edits → Worker\/main/);
+  assert.match(toolSource, /revalidate child evidence only after collection\. No parallel duplicate investigations, edits, or checks/);
+  assert.match(toolSource, /code\/Git\/PR inspection → Explore, including shell retrieval; external-source research → Research; edits, builds, tests, experiments → Worker\/main/);
   assert.match(toolSource, /foreground requires explicit user request, not profile naming\./);
   assert.match(toolSource, /Reload resolves changes\./);
   assert.equal(toolSource.split("Resume only with new direction").length - 1, 1);
   assert.doesNotMatch(toolSource, /Use resume with an agent ID to continue a previous agent's work/);
-  assert.match(toolSource, /Give Explore an other-revision diff or checkout; otherwise use Worker\/main/);
-  assert.match(toolSource, /Match results to deliverables and fields/);
-  assert.match(toolSource, /missing status\/coverage/);
+  assert.match(toolSource, /Preflight inputs\/tools before spawn\/resume/);
+  assert.match(toolSource, /Coverage evidence, not completion labels, establishes completion/);
+  assert.match(toolSource, /Missing status\/coverage/);
   assert.match(toolSource, /errors, empty output, aborts, stops, limit steering, or residual work are incomplete/);
   assert.match(toolSource, /critical-path follow-ups stay in main/);
   assert.match(toolSource, /other fields are ignored/);
@@ -71,11 +71,14 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   const defaultsSource = fs.readFileSync(path.join(packageDir, "src", "config", "default-agents.ts"), "utf8");
   assert.match(defaultsSource, /\["web_search", "source_check", "fetch_content", "get_search_content"\]/);
   assert.match(defaultsSource, /Your available tools are exactly: read, bash, edit, write, grep, find, ls, and load_skill\./);
-  assert.match(defaultsSource, /Your available tools are exactly: read, grep, find, ls, and load_skill\./);
+  assert.match(defaultsSource, /Your available tools are exactly: read, bash, grep, find, ls, and load_skill\./);
   assert.match(defaultsSource, /Never choose, recommend, rank, approve, assign severity, or decide what to use or port\./);
   assert.match(defaultsSource, /If asked, return only supporting evidence and mark the decision out of scope\./);
   assert.match(defaultsSource, /Your available tools are exactly: read, grep, find, ls, load_skill, web_search, source_check, fetch_content, and get_search_content\./);
-  assert.match(defaultsSource, /Check accessibility before searching\./);
+  assert.match(defaultsSource, /Resolve and cite exact revisions\./);
+  assert.match(defaultsSource, /Shell access is unrestricted at runtime, not a read-only sandbox/);
+  assert.match(defaultsSource, /Full audits must cover every assigned file\/hunk and relevant tests/);
+  assert.match(defaultsSource, /Missing coverage makes the track incomplete/);
   assert.match(defaultsSource, /Never cite one revision for another\./);
   assert.match(defaultsSource, /do not substitute a proposed experiment\./);
   assert.match(defaultsSource, /not invitations to propose unexecuted experiments\./);
@@ -314,7 +317,7 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         const registry = new AgentTypeRegistry(() => new Map());
         const builtins = ["read", "bash", "edit", "write", "grep", "find", "ls", "load_skill"];
         if (JSON.stringify(registry.getToolNamesForType("Worker")) !== JSON.stringify(builtins)) throw new Error("Worker tools drifted");
-        if (JSON.stringify(registry.getToolNamesForType("Explore")) !== JSON.stringify(["read", "grep", "find", "ls", "load_skill"])) throw new Error("Explore tools drifted");
+        if (JSON.stringify(registry.getToolNamesForType("Explore")) !== JSON.stringify(["read", "bash", "grep", "find", "ls", "load_skill"])) throw new Error("Explore tools drifted");
         if (JSON.stringify(registry.getToolNamesForType("Research")) !== JSON.stringify(["read", "grep", "find", "ls", "load_skill", "web_search", "source_check", "fetch_content", "get_search_content"])) throw new Error("Research tools drifted");
         if (registry.resolveType("Plan") !== undefined || registry.resolveType("general-purpose") !== undefined) throw new Error("removed built-in alias remains");
         const customRegistry = new AgentTypeRegistry(() => new Map([
@@ -353,7 +356,7 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         const inherited = { systemPrompt: parentPrompt, cwd: "C:/repo" };
         const exactTools = {
           Worker: "read, bash, edit, write, grep, find, ls, and load_skill",
-          Explore: "read, grep, find, ls, and load_skill",
+          Explore: "read, bash, grep, find, ls, and load_skill",
           Research: "read, grep, find, ls, load_skill, web_search, source_check, fetch_content, and get_search_content",
         };
         for (const name of names) {
