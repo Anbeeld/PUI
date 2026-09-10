@@ -6,6 +6,7 @@ const os = require("node:os");
 const { spawnSync } = require("node:child_process");
 
 const repoRoot = path.resolve(__dirname, "..");
+const installedVersion = require(path.join(repoRoot, "package.json")).version;
 const {
   chooseStableUpdate,
   detachedSpawnOptions,
@@ -30,12 +31,18 @@ const {
   runScript,
   runTransaction,
   scriptEnvironment,
+  ensurePiWebRunning,
   isStandalonePiCommand,
   isPiWebProcess,
+  killPiWebProcesses,
+  listPiWebProcesses,
   manualUpdateGuidance,
   piWebIdle,
   piWebLaunchSpec,
   readCertifiedManifest,
+  relaunchPiWeb,
+  restartPiWebCommand,
+  runLauncher,
   validateSkillLoaderIdentity,
   validateReasoningSummaryExtensionIdentity,
   validateSessionTitleExtensionIdentity,
@@ -43,7 +50,27 @@ const {
   validateModelCatalogExtensionIdentity,
   validateModelPolicyExtensionIdentity,
   validateInstalledExtensionIdentities,
+  STATUS_COPY_FILE,
+  UPDATE_LOG_FILE,
+  UPDATE_STATE_DIR,
 } = require(path.join(repoRoot, "lib", "pui-updater.js"));
+
+const updaterModulePath = path.join(repoRoot, "lib", "pui-updater.js");
+
+// Runs the updater in a child process whose temporary directory and home are test
+// owned, so no test ever reads or writes the real ~/.pi or the live status file.
+function runUpdaterChild(home, body) {
+  const temporary = path.join(home, "tmp");
+  fs.mkdirSync(temporary, { recursive: true });
+  const source = `const os = require("node:os");\nconst updater = require(${JSON.stringify(updaterModulePath)});\n${body}`;
+  const result = spawnSync(process.execPath, ["-e", source], {
+    encoding: "utf8",
+    windowsHide: true,
+    env: { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: temporary, TEMP: temporary, TMP: temporary },
+  });
+  assert.equal(result.status, 0, `child exited ${result.status}: ${result.stderr}`);
+  return { ...JSON.parse(result.stdout), temporary };
+}
 
 function certifiedManifest(root, files = { "updater.js": "placeholder" }) {
   const core = { owner: "PUI", schemaVersion: 1, puiVersion: "1.0.0", managed: {}, files };
@@ -197,9 +224,9 @@ test("transaction validation requires session communication identity from v1.3.2
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const target = path.join(temp, "pui-session-communication");
   require(path.join(repoRoot, "lib", "pui-session-communication-extension.js")).installExtension({ repoRoot, target });
-  assert.doesNotThrow(() => validateSessionCommunicationExtensionIdentity("1.3.2", target));
+  assert.doesNotThrow(() => validateSessionCommunicationExtensionIdentity(installedVersion, target));
   fs.appendFileSync(path.join(target, "core.ts"), "\nmodified");
-  assert.throws(() => validateSessionCommunicationExtensionIdentity("1.3.2", target), /mismatch/);
+  assert.throws(() => validateSessionCommunicationExtensionIdentity(installedVersion, target), /mismatch/);
 });
 
 test("transaction validation requires model catalog identity from v1.3.2", (t) => {
@@ -207,9 +234,9 @@ test("transaction validation requires model catalog identity from v1.3.2", (t) =
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const target = path.join(temp, "pui-model-catalog");
   require(path.join(repoRoot, "lib", "pui-model-catalog-extension.js")).installExtension({ repoRoot, target });
-  assert.doesNotThrow(() => validateModelCatalogExtensionIdentity("1.3.2", target));
+  assert.doesNotThrow(() => validateModelCatalogExtensionIdentity(installedVersion, target));
   fs.appendFileSync(path.join(target, "core.ts"), "\nmodified");
-  assert.throws(() => validateModelCatalogExtensionIdentity("1.3.2", target), /mismatch/);
+  assert.throws(() => validateModelCatalogExtensionIdentity(installedVersion, target), /mismatch/);
 });
 
 test("transaction validation and rollback cover the model policy extension", (t) => {
@@ -220,9 +247,9 @@ test("transaction validation and rollback cover the model policy extension", (t)
     { modelPolicyExtension: { target: live } },
   ], path.join(temp, "backup"));
   require(path.join(repoRoot, "lib", "pui-model-policy-extension.js")).installExtension({ repoRoot, target: live });
-  assert.doesNotThrow(() => validateModelPolicyExtensionIdentity("1.3.2", live));
+  assert.doesNotThrow(() => validateModelPolicyExtensionIdentity(installedVersion, live));
   fs.appendFileSync(path.join(live, "core.ts"), "\nmodified");
-  assert.throws(() => validateModelPolicyExtensionIdentity("1.3.2", live), /mismatch/);
+  assert.throws(() => validateModelPolicyExtensionIdentity(installedVersion, live), /mismatch/);
   assert.throws(() => restoreModelPolicyExtensionBackup(backup), /drift/i);
   fs.rmSync(live, { recursive: true });
   require(path.join(repoRoot, "lib", "pui-model-policy-extension.js")).installExtension({ repoRoot, target: live });
@@ -560,6 +587,69 @@ test("pi-web process detection matches the managed GUI server and excludes the a
   assert.equal(isPiWebProcess("node /home/me/.pi/agent/extensions/pui-update/updater.js restart"), false);
 });
 
+test("pi-web process detection matches the npm bin shim without matching lookalike commands", () => {
+  assert.equal(isPiWebProcess("node /Users/me/.nvm/versions/node/v24.13.0/bin/pi-web --no-open"), true);
+  assert.equal(isPiWebProcess("node /usr/local/bin/pi-web.js --no-open"), true);
+  assert.equal(isPiWebProcess('node "C:\\Users\\me\\AppData\\Roaming\\npm\\bin\\pi-web.js" --no-open'), true);
+  assert.equal(isPiWebProcess("grep pi-web"), false);
+  assert.equal(isPiWebProcess("vi pi-web"), false);
+  assert.equal(isPiWebProcess("node /Users/me/.pi/agent/extensions/pui-update/updater.js apply 1.3.2"), false);
+  assert.equal(isPiWebProcess("node /Users/me/tools/bin/pi-web-helper.js"), false);
+});
+
+test("process listing includes the retitled Next.js child but not the detached updater", () => {
+  const calls = [];
+  const psOutput = [
+    "  501     1 node /Users/me/.nvm/versions/node/v24.13.0/bin/pi-web --no-open",
+    "  502   501 next-server (v16.3.1)      ",
+    "  503   501 node /Users/me/.pi/agent/extensions/pui-update/updater.js apply 1.3.2",
+    "  504   501 node /Users/me/tools/node_modules/other/next-server-helper.js",
+    "  505     1 next-server (v16.3.1)",
+    "  506     1 node /usr/lib/node_modules/@agegr/pi-web/node_modules/next/dist/bin/next start -p 30141",
+  ].join("\n");
+  const processes = listPiWebProcesses({
+    platform: "linux",
+    spawnSync: (...args) => { calls.push(args); return { status: 0, stdout: psOutput, stderr: "" }; },
+  });
+  assert.deepEqual(calls[0][0], "ps");
+  assert.deepEqual(calls[0][1], ["-eo", "pid=,ppid=,args="]);
+  assert.equal(calls[0][2].windowsHide, true);
+  assert.deepEqual(processes.map((process) => process.pid), [501, 506, 502]);
+  assert.equal(processes[2].line, "next-server (v16.3.1)      ");
+});
+
+test("Windows process listing keeps the pid and command-line pipe format", () => {
+  const calls = [];
+  const processes = listPiWebProcesses({
+    platform: "win32",
+    spawnSync: (...args) => {
+      calls.push(args);
+      return { status: 0, stdout: "1234|node C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@agegr\\pi-web\\bin\\pi-web.js --no-open\r\n5678|node C:\\other\\app.js\r\n", stderr: "" };
+    },
+  });
+  assert.equal(calls[0][0], "powershell.exe");
+  assert.deepEqual(processes, [{ pid: 1234, line: "node C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@agegr\\pi-web\\bin\\pi-web.js --no-open" }]);
+});
+
+test("stopping Pi Web kills the shim and its retitled child but never the updater itself", () => {
+  const killed = [];
+  killPiWebProcesses({
+    listPiWebProcesses: () => [
+      { pid: 501, line: "node /Users/me/.nvm/versions/node/v24.13.0/bin/pi-web --no-open" },
+      { pid: 502, line: "next-server (v16.3.1)" },
+      { pid: process.pid, line: "node /Users/me/bin/pi-web --no-open" },
+    ],
+    kill: (pid, signal) => killed.push([pid, signal]),
+  });
+  assert.deepEqual(killed, [[501, "SIGKILL"], [502, "SIGKILL"]]);
+
+  const isolated = [];
+  killPiWebProcesses({
+    listPiWebProcesses: () => [{ pid: 501, line: "node /Users/me/bin/pi-web --no-open" }],
+    kill: (pid) => { isolated.push(pid); throw new Error("EPERM"); },
+  });
+  assert.deepEqual(isolated, [501]);
+});
 
 test("Windows relaunch uses the canonical VBS so Pi Web descendants inherit a hidden console", () => {
   const piWebCmd = path.join("appdata", "npm", "pi-web.cmd");
@@ -636,6 +726,274 @@ test("restart relaunch falls back to a detached pi-web spawn on unmanaged POSIX 
   assert.equal(spec.file, "pi-web");
   assert.deepEqual(spec.args, ["--no-open"]);
   assert.equal(spec.stopsExisting, false);
+});
+
+test("restart relaunch records the supervisor recovery command for a booted-out job", () => {
+  const plist = path.join("/home/u", "Library", "LaunchAgents", "com.pui.piweb.plist");
+  const mac = piWebLaunchSpec({ platform: "darwin", home: "/home/u", uid: 501, existsSync: (p) => p === plist });
+  assert.deepEqual(mac.recovery, { file: "launchctl", args: ["load", plist] });
+
+  const unit = path.join("/home/u", ".config", "systemd", "user", "pui-piweb.service");
+  const linux = piWebLaunchSpec({ platform: "linux", home: "/home/u", existsSync: (p) => p === unit });
+  assert.deepEqual(linux.recovery, { file: "systemctl", args: ["--user", "start", "pui-piweb"] });
+});
+
+test("unmanaged and Windows relaunches keep no supervisor recovery", () => {
+  const unmanaged = piWebLaunchSpec({ platform: "linux", home: "/home/u", existsSync: () => false });
+  assert.equal(unmanaged.recovery, null);
+  // `pi-web --no-open` serves in the foreground, so this launcher stays fire-and-forget.
+  assert.equal(unmanaged.detached, true);
+  assert.equal(piWebLaunchSpec({ platform: "darwin", home: "/home/u", uid: 501, existsSync: () => false }).recovery, null);
+
+  const piWebCmd = path.join("appdata", "npm", "pi-web.cmd");
+  const launcherVbs = path.join("appdata", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "pui-piweb.vbs");
+  const expectedVbs = `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""${piWebCmd}"" --no-open", 0, False`;
+  const windows = piWebLaunchSpec({
+    platform: "win32",
+    appData: "appdata",
+    existsSync: (p) => p === piWebCmd || p === launcherVbs,
+    readFileSync: () => expectedVbs,
+  });
+  assert.equal(windows.recovery, null);
+  assert.equal(windows.detached, undefined);
+});
+
+test("launcher diagnostics report a non-zero exit and its stderr instead of swallowing them", async () => {
+  const args = ["-e", 'process.stderr.write("Could not find service\\n"); process.exit(113)'];
+  const result = await runLauncher({ file: process.execPath, args });
+  assert.equal(result.command, [process.execPath, ...args].join(" "));
+  assert.equal(result.code, 113);
+  assert.equal(result.signal, null);
+  assert.equal(result.stderr, "Could not find service");
+  assert.equal(result.error, undefined);
+});
+
+test("launcher diagnostics resolve a missing launcher and cap captured stderr", async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-launcher-probe-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const missing = await runLauncher({ file: path.join(temp, "missing-launchctl"), args: [] });
+  assert.equal(missing.code, null);
+  assert.equal(missing.error.code, "ENOENT");
+
+  const noisy = await runLauncher({ file: process.execPath, args: ["-e", 'process.stderr.write("e".repeat(8000))'] });
+  assert.equal(noisy.code, 0);
+  assert.ok(noisy.stderr.length > 0 && noisy.stderr.length <= 2000, `captured stderr length ${noisy.stderr.length}`);
+});
+
+test("relaunch recovers a booted-out LaunchAgent instead of leaving Pi Web down", async () => {
+  const launch = await relaunchPiWeb({
+    file: process.execPath,
+    args: ["-e", 'process.stderr.write("Could not find service \\"com.pui.piweb\\" in domain for user gui: 501\\n"); process.exit(113)'],
+    stopsExisting: true,
+    recovery: { file: process.execPath, args: ["-e", "process.exit(0)"] },
+  });
+  assert.equal(launch.ok, true);
+  assert.equal(launch.attempts.length, 2);
+  assert.equal(launch.attempts[0].code, 113);
+  assert.match(launch.attempts[0].stderr, /Could not find service/);
+  assert.equal(launch.attempts[1].code, 0);
+});
+
+test("relaunch reports both failed attempts when the supervisor recovery also fails", async () => {
+  const launch = await relaunchPiWeb({
+    file: process.execPath,
+    args: ["-e", "process.exit(113)"],
+    stopsExisting: true,
+    recovery: { file: process.execPath, args: ["-e", 'process.stderr.write("Load failed\\n"); process.exit(1)'] },
+  });
+  assert.equal(launch.ok, false);
+  assert.deepEqual(launch.attempts.map((attempt) => attempt.code), [113, 1]);
+});
+
+test("relaunch skips recovery after a successful launch and when no recovery exists", async () => {
+  const launched = await relaunchPiWeb({ file: process.execPath, args: ["-e", "process.exit(0)"], stopsExisting: true, recovery: { file: "must-not-run", args: [] } });
+  assert.equal(launched.ok, true);
+  assert.equal(launched.attempts.length, 1);
+
+  const unsupported = await relaunchPiWeb({ file: process.execPath, args: ["-e", "process.exit(1)"], stopsExisting: false, recovery: null });
+  assert.equal(unsupported.ok, false);
+  assert.equal(unsupported.attempts.length, 1);
+});
+
+test("detached relaunch reports the spawn result without waiting for the server to exit", async (t) => {
+  const started = Date.now();
+  const launch = await relaunchPiWeb({ file: process.execPath, args: ["-e", "setTimeout(() => {}, 2000)"], stopsExisting: false, recovery: null, detached: true });
+  const elapsed = Date.now() - started;
+  assert.equal(launch.ok, true);
+  assert.equal(launch.attempts[0].detached, true);
+  assert.equal(launch.attempts[0].code, null);
+  assert.ok(elapsed < 1500, `detached relaunch waited ${elapsed}ms for the foreground server to exit`);
+
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-detached-missing-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const missing = await relaunchPiWeb({ file: path.join(temp, "missing-pi-web"), args: ["--no-open"], stopsExisting: false, recovery: null, detached: true });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.attempts[0].error.code, "ENOENT");
+});
+
+test("relaunch recovers when the supervisor launcher cannot be spawned at all", async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-launcher-missing-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const launch = await relaunchPiWeb({
+    file: path.join(temp, "missing-systemctl"),
+    args: ["--user", "restart", "pui-piweb"],
+    stopsExisting: true,
+    recovery: { file: process.execPath, args: ["-e", "process.exit(0)"] },
+  });
+  assert.equal(launch.ok, true);
+  assert.equal(launch.attempts[0].error.code, "ENOENT");
+  assert.equal(launch.attempts[1].code, 0);
+});
+
+test("Pi Web relaunch hands its launch diagnostics to the caller after the health gate", async () => {
+  const events = [];
+  const result = await ensurePiWebRunning({
+    piWebHealthy: async () => { events.push("health"); return false; },
+    relaunchPiWeb: async () => {
+      events.push("relaunch");
+      return { ok: false, attempts: [{ command: "launchctl kickstart -k gui/501/com.pui.piweb", code: 113, signal: null, stderr: "Could not find service" }] };
+    },
+  });
+  assert.deepEqual(events, ["health", "relaunch"]);
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts[0].code, 113);
+
+  const healthy = await ensurePiWebRunning({
+    piWebHealthy: async () => true,
+    relaunchPiWeb: async () => { throw new Error("a healthy Pi Web must not be relaunched"); },
+  });
+  assert.deepEqual(healthy, { ok: true, attempts: [] });
+});
+
+test("restart failure records the launcher diagnostics in the status file", async (t) => {
+  const previousExitCode = process.exitCode;
+  t.after(() => { process.exitCode = previousExitCode; });
+  const statuses = [];
+  await restartPiWebCommand({
+    writeStatus: (status) => statuses.push(status),
+    piWebLaunchSpec: () => ({ file: "launchctl", args: ["kickstart", "-k", "gui/501/com.pui.piweb"], stopsExisting: true, recovery: { file: "launchctl", args: ["load", "/home/u/Library/LaunchAgents/com.pui.piweb.plist"] } }),
+    relaunchPiWeb: async () => ({
+      ok: false,
+      attempts: [{ command: "launchctl kickstart -k gui/501/com.pui.piweb", code: 113, signal: null, stderr: 'Could not find service "com.pui.piweb" in domain for user gui: 501' }],
+    }),
+    piWebHealthy: async () => false,
+    sleepMs: () => {},
+    initialDelayMs: 0,
+    healthAttempts: 1,
+    healthDelayMs: 0,
+  });
+  assert.deepEqual(statuses.map((status) => status.phase), ["restarting", "failed"]);
+  assert.equal(statuses[1].result, "failed");
+  assert.equal(statuses[1].error, 'Pi Web did not become healthy after restart (launchctl kickstart -k gui/501/com.pui.piweb exited 113: Could not find service "com.pui.piweb" in domain for user gui: 501)');
+  assert.equal(process.exitCode, 1);
+});
+
+test("restart failure reports every failed attempt including a spawn error", async (t) => {
+  const previousExitCode = process.exitCode;
+  t.after(() => { process.exitCode = previousExitCode; });
+  const statuses = [];
+  await restartPiWebCommand({
+    writeStatus: (status) => statuses.push(status),
+    piWebLaunchSpec: () => ({ file: "systemctl", args: ["--user", "restart", "pui-piweb"], stopsExisting: true, recovery: { file: "systemctl", args: ["--user", "start", "pui-piweb"] } }),
+    relaunchPiWeb: async () => ({
+      ok: false,
+      attempts: [
+        { command: "systemctl --user restart pui-piweb", code: null, signal: null, stderr: "", error: new Error("spawn systemctl ENOENT") },
+        { command: "systemctl --user start pui-piweb", code: 5, signal: null, stderr: "Failed to start pui-piweb.service" },
+      ],
+    }),
+    piWebHealthy: async () => false,
+    sleepMs: () => {},
+    initialDelayMs: 0,
+    healthAttempts: 1,
+    healthDelayMs: 0,
+  });
+  assert.match(statuses[1].error, /^Pi Web did not become healthy after restart \(systemctl --user restart pui-piweb failed: spawn systemctl ENOENT; systemctl --user start pui-piweb exited 5: Failed to start pui-piweb\.service\)$/);
+});
+
+test("restart success reports restarted without a failure status", async () => {
+  const statuses = [];
+  await restartPiWebCommand({
+    writeStatus: (status) => statuses.push(status),
+    piWebLaunchSpec: () => ({ file: "launchctl", args: ["kickstart", "-k", "gui/501/com.pui.piweb"], stopsExisting: true, recovery: { file: "launchctl", args: ["load", "/home/u/Library/LaunchAgents/com.pui.piweb.plist"] } }),
+    relaunchPiWeb: async () => ({ ok: true, attempts: [{ command: "launchctl kickstart -k gui/501/com.pui.piweb", code: 0, signal: null, stderr: "" }] }),
+    piWebHealthy: async () => true,
+    sleepMs: () => {},
+    initialDelayMs: 0,
+  });
+  assert.deepEqual(statuses.map((status) => status.phase), ["restarting", "complete"]);
+  assert.equal(statuses[1].result, "restarted");
+});
+
+test("update evidence lives outside the temporary directory that a reboot wipes", () => {
+  assert.equal(UPDATE_STATE_DIR, path.join(os.homedir(), ".pi", "agent", "state", "pui-update"));
+  assert.equal(UPDATE_LOG_FILE, path.join(UPDATE_STATE_DIR, "last.log"));
+  assert.equal(STATUS_COPY_FILE, path.join(UPDATE_STATE_DIR, "last-status.json"));
+});
+
+test("status writes mirror the authoritative temporary status into the persistent state directory", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "pui-update-state-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const child = runUpdaterChild(home, `
+    updater.writeStatus({ phase: "failed", result: "failed", error: "step X" });
+    process.stdout.write(JSON.stringify({
+      homedir: os.homedir(),
+      statusFile: updater.STATUS_FILE,
+      copyFile: updater.STATUS_COPY_FILE,
+      logFile: updater.UPDATE_LOG_FILE,
+    }));
+  `);
+  const stateDir = path.join(child.homedir, ".pi", "agent", "state", "pui-update");
+  assert.equal(child.homedir, home);
+  assert.equal(path.dirname(child.copyFile), stateDir);
+  assert.equal(child.copyFile, path.join(stateDir, "last-status.json"));
+  assert.equal(child.logFile, path.join(stateDir, "last.log"));
+  assert.equal(path.basename(child.statusFile), "pui-update-status.json");
+  assert.equal(fs.realpathSync(path.dirname(child.statusFile)), fs.realpathSync(child.temporary));
+  assert.equal(fs.readFileSync(child.copyFile, "utf8"), fs.readFileSync(child.statusFile, "utf8"));
+  const mirrored = JSON.parse(fs.readFileSync(child.copyFile, "utf8"));
+  assert.equal(mirrored.phase, "failed");
+  assert.equal(mirrored.result, "failed");
+  assert.equal(mirrored.error, "step X");
+  assert.match(mirrored.id, /^\d+-\d+$/);
+});
+
+test("a failing status mirror never breaks the authoritative status write", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "pui-update-mirror-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, ".pi", "agent", "state"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".pi", "agent", "state", "pui-update"), "not a directory");
+  const child = runUpdaterChild(home, `
+    updater.writeStatus({ phase: "installing", result: null });
+    process.stdout.write(JSON.stringify({ statusFile: updater.STATUS_FILE }));
+  `);
+  assert.equal(JSON.parse(fs.readFileSync(child.statusFile, "utf8")).phase, "installing");
+});
+
+test("target apply keeps update evidence in the persistent state directory", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "pui-update-evidence-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const extensionRoot = path.join(home, ".pi", "agent", "extensions", "pui-update");
+  fs.mkdirSync(extensionRoot, { recursive: true });
+  const hashes = {};
+  for (const name of ["index.ts", "updater.js", "pui-release.js", "pui-config.js"]) {
+    const file = path.join(extensionRoot, name);
+    fs.writeFileSync(file, name === "updater.js" ? "module.exports = {};" : `// ${name}`);
+    hashes[name] = require("node:crypto").createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  }
+  fs.writeFileSync(path.join(extensionRoot, "manifest.json"), JSON.stringify(certifiedManifest(extensionRoot, hashes)));
+  const child = runUpdaterChild(home, `
+    globalThis.fetch = async () => { throw new Error("offline network stub"); };
+    updater.applyTarget("9.9.9").then(
+      () => process.stdout.write(JSON.stringify({ logFile: updater.UPDATE_LOG_FILE, copyFile: updater.STATUS_COPY_FILE, statusFile: updater.STATUS_FILE, message: "", failed: false })),
+      (error) => process.stdout.write(JSON.stringify({ logFile: updater.UPDATE_LOG_FILE, copyFile: updater.STATUS_COPY_FILE, statusFile: updater.STATUS_FILE, message: error.message, failed: true })),
+    );
+  `);
+  assert.equal(child.failed, true);
+  assert.match(child.message, /offline network stub/);
+  assert.equal(fs.readFileSync(child.logFile, "utf8"), "PUI update v1.0.0 -> v9.9.9\n");
+  assert.equal(fs.readFileSync(child.copyFile, "utf8"), fs.readFileSync(child.statusFile, "utf8"));
+  assert.equal(JSON.parse(fs.readFileSync(child.copyFile, "utf8")).log, child.logFile);
 });
 
 test("target apply succeeds only after target validation", async () => {

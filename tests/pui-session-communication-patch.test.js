@@ -7,6 +7,11 @@ const { spawnSync } = require("node:child_process");
 
 const repoRoot = path.resolve(__dirname, "..");
 
+// The guard CLI resolves the updater's transaction files through os.tmpdir(),
+// which prefers TMPDIR on POSIX and TEMP/TMP on Windows. Override all three so
+// the fixture directory is the one the CLI actually reads.
+const temporaryEnv = (temp) => ({ ...process.env, TMPDIR: temp, TEMP: temp, TMP: temp });
+
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-session-communication-patch-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -101,7 +106,7 @@ test("spawn-guard CLI distinguishes a direct update from a started guard", (t) =
     state,
     "1.3.2",
     path.join(temp, "pi-web"),
-  ], { encoding: "utf8", env: { ...process.env, TEMP: temp, TMP: temp } });
+  ], { encoding: "utf8", env: temporaryEnv(temp) });
 
   assert.equal(result.status, 75, result.stderr || result.stdout);
   assert.match(result.stdout, /"action":"not-needed"/);
@@ -123,7 +128,7 @@ test("spawn-guard CLI reports an existing transaction guard distinctly", (t) => 
     state,
     "1.3.2",
     path.join(temp, "pi-web"),
-  ], { encoding: "utf8", env: { ...process.env, TEMP: temp, TMP: temp } });
+  ], { encoding: "utf8", env: temporaryEnv(temp) });
 
   assert.equal(result.status, 76, result.stderr || result.stdout);
   assert.match(result.stdout, /"action":"already-guarded"/);

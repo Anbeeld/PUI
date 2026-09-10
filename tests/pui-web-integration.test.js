@@ -320,7 +320,7 @@ function appHarness(fetchImpl) {
     replaceChildren(...children) { this._text = ""; this.children = []; this.append(...children); }
     addEventListener(name, listener) { this.listeners[name] = listener; }
     setAttribute() {}
-    remove() { this.removed = true; }
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this); this.removed = true; }
     async click() { return this.listeners.click?.(); }
   }
   const body = new Element("body");
@@ -364,6 +364,17 @@ function appHarness(fetchImpl) {
 
 async function settle(turns = 8) {
   for (let index = 0; index < turns; index += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+// The harness runs setTimeout callbacks immediately, so the client polls without
+// real time passing and a turn count does not map to a poll count. settleUntil
+// waits for an observable card state instead of guessing how many turns to run.
+async function settleUntil(predicate, turns = 20000) {
+  for (let index = 0; index < turns; index += 1) {
+    if (predicate()) return true;
+    await settle(1);
+  }
+  return predicate();
 }
 
 test("startup consumes a completed service restart and immediately checks for PUI updates", async () => {
@@ -455,6 +466,138 @@ test("a closed update card re-appears when the update reaches a terminal status"
   await settle();
   assert.match(harness.body.textContent, /PUI v1\.1\.0 installed/);
   assert.ok(harness.findButton("Reload PUI"), "reload action re-appeared after the status changed to terminal");
+});
+
+test("an update whose POST cannot reach Pi Web explains the failure instead of spinning on preparing", async () => {
+  const harness = appHarness(async (_url, options = {}) => {
+    if ((options.method || "GET") === "GET") return response({ currentVersion: "1.0.0", latestVersion: "1.1.0", updateAvailable: true });
+    throw new Error("connect ECONNREFUSED 127.0.0.1:3000");
+  });
+  await settle();
+  await harness.findButton("Install").click();
+  await settle();
+  assert.match(harness.body.textContent, /Could not reach Pi Web/);
+  assert.match(harness.body.textContent, /The update was not started\. Reload PUI and then try again\./);
+  assert.doesNotMatch(harness.body.textContent, /Preparing update/);
+  const reload = harness.findButton("Reload PUI");
+  assert.ok(reload, "a reload action is offered when the update was never started");
+  assert.match(reload.className, /pui-update-primary/);
+  await reload.click();
+  assert.equal(harness.reloads(), 1);
+});
+
+test("an update that stops reporting status ends polling and points the user at a reload", async () => {
+  let stage = "discovery";
+  let installingReads = 0;
+  let polls = 0;
+  let complete = false;
+  const harness = appHarness(async (_url, options = {}) => {
+    const method = options.method || "GET";
+    if (method === "POST") { stage = "progress"; return response({ accepted: true }); }
+    if (stage === "discovery") { stage = "idle"; return response({ currentVersion: "1.0.0", latestVersion: "1.1.0", updateAvailable: true }); }
+    polls += 1;
+    if (complete) return response({ target: "1.1.0", result: "success", phase: "complete" });
+    if (stage === "progress") {
+      installingReads += 1;
+      if (installingReads <= 3) return response({ target: "1.1.0", phase: "installing", result: null });
+      stage = "idle";
+    }
+    // The bridge deletes a stale transaction status and answers with discovery only.
+    return response({ currentVersion: "1.0.0", updateAvailable: false });
+  });
+  await settle();
+  // Do not await click(): poll() keeps the update flow alive until it terminates.
+  harness.findButton("Install").click();
+  const surfaced = await settleUntil(() => /PUI stopped reporting update progress/.test(harness.body.textContent));
+  assert.ok(surfaced, `status-gap card appeared (card: ${harness.body.textContent})`);
+  assert.match(harness.body.textContent, /Reload PUI to see the installed version\./);
+  assert.doesNotMatch(harness.body.textContent, /Restarting Pi Web…/);
+  const pollsAtCard = polls;
+  await settle(30);
+  assert.equal(polls, pollsAtCard, "polling stops calling fetch while the card asks the user to act");
+  assert.ok(harness.findButton("Reload PUI"), "the card offers a reload");
+  complete = true;
+  await harness.findButton("Keep waiting").click();
+  const resumed = await settleUntil(() => polls > pollsAtCard && /PUI v1\.1\.0 installed/.test(harness.body.textContent), 500);
+  assert.ok(resumed, `polling resumed after the user kept waiting (card: ${harness.body.textContent})`);
+});
+
+test("an update that Pi Web never answers gives up after fifteen minutes and resumes when the user keeps waiting", async () => {
+  // The harness runs setTimeout callbacks immediately, so one unanswered poll
+  // stands in for one second of polling. The stub holds two of those polls open
+  // so the test can inspect the card mid-outage instead of racing the loop.
+  const holds = [100, 1000];
+  let stage = "discovery";
+  let polls = 0;
+  let unanswered = 0;
+  let holding = false;
+  let releaseHold = null;
+  let complete = false;
+  const harness = appHarness(async (_url, options = {}) => {
+    const method = options.method || "GET";
+    if (method === "POST") { stage = "installing"; return response({ accepted: true }); }
+    if (stage === "discovery") { stage = "idle"; return response({ currentVersion: "1.0.0", latestVersion: "1.1.0", updateAvailable: true }); }
+    polls += 1;
+    if (complete) return response({ target: "1.1.0", result: "success", phase: "complete" });
+    if (stage === "installing") { stage = "down"; return response({ target: "1.1.0", phase: "installing", result: null }); }
+    unanswered += 1;
+    if (holds.includes(unanswered)) {
+      holding = true;
+      return new Promise((_resolve, reject) => {
+        releaseHold = () => { holding = false; reject(new Error("connect ECONNREFUSED 127.0.0.1:3000")); };
+      });
+    }
+    throw new Error("connect ECONNREFUSED 127.0.0.1:3000");
+  });
+  const observeOutage = async (count, label) => {
+    assert.ok(await settleUntil(() => holding && unanswered === count, 5000), `${label} (unanswered polls: ${unanswered})`);
+    assert.match(harness.body.textContent, /Restarting Pi Web…/, `${label}: progress is still shown while Pi Web is unanswered`);
+    assert.doesNotMatch(harness.body.textContent, /has not responded for 15 minutes/, `${label}: an outage is not reported as fifteen minutes yet`);
+    const release = releaseHold;
+    release();
+    assert.ok(await settleUntil(() => !holding, 500), `${label}: polling continues`);
+  };
+  await settle();
+  harness.findButton("Install").click();
+  // 100 unanswered one-second polls is under two minutes: a restarting Pi Web must not be given up on yet.
+  await observeOutage(100, "under two minutes of continuous unreachability");
+  const gaveUp = await settleUntil(() => /Pi Web has not responded for 15 minutes/.test(harness.body.textContent));
+  assert.ok(gaveUp, `unreachable card appeared after ${unanswered} unanswered polls (card: ${harness.body.textContent})`);
+  assert.ok(unanswered >= 850 && unanswered <= 950, `gave up after ${unanswered} unanswered one-second polls (expected about 15 minutes)`);
+  assert.match(harness.body.textContent, /The update may still be running\. Reload PUI to check the result\./);
+  assert.ok(harness.findButton("Reload PUI"), "the card offers a reload");
+  const pollsAtCard = polls;
+  await settle(30);
+  assert.equal(polls, pollsAtCard, "polling stops calling fetch while the card asks the user to act");
+  await harness.findButton("Keep waiting").click();
+  const resumed = await settleUntil(() => polls > pollsAtCard && /Restarting Pi Web…/.test(harness.body.textContent), 500);
+  assert.ok(resumed, `progress returned after the user kept waiting (card: ${harness.body.textContent})`);
+  // 100 polls past the card: keeping waiting restarted the measurement instead
+  // of immediately reporting the same continuous outage again.
+  await observeOutage(1000, "after the user kept waiting");
+  complete = true;
+  assert.ok(await settleUntil(() => /PUI v1\.1\.0 installed/.test(harness.body.textContent), 500), "the resumed poll still reports a terminal status");
+});
+
+test("a rolled-back update reports the recorded reason alongside the restored version", async () => {
+  let getCount = 0;
+  const harness = appHarness(async (_url, options = {}) => {
+    if (options.method === "POST") return response({ accepted: true });
+    getCount += 1;
+    if (getCount === 1) return response({ currentVersion: "1.0.0", latestVersion: "1.1.0", updateAvailable: true });
+    return response({
+      target: "1.1.0",
+      restored: "1.0.0",
+      result: "rolled-back",
+      phase: "complete",
+      error: "verification failed: PUI v1.1.0 did not report its installed version",
+    });
+  });
+  await settle();
+  await harness.findButton("Install").click();
+  await settle();
+  assert.match(harness.body.textContent, /Update failed\. PUI v1\.0\.0 was restored\./);
+  assert.match(harness.body.textContent, /Reason: verification failed: PUI v1\.1\.0 did not report its installed version/);
 });
 
 test("bridge restart delegates to the updater and returns acceptance", async (t) => {

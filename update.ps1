@@ -20,6 +20,12 @@ function Wait-IfInteractive {
   try { Write-Host ""; Read-Host -Prompt "Press Enter to close this window" | Out-Null } catch {}
 }
 
+# An abort between stopping Pi Web and the restart step must not leave the logon
+# registration in place with no Pi Web process behind it.
+$piWebStopped = $false
+$piWebHealthy = $false
+$piWebRecoveryAttempted = $false
+
 try {
 
 if (-not $ApplyStaged -and $env:PUI_APPLY_STAGED -ne "1") {
@@ -357,6 +363,40 @@ function Wait-PiWebHealthy {
   }
   return $false
 }
+function Start-PiWebHidden {
+  # Hidden launch through the absolute npm shim so update and rollback observe
+  # the same process as the logon registration.
+  $piWebCmd = "$env:APPDATA\npm\pi-web.cmd"
+  if (-not (Test-Path $piWebCmd)) { return $false }
+  $previousSkipVersionCheck = $env:PI_WEB_SKIP_VERSION_CHECK
+  $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try {
+    $env:PI_WEB_SKIP_VERSION_CHECK = "1"
+    $launchArgs = '/d /s /c ""{0}" --no-open"' -f $piWebCmd
+    Start-Process -FilePath $env:ComSpec -ArgumentList $launchArgs -WindowStyle Hidden | Out-Null
+  } catch {
+    Write-Host "  could not launch pi-web: $($_.Exception.Message)" -ForegroundColor Red
+    return $false
+  } finally {
+    $ErrorActionPreference = $previousPreference
+    if ($null -eq $previousSkipVersionCheck) { Remove-Item Env:PI_WEB_SKIP_VERSION_CHECK -ErrorAction SilentlyContinue }
+    else { $env:PI_WEB_SKIP_VERSION_CHECK = $previousSkipVersionCheck }
+  }
+  return $true
+}
+function Restore-PiWebAfterInterruptedUpdate {
+  # Once per update: put Pi Web back when this run stopped it and never reached
+  # a healthy restart.
+  if (-not $piWebStopped -or $piWebHealthy -or $piWebRecoveryAttempted) { return }
+  $piWebRecoveryAttempted = $true
+  Write-Host "  restoring Pi Web after it was stopped for the update..." -ForegroundColor Yellow
+  if (-not (Start-PiWebHidden)) { Write-Host "  Pi Web could not be restarted; start it manually" -ForegroundColor Red; return }
+  $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try {
+    if (Wait-PiWebHealthy) { $piWebHealthy = $true; Write-Host "  Pi Web is healthy again at $($Stack.piWeb.url)" -ForegroundColor Yellow }
+    else { Write-Host "  Pi Web did not answer at $($Stack.piWeb.url) within 60s; start it manually" -ForegroundColor Red }
+  } finally { $ErrorActionPreference = $previousPreference }
+}
 
 if (@(Get-PiWebPid).Count -gt 0) {
   try { $runningState = Invoke-RestMethod "$($Stack.piWeb.url)/api/agent/running" -TimeoutSec 3 -ErrorAction Stop }
@@ -369,6 +409,9 @@ if (@(Get-PiWebPid).Count -gt 0) {
 }
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try {
+  # Parity with the Unix scripts: a registered autostart means this run owns
+  # restoring Pi Web, so arm recovery even when the process is already gone.
+  $piWebStopped = @(Get-PiWebPid).Count -gt 0 -or (Test-Path (Join-Path ([Environment]::GetFolderPath("Startup")) "pui-piweb.vbs"))
   foreach ($pidToStop in @(Get-PiWebPid)) { Write-Host "  stopping running pi-web (PID $pidToStop)"; Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue }
   if (-not (Wait-PiWebStopped)) {
     Write-Host "  could not stop Pi Web before package mutation; update aborted" -ForegroundColor Red
@@ -704,6 +747,7 @@ if (Test-Path $launcherVbs) {
   # Stop any running pi-web node process so the new binary is picked up.
   $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
   try {
+    $piWebStopped = $true
     foreach ($pidToStop in @(Get-PiWebPid)) { Write-Host "    stopping pi-web node (PID $pidToStop)"; Stop-Process -Id $pidToStop -Force -ErrorAction SilentlyContinue }
     if (-not (Wait-PiWebStopped)) {
       Write-Host "  could not stop Pi Web before restart; update aborted" -ForegroundColor Red
@@ -719,19 +763,12 @@ WshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""$piWebCmd"" --no-open", 
 "@
     # No BOM: Windows Script Host rejects UTF-8 BOM with "Invalid character" (800A0408).
     [System.IO.File]::WriteAllText($launcherVbs, $vbsContent, [System.Text.UTF8Encoding]::new($false))
-    $previousSkipVersionCheck = $env:PI_WEB_SKIP_VERSION_CHECK
-    try {
-      $env:PI_WEB_SKIP_VERSION_CHECK = "1"
-      $launchArgs = '/d /s /c ""{0}" --no-open"' -f $piWebCmd
-      Start-Process -FilePath $env:ComSpec -ArgumentList $launchArgs -WindowStyle Hidden | Out-Null
-    } finally {
-      if ($null -eq $previousSkipVersionCheck) { Remove-Item Env:PI_WEB_SKIP_VERSION_CHECK -ErrorAction SilentlyContinue }
-      else { $env:PI_WEB_SKIP_VERSION_CHECK = $previousSkipVersionCheck }
-    }
+    if (-not (Start-PiWebHidden)) { Write-Host "  could not launch pi-web hidden: $piWebCmd" -ForegroundColor Red; exit 1 }
     Write-Host "    pi-web hidden launch requested"
     # Require two consecutive HTTP 200 responses so a stale or short-lived
     # process cannot pass this gate before the doctor smoke suite runs.
     if (-not (Wait-PiWebHealthy)) { Write-Host "  pi-web did not reach stable running state with HTTP 200 within 60s" -ForegroundColor Red; exit 1 }
+    $piWebHealthy = $true
     Write-Host "    pi-web restarted hidden and is running and healthy at $($Stack.piWeb.url)"
   } finally { $ErrorActionPreference = $prev }
 } else {
@@ -905,6 +942,7 @@ if ($sessionCommunicationPatchGuardExit -eq 75 -or $sessionCommunicationPatchGua
 }
 Write-Host "`nUpdate complete: all doctor checks passed." -ForegroundColor Green
 } finally {
+  Restore-PiWebAfterInterruptedUpdate
   if ($sessionCommunicationPatchSnapshot -and -not $sessionCommunicationPatchCommitted) {
     $sessionCommunicationPatchSnapshotResolved = $false
     $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"

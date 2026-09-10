@@ -91,6 +91,38 @@ PUI_MODEL_POLICY_CONFIG="$(expand_path "$(jget configPaths.puiModelPolicy)")"
 ASK_USER_CONFIG="$(node "$LIB" resolve-config-path "$(jget configPaths.askUserQuestion)" "$(jget askUserQuestion.configRelativePath)")" || { echo "  ask-user-question config path resolution failed" >&2; exit 1; }
 PIWEB_URL="$(jget piWeb.url)"
 
+# Pi Web's npm shim runs as ".../bin/pi-web" and Next.js retitles its child
+# process, so a package-path-only pattern misses the agent entirely. pgrep -f
+# cannot see a launchd-spawned Pi Web at all (verified on macOS 26), so read the
+# process snapshot instead and match the installed package path or the shim.
+PIWEB_PS_PATTERN='[/]node_modules[/]@agegr[/]pi-web[/]|[/]bin[/]pi-web([.]js)?([[:space:]]|$)'
+piweb_pids() {
+  local snapshot
+  snapshot="$(ps -eo pid=,args= 2>/dev/null || true)"
+  [ -n "$snapshot" ] || return 0
+  printf '%s\n' "$snapshot" | grep -E "$PIWEB_PS_PATTERN" | awk '{ print $1 }'
+}
+piweb_running() { [ -n "$(piweb_pids)" ]; }
+# Next.js retitles the server process, so its command line no longer names the
+# package; also stop whatever still listens on the Pi Web port.
+stop_piweb_processes() {
+  local pid port="${PIWEB_URL##*:}"
+  port="${port%%/*}"
+  for pid in $(piweb_pids); do kill -KILL "$pid" 2>/dev/null || true; done
+  if command -v lsof >/dev/null 2>&1; then
+    for pid in $(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null || true); do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+  fi
+}
+
+# Whether this run stopped Pi Web and whether it is healthy again. The EXIT trap
+# uses both to restore Pi Web when the update aborts in the middle.
+AUTOSTART_CONFIGURED=0
+PIWEB_STOPPED=0
+PIWEB_HEALTHY=0
+PIWEB_RECOVERY_ATTEMPTED=0
+
 # The installed transaction worker may predate this patch. Keep a target-script
 # snapshot so an introducing update can still restore these non-JSON artifacts.
 BACKGROUND_PATCH="$SCRIPT_DIR/lib/pui-background-tasks-patch.js"
@@ -169,7 +201,7 @@ if ! node "$REASONING_PATCH" snapshot "$REASONING_SNAPSHOT" "$SCRIPT_DIR" "$REAS
   exit 1
 fi
 restore_background_patch_on_exit() {
-  status=$?
+  status="${1:-$?}"
   trap - EXIT
   snapshot_resolved=0
   if [ "$BACKGROUND_PATCH_COMMITTED" -eq 0 ]; then
@@ -263,7 +295,56 @@ restore_background_patch_on_exit() {
   if [ "$session_title_resolved" -eq 1 ]; then rm -rf -- "$SESSION_TITLE_SNAPSHOT"; fi
   exit "$status"
 }
-trap restore_background_patch_on_exit EXIT
+# Any abort between stopping Pi Web and the restart below would otherwise leave
+# the LaunchAgent booted out (or the systemd unit stopped) and Pi Web down with
+# no way back: launchctl kickstart cannot revive a booted-out job.
+recover_piweb_service() {
+  [ "$PIWEB_STOPPED" -eq 1 ] || return 0
+  [ "$PIWEB_HEALTHY" -eq 1 ] && return 0
+  [ "$PIWEB_RECOVERY_ATTEMPTED" -eq 0 ] || return 0
+  PIWEB_RECOVERY_ATTEMPTED=1
+  if curl -sf --max-time 5 "$PIWEB_URL" >/dev/null 2>&1; then
+    PIWEB_HEALTHY=1
+    return 0
+  fi
+  echo "  restoring Pi Web after it was stopped for the update..." >&2
+  if [ "$AUTOSTART_CONFIGURED" -eq 1 ]; then
+    if [ "$OS_NAME" = "macOS" ]; then
+      if launchctl print "gui/$(id -u)/$PLIST_LABEL" >/dev/null 2>&1; then
+        launchctl kickstart -k "gui/$(id -u)/$PLIST_LABEL" >/dev/null 2>&1 || true
+      else
+        launchctl load "$PLIST" >/dev/null 2>&1 || { echo "  could not reload LaunchAgent $PLIST_LABEL" >&2; return 1; }
+      fi
+    else
+      systemctl --user start "$SERVICE_NAME" >/dev/null 2>&1 || { echo "  could not start $SERVICE_NAME" >&2; return 1; }
+    fi
+  else
+    PIWEB_RECOVERY_BIN="$(command -v pi-web 2>/dev/null || true)"
+    if [ -z "$PIWEB_RECOVERY_BIN" ]; then
+      echo "  pi-web is not on PATH; start Pi Web manually" >&2
+      return 1
+    fi
+    nohup "$PIWEB_RECOVERY_BIN" --no-open >/dev/null 2>&1 &
+  fi
+  for _ in $(seq 1 30); do
+    if curl -sf --max-time 5 "$PIWEB_URL" >/dev/null 2>&1; then
+      PIWEB_HEALTHY=1
+      echo "  Pi Web is healthy again at $PIWEB_URL" >&2
+      return 0
+    fi
+    sleep 2
+  done
+  echo "  Pi Web did not answer at $PIWEB_URL within 60s; start it manually" >&2
+  return 1
+}
+
+finish_update_on_exit() {
+  exit_status=$?
+  trap - EXIT
+  if ! recover_piweb_service; then exit_status=1; fi
+  restore_background_patch_on_exit "$exit_status"
+}
+trap finish_update_on_exit EXIT
 
 for f in "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_SETTINGS" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG" "$PUI_REASONING_SUMMARIES" "$PUI_SESSION_TITLES" "$PUI_MODEL_POLICY_CONFIG"; do
   if [ -f "$f" ]; then
@@ -287,7 +368,7 @@ fi
 
 # Final fail-safe idle check must happen while the server can still report its
 # active sessions. If a running Pi Web cannot report activity, fail closed.
-if pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1; then
+if piweb_running; then
   RUNNING_JSON="$(curl -sf --max-time 3 "$PIWEB_URL/api/agent/running" 2>/dev/null)" || { echo "  could not verify Pi Web idle state; update aborted" >&2; exit 1; }
   set +e
   node -e 'const s=JSON.parse(process.argv[1]);if(!Array.isArray(s.runningSessionIds))process.exit(2);process.exit(s.runningSessionIds.length?75:0)' "$RUNNING_JSON"
@@ -302,23 +383,28 @@ fi
 AUTOSTART_CONFIGURED=0
 if [ "$OS_NAME" = "macOS" ] && [ -f "$PLIST" ]; then
   AUTOSTART_CONFIGURED=1
+  PIWEB_STOPPED=1
   if launchctl print "gui/$(id -u)/$PLIST_LABEL" >/dev/null 2>&1; then
     launchctl unload "$PLIST" 2>/dev/null || { echo "  failed to stop LaunchAgent $PLIST_LABEL" >&2; exit 1; }
   fi
 elif [ "$OS_NAME" = "Linux" ] && systemctl --user is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
   AUTOSTART_CONFIGURED=1
+  PIWEB_STOPPED=1
   systemctl --user stop "$SERVICE_NAME" 2>/dev/null || { echo "  failed to stop $SERVICE_NAME" >&2; exit 1; }
 fi
 
-pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]' 2>/dev/null || true
+if piweb_running; then
+  PIWEB_STOPPED=1
+  stop_piweb_processes
+fi
 # Wait until the pi-web process is actually gone before npm install (parity with Windows).
 for _ in $(seq 1 15); do
-  pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1 || break
+  piweb_running || break
   sleep 1
 done
 # Fail fast if pi-web is still running: proceeding would make npm hit EBUSY (parity with Windows).
-if pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1; then
-  echo "  could not stop Pi Web (PID $(pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' | tr '\n' ' ')); close Pi Web and rerun the update; update aborted" >&2
+if piweb_running; then
+  echo "  could not stop Pi Web (PID $(piweb_pids | tr '\n' ' ')); close Pi Web and rerun the update; update aborted" >&2
   exit 1
 fi
 set +e
@@ -608,9 +694,18 @@ EOF
     fi
     exit 1
   fi
+  PIWEB_HEALTHY=1
   echo "  managed pi-web service is running and healthy at $PIWEB_URL"
 else
-  echo "  no PUI autostart found; skipping pi-web restart"
+  if [ "$PIWEB_STOPPED" -eq 1 ]; then
+    # Pi Web ran without a PUI service manager; put it back the same way.
+    if ! recover_piweb_service; then
+      echo "  Pi Web could not be restarted after the update; start it manually" >&2
+      exit 1
+    fi
+  else
+    echo "  no PUI autostart found; skipping pi-web restart"
+  fi
 fi
 
 echo

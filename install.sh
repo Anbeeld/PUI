@@ -125,6 +125,31 @@ ASK_USER_CONFIG="$(node_config resolve-config-path "$(jget configPaths.askUserQu
 MIN_NODE="$(jget minimumNode)"
 PIWEB_URL="$(jget piWeb.url)"
 
+# Pi Web's npm shim runs as ".../bin/pi-web" and Next.js retitles its child
+# process, so a package-path-only pattern misses the agent entirely. pgrep -f
+# cannot see a launchd-spawned Pi Web at all (verified on macOS 26), so read the
+# process snapshot instead and match the installed package path or the shim.
+PIWEB_PS_PATTERN='[/]node_modules[/]@agegr[/]pi-web[/]|[/]bin[/]pi-web([.]js)?([[:space:]]|$)'
+piweb_pids() {
+  local snapshot
+  snapshot="$(ps -eo pid=,args= 2>/dev/null || true)"
+  [ -n "$snapshot" ] || return 0
+  printf '%s\n' "$snapshot" | grep -E "$PIWEB_PS_PATTERN" | awk '{ print $1 }'
+}
+piweb_running() { [ -n "$(piweb_pids)" ]; }
+# Next.js retitles the server process, so its command line no longer names the
+# package; also stop whatever still listens on the Pi Web port.
+stop_piweb_processes() {
+  local pid port="${PIWEB_URL##*:}"
+  port="${port%%/*}"
+  for pid in $(piweb_pids); do kill -KILL "$pid" 2>/dev/null || true; done
+  if command -v lsof >/dev/null 2>&1; then
+    for pid in $(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null || true); do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+  fi
+}
+
 # ---- Phase 1: prerequisites (G1) ----
 write_phase 1 "prerequisite detection"
 G1=1
@@ -209,7 +234,7 @@ resolve_piweb_ca_ver() {
 write_phase 3 "Pi Web + Pi runtime parity"
 # A reinstall also replaces shared managed runtimes. Check Pi Web while it is
 # still alive so active work is never mistaken for an idle/unreachable server.
-if pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1; then
+if piweb_running; then
   RUNNING_JSON="$(curl -sf --max-time 3 "$PIWEB_URL/api/agent/running" 2>/dev/null)" || { echo "  could not verify Pi Web idle state; install aborted" >&2; exit 1; }
   set +e
   node -e 'const s=JSON.parse(process.argv[1]);if(!Array.isArray(s.runningSessionIds))process.exit(2);process.exit(s.runningSessionIds.length?75:0)' "$RUNNING_JSON"
@@ -224,9 +249,11 @@ if ! stop_existing_piweb_autostart; then
   gate G3 "pi-web stop" 0
   exit 1
 fi
-pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]' 2>/dev/null || true
+if piweb_running; then
+  stop_piweb_processes
+fi
 sleep 1
-if pgrep -f '[/]node_modules[/]@agegr[/]pi-web[/]' >/dev/null 2>&1; then
+if piweb_running; then
   echo "  Pi Web did not stop; install aborted" >&2
   exit 1
 fi

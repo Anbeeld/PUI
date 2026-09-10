@@ -25,6 +25,8 @@ Unless `--no-pwa` is used, PUI writes `~/.config/systemd/user/pui-piweb.service`
 
 Installation and update wait until `systemctl --user is-active pui-piweb` succeeds and `http://127.0.0.1:30141` returns HTTP 200. Either failure stops the lifecycle script instead of accepting an unrelated process on the same port. On distributions that require lingering for user services before login, configure it separately with `loginctl enable-linger` if that behavior is desired.
 
+Updates stop the user unit before replacing the global Pi Web package and start it again in the final step. If an update aborts in between, its exit path starts `pui-piweb` again and waits for HTTP 200, so a failed update does not leave the unit stopped. When Pi Web runs without PUI autostart, the interrupted update relaunches the same `pi-web --no-open` process it stopped.
+
 After installation, use a Chromium browser's install-app action at `http://127.0.0.1:30141`. The browser requires this manual confirmation.
 
 ## Session collaboration
@@ -39,6 +41,8 @@ Session collaboration is available only through Pi Web. The five tools—`sessio
 ./uninstall.sh
 ./uninstall.sh --full
 ```
+
+Update stage and rollback output is retained at `~/.pi/agent/state/pui-update/last.log` with the newest status at `~/.pi/agent/state/pui-update/last-status.json`.
 
 Update uses the shared transactional worker, waits for managed work to become idle, and restores the previous certified release after a failed mutation. Doctor verifies exact identity and bridge state without writing and reports systemd status separately. Standard uninstall removes only intact PUI-owned integration; `--full` also removes managed packages, Pi Web, and standalone Pi while preserving user projects, sessions, authentication, skills, and unrelated settings.
 

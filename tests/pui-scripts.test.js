@@ -1,11 +1,15 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const repoRoot = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(repoRoot, file), "utf8");
+// Comments may name a mechanism the script must no longer rely on.
+const codeOnly = (content) => content.split(/\r?\n/).filter((line) => !/^\s*#/.test(line)).join("\n");
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const unixEntryPoints = ["install.sh", "update.sh", "uninstall.sh", "doctor.sh"];
 
 test("Unix entry points are executable in Git", () => {
@@ -312,7 +316,7 @@ test("introducing staged updates locally roll back all managed prompt artifacts"
   assert.ok(shGuard > shTarget && shCommit > shGuard, "update.sh: outer-transaction guard must own the snapshot after target validation");
   assert.match(shell, /BACKGROUND_GUARD_EXIT" -eq 76/, "update.sh: checkpoint routes reuse one transaction guard");
   assert.match(shell, /guard-ready/, "update.sh: guard startup must be acknowledged before return");
-  assert.match(shell, /trap restore_background_patch_on_exit EXIT/, "update.sh: failure trap restores prompt artifacts");
+  assert.match(shell, /trap finish_update_on_exit EXIT/, "update.sh: failure trap restores prompt artifacts and Pi Web");
   assert.ok(powershell.indexOf("$subagentsPatchCommitted = $true") > psTarget, "update.ps1: subagents guard must own its snapshot after target validation");
   assert.ok(shell.indexOf("SUBAGENTS_PATCH_COMMITTED=1") > shTarget, "update.sh: subagents guard must own its snapshot after target validation");
   assert.ok(powershell.indexOf("$skillLoaderSnapshotCommitted = $true") > psTarget, "update.ps1: skill-loader guard must own its snapshot after target validation");
@@ -332,8 +336,11 @@ test("staged apply rechecks Pi Web idle immediately before stopping the server",
 
   const shell = read("update.sh");
   const idle = shell.indexOf("/api/agent/running");
-  for (const stop of ['launchctl unload "$PLIST"', 'systemctl --user stop "$SERVICE_NAME"', "pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]'"]) {
-    assert.ok(idle < shell.indexOf(stop), `update.sh: idle check must precede ${stop}`);
+  const mutation = shell.indexOf("npm install -g");
+  assert.ok(idle !== -1 && mutation !== -1 && idle < mutation, "update.sh: idle check must precede package mutation");
+  const stopPhase = shell.slice(idle, mutation);
+  for (const stop of ['launchctl unload "$PLIST"', 'systemctl --user stop "$SERVICE_NAME"', "stop_piweb_processes"]) {
+    assert.ok(stopPhase.includes(stop), `update.sh: ${stop} must run after the idle check and before package mutation`);
   }
 });
 
@@ -347,11 +354,124 @@ test("staged apply verifies Pi Web is actually stopped before mutating the globa
   assert.match(powershell, /Get-NetTCPConnection/, "update.ps1: port-listener fallback covers WMI enumeration misses");
 
   const shell = read("update.sh");
-  const shStop = shell.indexOf("pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]'");
+  const shStop = shell.indexOf("stop_piweb_processes", shell.indexOf('launchctl unload "$PLIST"'));
   const shAbort = shell.indexOf("could not stop Pi Web");
   const shInstall = shell.indexOf('echo "  updating @agegr/pi-web..."');
-  assert.ok(shStop !== -1 && shAbort > shStop, "update.sh: stop verification must follow pkill");
+  assert.ok(shStop !== -1 && shAbort > shStop, "update.sh: stop verification must follow the process stop");
   assert.ok(shAbort !== -1 && shAbort < shInstall, "update.sh: must abort before the pi-web npm install when Pi Web is still running");
+  assert.match(shell, /piweb_running[\s\S]*could not stop Pi Web/, "update.sh: stop verification reads the process snapshot");
+});
+
+test("an interrupted update starts the stopped service manager and waits for health", () => {
+  const shell = read("update.sh");
+  const helpers = shell.slice(shell.indexOf("PIWEB_PS_PATTERN="), shell.indexOf("stop_piweb_processes() {"));
+  const recovery = shell.slice(shell.indexOf("# Any abort between stopping Pi Web"), shell.indexOf("finish_update_on_exit() {"));
+  assert.ok(helpers && recovery, "update.sh: recovery helpers must be extractable");
+
+  // Each leg gets its own port and stub service manager: a healthy endpoint makes
+  // the recovery short-circuit, and a second leg must start from "Pi Web is down".
+  const leg = (OS_NAME, expectations) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pui-recover-"));
+    const binDir = path.join(dir, "bin");
+    const calls = path.join(dir, "calls.txt");
+    const spawned = path.join(dir, "pids.txt");
+    const server = path.join(dir, "server.js");
+    const probe = path.join(dir, "probe.sh");
+    const plist = path.join(dir, "com.pui.piweb.plist");
+    fs.mkdirSync(binDir, { recursive: true });
+    const port = spawnSync(process.execPath, ["-e", "const s=require('net').createServer();s.listen(0,()=>{console.log(s.address().port);s.close()})"], { encoding: "utf8" }).stdout.trim();
+    fs.writeFileSync(server, "require('http').createServer((q,s)=>{s.writeHead(200);s.end('ok')}).listen(Number(process.argv[2]),'127.0.0.1')\n");
+    const stub = [
+      "#!/usr/bin/env bash",
+      `printf '%s\\n' "$*" >>"${calls}"`,
+      '[ "$1" = print ] && exit 1',
+      `node "${server}" "${port}" >/dev/null 2>&1 &`,
+      `printf '%s\\n' "$!" >>"${spawned}"`,
+      `for _ in $(seq 1 50); do curl -sf --max-time 1 "http://127.0.0.1:${port}" >/dev/null 2>&1 && break; sleep 0.1; done`,
+      "exit 0",
+      "",
+    ].join("\n");
+    for (const name of ["launchctl", "systemctl"]) {
+      fs.writeFileSync(path.join(binDir, name), stub);
+      fs.chmodSync(path.join(binDir, name), 0o755);
+    }
+    fs.writeFileSync(probe, [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      `PIWEB_URL="http://127.0.0.1:${port}"`,
+      "SERVICE_NAME=pui-piweb",
+      "PLIST_LABEL=com.pui.piweb",
+      `PLIST="${plist}"`,
+      helpers,
+      recovery,
+      "AUTOSTART_CONFIGURED=1",
+      "PIWEB_STOPPED=1",
+      "PIWEB_HEALTHY=0",
+      "PIWEB_RECOVERY_ATTEMPTED=0",
+      'if recover_piweb_service; then echo "recovered=$PIWEB_HEALTHY"; else echo "recovery-failed"; fi',
+      "",
+    ].join("\n"));
+    try {
+      const result = spawnSync("bash", [probe], { encoding: "utf8", env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, OS_NAME } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /recovered=1/, `${OS_NAME}: recovery must reach health`);
+      const recorded = fs.readFileSync(calls, "utf8");
+      for (const expected of expectations(plist)) {
+        assert.match(recorded, expected, `${OS_NAME}: ${expected} must be invoked`);
+      }
+    } finally {
+      if (fs.existsSync(spawned)) {
+        for (const pid of fs.readFileSync(spawned, "utf8").split(/\s+/).filter(Boolean)) {
+          try { process.kill(Number(pid), "SIGKILL"); } catch {}
+        }
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  leg("macOS", (plist) => [/print gui\/\d+\/com\.pui\.piweb/, new RegExp(`load ${escapeRegExp(plist)}`)]);
+  leg("Linux", () => [/--user start pui-piweb/]);
+});
+
+test("Unix Pi Web detection matches the installed package and the npm bin shim", () => {
+  const shell = read("update.sh");
+  const start = shell.indexOf("PIWEB_PS_PATTERN=");
+  const end = shell.indexOf("stop_piweb_processes() {");
+  assert.ok(start !== -1 && end > start, "update.sh: Pi Web detection helpers must be present");
+  const helper = shell.slice(start, end);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pui-detect-"));
+  const shim = path.join(dir, "bin", "pi-web");
+  const probeFile = path.join(dir, "probe.sh");
+  fs.mkdirSync(path.dirname(shim), { recursive: true });
+  fs.writeFileSync(shim, "setTimeout(() => {}, 60000);\n");
+  fs.writeFileSync(probeFile, `${helper}\npiweb_running && echo RUNNING || echo IDLE\nprintf 'pids:%s\\n' "$(piweb_pids | tr '\\n' ' ')"\nprintf 'self:%s\\n' "$$"\n`);
+  const probe = () => spawnSync("bash", [probeFile], { encoding: "utf8" });
+  const detectedPids = (output) => (output.match(/^pids:(.*)$/m) || ["", ""])[1].trim().split(/\s+/).filter(Boolean);
+  let shimProcess = null;
+  let unrelated = null;
+  try {
+    const selfPid = (probe().stdout.match(/^self:(\d+)$/m) || [])[1];
+    assert.ok(selfPid, "the probe reports its own pid");
+    assert.ok(!detectedPids(probe().stdout).includes(selfPid), "detection must not match the probe itself");
+
+    shimProcess = spawn(process.execPath, [shim, "--no-open"], { stdio: "ignore" });
+    const deadline = Date.now() + 10000;
+    let seen = detectedPids(probe().stdout);
+    while (Date.now() < deadline && !seen.includes(String(shimProcess.pid))) {
+      spawnSync("sleep", ["0.2"]);
+      seen = detectedPids(probe().stdout);
+    }
+    assert.ok(seen.includes(String(shimProcess.pid)), `the npm bin shim invocation must be detected: ${seen.join(",")}`);
+
+    unrelated = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+    seen = detectedPids(probe().stdout);
+    assert.ok(!seen.includes(String(unrelated.pid)), "an unrelated node process must not be detected as Pi Web");
+    assert.ok(seen.includes(String(shimProcess.pid)), "the shim stays detected while other nodes run");
+  } finally {
+    if (shimProcess) shimProcess.kill("SIGKILL");
+    if (unrelated) unrelated.kill("SIGKILL");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("updater process helpers never spawn visible console windows on Windows", () => {
@@ -370,11 +490,13 @@ test("staged apply requires stable Windows Pi Web health after restart", () => {
 
   const restart = powershell.indexOf("restarting pi-web");
   const restartStop = powershell.indexOf("foreach ($pidToStop in @(Get-PiWebPid))", restart);
-  const restartLaunch = powershell.indexOf('Start-Process -FilePath $env:ComSpec', restartStop);
+  const restartLaunch = powershell.indexOf("Start-PiWebHidden", restartStop);
   const stopGate = powershell.indexOf("Wait-PiWebStopped", restartStop);
   const healthGate = powershell.indexOf("Wait-PiWebHealthy", restartLaunch);
   assert.ok(restartStop !== -1 && stopGate > restartStop && stopGate < restartLaunch, "update.ps1: restart must wait for Pi Web to stop before launch");
   assert.ok(restartLaunch !== -1 && healthGate > restartLaunch, "update.ps1: stable health gate must follow the restart");
+  assert.match(powershell, /if \(-not \(Start-PiWebHidden\)\)/, "update.ps1: the restart uses the shared hidden launcher");
+  assert.match(powershell, /function Start-PiWebHidden \{[\s\S]*Start-Process -FilePath \$env:ComSpec/, "update.ps1: the shared launcher starts the absolute hidden command");
   assert.match(powershell, /pi-web hidden launch requested/);
   assert.match(powershell, /pi-web restarted hidden and is running and healthy/);
 
@@ -416,7 +538,7 @@ test("installers refuse to replace shared runtimes without both idle gates", () 
 test("staged apply rechecks standalone Pi after stopping Pi Web and before package mutation", () => {
   for (const file of ["update.ps1", "update.sh"]) {
     const content = read(file);
-    const stop = file.endsWith(".ps1") ? content.indexOf("Stop-Process") : content.indexOf("pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]'");
+    const stop = content.indexOf(file.endsWith(".ps1") ? "Stop-Process" : 'launchctl unload "$PLIST"');
     const standalone = content.indexOf("standalone-busy");
     const mutation = content.indexOf("npm install -g", stop);
     assert.ok(stop < standalone && standalone < mutation, file);
@@ -469,8 +591,8 @@ test("Unix install always stops a detected Pi Web process before package mutatio
   const install = read("install.sh");
   const stopPhase = install.slice(install.indexOf("stop_existing_piweb_autostart"), install.indexOf("standalone-busy"));
   assert.doesNotMatch(stopPhase, /if has_cmd pi-web/);
-  assert.match(stopPhase, /pkill -f/);
-  assert.match(stopPhase, /pgrep -f[\s\S]*install aborted/);
+  assert.match(stopPhase, /stop_piweb_processes/);
+  assert.match(stopPhase, /piweb_running[\s\S]*install aborted/);
 });
 
 test("uninstall backs up MCP JSON before removing its owned server", () => {
@@ -567,10 +689,11 @@ test("macOS LaunchAgents restart Pi Web after unsuccessful exits", () => {
 test("Unix lifecycle managers are stopped before Pi Web package mutation", () => {
   for (const file of ["install.sh", "update.sh"]) {
     const content = read(file);
-    const packageStop = content.indexOf("pkill -f '[/]node_modules[/]@agegr[/]pi-web[/]'");
-    assert.notEqual(packageStop, -1);
-    assert.ok(content.indexOf('launchctl unload "$PLIST"') < packageStop);
-    assert.ok(content.indexOf('systemctl --user stop "$SERVICE_NAME"') < packageStop);
+    const managerStop = content.indexOf('launchctl unload "$PLIST"');
+    const mutation = content.indexOf("npm install -g");
+    assert.ok(managerStop !== -1 && mutation !== -1 && managerStop < mutation, `${file}: service manager must stop before package mutation`);
+    assert.ok(content.indexOf('systemctl --user stop "$SERVICE_NAME"') < mutation, `${file}: systemd stop must precede package mutation`);
+    assert.match(content.slice(managerStop, mutation), /stop_piweb_processes/, `${file}: leftover Pi Web processes must stop before package mutation`);
   }
 });
 
@@ -630,9 +753,33 @@ test("Windows VBS autostart launcher is written without a UTF-8 BOM", () => {
   }
 });
 
+test("an interrupted Unix update restores Pi Web before it exits", () => {
+  const shell = read("update.sh");
+  assert.match(shell, /finish_update_on_exit\(\) \{[\s\S]*recover_piweb_service[\s\S]*restore_background_patch_on_exit "\$exit_status"/,
+    "update.sh: Pi Web recovery runs before prompt artifact restoration");
+  const recovery = shell.slice(shell.indexOf("recover_piweb_service() {"), shell.indexOf("finish_update_on_exit() {"));
+  assert.match(recovery, /launchctl load "\$PLIST"/, "update.sh: recovery reloads a booted-out LaunchAgent");
+  assert.match(recovery, /launchctl kickstart -k/, "update.sh: recovery restarts a loaded LaunchAgent");
+  assert.match(recovery, /systemctl --user start "\$SERVICE_NAME"/, "update.sh: recovery starts the systemd unit");
+  assert.match(recovery, /nohup "\$PIWEB_RECOVERY_BIN" --no-open/, "update.sh: recovery relaunches Pi Web without a service manager");
+  assert.match(shell, /PIWEB_STOPPED=1[\s\S]*stop_piweb_processes/, "update.sh: stopping Pi Web arms the recovery");
+
+  const powershell = read("update.ps1");
+  assert.match(powershell, /function Restore-PiWebAfterInterruptedUpdate/, "update.ps1: interrupted updates restore Pi Web");
+  assert.match(powershell, /if \(-not \$piWebStopped -or \$piWebHealthy -or \$piWebRecoveryAttempted\)/, "update.ps1: recovery runs once per update");
+  assert.match(powershell, /\$piWebStopped = @\(Get-PiWebPid\)\.Count -gt 0/, "update.ps1: stopping Pi Web arms the recovery");
+  assert.match(powershell, /\$piWebHealthy = \$true/, "update.ps1: a healthy restart disarms the recovery");
+  assert.match(powershell, /} finally \{[\s\S]*Restore-PiWebAfterInterruptedUpdate/, "update.ps1: the exit path restores Pi Web");
+});
+
 test("lifecycle scripts stop only the installed Pi Web package", () => {
   for (const file of ["install.sh", "update.sh"]) {
-    assert.doesNotMatch(read(file), /pkill -f "pi-web"/);
+    const content = read(file);
+    assert.doesNotMatch(content, /pkill -f "pi-web"/);
+    // pgrep -f cannot see a launchd-spawned Pi Web on macOS (verified: no match
+    // for the running agent), so detection must read the process snapshot.
+    assert.doesNotMatch(codeOnly(content), /\bpgrep\b/, `${file}: Pi Web detection must not rely on pgrep`);
+    assert.match(content, /ps -eo pid=,args=/, `${file}: Pi Web detection reads the process snapshot`);
   }
   for (const file of ["install.ps1", "update.ps1", "uninstall.ps1"]) {
     const content = read(file);

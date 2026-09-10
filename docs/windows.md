@@ -21,6 +21,8 @@ The installer verifies prerequisites, backs up existing configuration, installs 
 
 Unless `-NoPwa` is used, PUI writes `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\pui-piweb.vbs`. The per-user launcher runs `pi-web.cmd --no-open` hidden at login without elevation.
 
+Updates stop the running Pi Web process before replacing the global package, and if an update aborts before its restart step the exit path launches the same hidden command again and waits for HTTP 200, so a failed update does not leave the logon registration without a running server.
+
 After installation, use the browser's install-app action at `http://127.0.0.1:30141`. The browser requires this manual confirmation.
 
 ## Session collaboration
@@ -35,6 +37,8 @@ Session collaboration is available only through Pi Web. The five tools—`sessio
 ./uninstall.ps1
 ./uninstall.ps1 -Full
 ```
+
+Update stage and rollback output is retained at `%USERPROFILE%\.pi\agent\state\pui-update\last.log` with the newest status at `last-status.json` beside it.
 
 Update uses the shared transactional worker, waits for managed work to become idle, and restores the previous certified release after a failed mutation. Doctor verifies exact identity and bridge state without writing. Standard uninstall removes only intact PUI-owned integration; `-Full` also removes managed packages, Pi Web, and standalone Pi while preserving user projects, sessions, authentication, skills, and unrelated settings.
 

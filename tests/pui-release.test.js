@@ -15,7 +15,7 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.3.2");
+  assert.equal(release.version, "1.3.3");
   assert.equal(release.stack.reasoningSummaryPatch.revision, 20, "v1.3.2 must add Copy ID and peer-message display styling");
   assert.deepEqual(release.stack.skillLoaderExtension, {
     schemaVersion: 1,

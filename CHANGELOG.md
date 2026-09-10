@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.3
+
+- Fixed interrupted updates leaving Pi Web down on macOS and Linux. Any failure after the service manager was stopped skipped the final restart step and left the LaunchAgent booted out, which `launchctl kickstart` cannot revive. An exit trap now reloads or kickstarts the LaunchAgent, starts the systemd unit, or relaunches the stopped `pi-web --no-open`, then waits for HTTP 200. Windows recovers the same way from its exit path.
+- Fixed Pi Web process detection in the Unix lifecycle scripts, which missed the launchd-spawned agent and the `.../bin/pi-web` shim, leaving the idle gate, stop verification, and leftover cleanup ineffective. Detection now reads the process snapshot and stops the process holding the Pi Web port when the retitled Next.js child would otherwise survive.
+- Fixed the update dialog hanging on "Restarting Pi Web…" forever. Polling now ends after 15 status-free responses or 15 minutes without an answer, with Reload and Keep waiting; an unreachable Pi Web is reported instead of staying on "Preparing update…"; and a rolled-back update shows its reason.
+- Moved update evidence to `~/.pi/agent/state/pui-update/` (`last.log`, `last-status.json`) so it survives a reboot, and made the updater fall back from `launchctl kickstart` to `launchctl load` while reporting the launcher command, exit code, and stderr.
+
 ## v1.3.2
 
 - Added Pi Web-only session collaboration through `session_list`, `session_get`, `session_send`, `session_start`, and `session_abort`. Sessions exchange attributed, untrusted task input, start background work with completion notifications, resume stopped targets, and abort only caller-owned work; `session_get` locates the persisted log without loading it. Sending or starting requires an explicit user request, as do model and effort overrides. Fuzzy model selectors and lower supported effort fallback are available, while unrestricted recursive collaboration can create loops or extra cost.
