@@ -65,6 +65,22 @@ test("lifecycle scripts disable npm's stall-prone audit step for pi-managed inst
   }
 });
 
+test("managed package reconciliation suppresses successful npm noise without hiding failures", () => {
+  for (const file of ["install.sh", "update.sh", "install.ps1", "update.ps1"]) {
+    assert.match(read(file), /npm_config_fund\s*=\s*"?false"?/, `${file}: funding notices disabled`);
+  }
+  for (const file of ["install.sh", "update.sh"]) {
+    const content = read(file);
+    assert.match(content, /run_pi_bounded --quiet-success install "\$spec"/, `${file}: package installs request quiet success output`);
+    assert.match(content, /if \[ "\$code" -ne 0 \] \|\| \[ "\$quiet_success" -eq 0 \]; then[\s\S]*sed 's\/\^\/    \/' "\$tmp"/, `${file}: failures retain buffered command output`);
+  }
+  for (const file of ["install.ps1", "update.ps1"]) {
+    const content = read(file);
+    assert.match(content, /if \(\$pi\w*\.exit -ne 0\) \{[\s\S]*\$pi\w*\.out[\s\S]*failed to install \$spec/, `${file}: failed installs print buffered output`);
+    assert.match(content, /reconciled managed extension \$spec/, `${file}: successful installs print one concise status`);
+  }
+});
+
 test("network-facing pi commands are watchdog-bounded in every lifecycle script", () => {
   for (const file of ["install.sh", "update.sh"]) {
     const content = read(file);
@@ -187,6 +203,65 @@ test("Pi Web artifact verifier extracts archives from its temporary working dire
   assert.match(verifier, /spawnSync\("tar", \["-xf", archive, "-C", "\."\], \{ cwd: temp/);
 });
 
+test("session communication patch and extension span every lifecycle", () => {
+  for (const file of ["install.sh", "update.sh", "install.ps1", "update.ps1"]) {
+    const content = read(file);
+    assert.match(content, /pui-session-communication-patch\.js/);
+    assert.match(content, /pui-session-communication-extension\.js/);
+  }
+  for (const file of ["doctor.sh", "doctor.ps1"]) {
+    assert.match(read(file), /pui-session-communication-patch\.js[\s\S]*verify/);
+    assert.match(read(file), /pui-session-communication-extension\.js[\s\S]*verify/);
+  }
+  for (const file of ["uninstall.sh", "uninstall.ps1"]) {
+    assert.match(read(file), /pui-session-communication-patch\.js[\s\S]*remove/);
+    assert.match(read(file), /pui-session-communication-extension\.js[\s\S]*remove/);
+  }
+});
+
+test("model catalog extension spans every lifecycle", () => {
+  for (const file of ["install.sh", "update.sh", "install.ps1", "update.ps1"]) {
+    assert.match(read(file), /pui-model-catalog-extension\.js[\s\S]*install/);
+  }
+  for (const file of ["doctor.sh", "doctor.ps1"]) assert.match(read(file), /pui-model-catalog-extension\.js[\s\S]*verify/);
+  for (const file of ["uninstall.sh", "uninstall.ps1"]) assert.match(read(file), /pui-model-catalog-extension\.js[\s\S]*remove/);
+});
+
+test("model policy extension and optional configuration span every lifecycle", () => {
+  for (const file of ["install.sh", "update.sh", "install.ps1", "update.ps1"]) {
+    const content = read(file);
+    assert.match(content, /pui-model-policy-extension\.js[\s\S]*install/);
+    assert.match(content, /validate-model-policy/);
+    assert.doesNotMatch(content, /ensure-model-policy/);
+  }
+  for (const file of ["doctor.sh", "doctor.ps1"]) {
+    const content = read(file);
+    assert.match(content, /not configured \(unrestricted\)/);
+  }
+  for (const file of ["doctor.sh", "doctor.ps1"]) {
+    assert.match(read(file), /pui-model-policy-extension\.js[\s\S]*verify/);
+    assert.match(read(file), /validate-model-policy/);
+  }
+  for (const file of ["uninstall.sh", "uninstall.ps1"]) assert.match(read(file), /pui-model-policy-extension\.js[\s\S]*remove/);
+});
+
+test("session communication lifecycle snapshots are ordered and cleaned safely", () => {
+  const installShell = read("install.sh");
+  const shellSnapshot = installShell.indexOf("session-broker-install");
+  const shellApply = installShell.indexOf("pui-session-communication-patch.js\" apply");
+  assert.ok(shellSnapshot !== -1 && shellSnapshot < shellApply);
+  assert.match(installShell, /restore_session_communication_patch_on_exit/);
+  const installPowerShell = read("install.ps1");
+  assert.ok(installPowerShell.indexOf("pui-session-broker-install-") < installPowerShell.indexOf("$sessionCommunicationPatch apply"));
+  assert.match(installPowerShell, /SessionCommunicationPatchSnapshot[\s\S]*restore-snapshot/);
+  for (const [file, guard] of [["update.sh", "SESSION_COMMUNICATION_PATCH_GUARD_EXIT"], ["update.ps1", "$sessionCommunicationPatchGuardExit"]]) {
+    const content = read(file);
+    assert.match(content, file === "update.sh" ? /SESSION_COMMUNICATION_PATCH[\s\S]*snapshot/ : /sessionCommunicationPatchSnapshotScript[\s\S]*snapshot/);
+    assert.match(content, new RegExp(guard.replace(/[.$]/g, "\\$&")));
+    assert.match(content, /spawn-guard/);
+  }
+});
+
 test("Pi #8782 backport doctor and uninstall operations are symmetric", () => {
   assert.match(read("doctor.sh"), /pui-pi-8782-backport\.js.*verify/);
   assert.match(read("doctor.ps1"), /pui-pi-8782-backport\.js[\s\S]*verify[\s\S]*\$ScriptDir[\s\S]*\$piWebRoot/);
@@ -204,10 +279,14 @@ test("introducing staged updates locally roll back all managed prompt artifacts"
   const psSubagentSnapshot = powershell.indexOf("snapshot $subagentsSnapshot");
   const psSkillSnapshot = powershell.indexOf("snapshot $skillLoaderSnapshot");
   const psTitleSnapshot = powershell.indexOf("snapshot $sessionTitleSnapshot");
+  const psModelCatalogSnapshot = powershell.indexOf("snapshot $modelCatalogSnapshot");
+  const psModelPolicySnapshot = powershell.indexOf("snapshot $modelPolicySnapshot");
   assert.ok(psSnapshot !== -1 && psSnapshot < psPackages, "update.ps1: background snapshot must precede package mutation");
   assert.ok(psSubagentSnapshot !== -1 && psSubagentSnapshot < psPackages, "update.ps1: subagent snapshot must precede package mutation");
   assert.ok(psSkillSnapshot !== -1 && psSkillSnapshot < psPackages, "update.ps1: skill-loader snapshot must precede package mutation");
   assert.ok(psTitleSnapshot !== -1 && psTitleSnapshot < psPackages, "update.ps1: session-title snapshot must precede package mutation");
+  assert.ok(psModelCatalogSnapshot !== -1 && psModelCatalogSnapshot < psPackages, "update.ps1: model-catalog snapshot must precede package mutation");
+  assert.ok(psModelPolicySnapshot !== -1 && psModelPolicySnapshot < psPackages, "update.ps1: model-policy snapshot must precede package mutation");
   assert.ok(psGuard > psTarget && psCommit > psGuard, "update.ps1: outer-transaction guard must own the snapshot after target validation");
   assert.match(powershell, /backgroundGuardExit -eq 76/, "update.ps1: checkpoint routes reuse one transaction guard");
   assert.match(powershell, /guard-ready/, "update.ps1: guard startup must be acknowledged before return");
@@ -222,10 +301,14 @@ test("introducing staged updates locally roll back all managed prompt artifacts"
   const shSubagentSnapshot = shell.indexOf('snapshot "$SUBAGENTS_SNAPSHOT"');
   const shSkillSnapshot = shell.indexOf('snapshot "$SKILL_LOADER_SNAPSHOT"');
   const shTitleSnapshot = shell.indexOf('snapshot "$SESSION_TITLE_SNAPSHOT"');
+  const shModelCatalogSnapshot = shell.indexOf('snapshot "$MODEL_CATALOG_SNAPSHOT"');
+  const shModelPolicySnapshot = shell.indexOf('snapshot "$MODEL_POLICY_SNAPSHOT"');
   assert.ok(shSnapshot !== -1 && shSnapshot < shPackages, "update.sh: background snapshot must precede package mutation");
   assert.ok(shSubagentSnapshot !== -1 && shSubagentSnapshot < shPackages, "update.sh: subagent snapshot must precede package mutation");
   assert.ok(shSkillSnapshot !== -1 && shSkillSnapshot < shPackages, "update.sh: skill-loader snapshot must precede package mutation");
   assert.ok(shTitleSnapshot !== -1 && shTitleSnapshot < shPackages, "update.sh: session-title snapshot must precede package mutation");
+  assert.ok(shModelCatalogSnapshot !== -1 && shModelCatalogSnapshot < shPackages, "update.sh: model-catalog snapshot must precede package mutation");
+  assert.ok(shModelPolicySnapshot !== -1 && shModelPolicySnapshot < shPackages, "update.sh: model-policy snapshot must precede package mutation");
   assert.ok(shGuard > shTarget && shCommit > shGuard, "update.sh: outer-transaction guard must own the snapshot after target validation");
   assert.match(shell, /BACKGROUND_GUARD_EXIT" -eq 76/, "update.sh: checkpoint routes reuse one transaction guard");
   assert.match(shell, /guard-ready/, "update.sh: guard startup must be acknowledged before return");
@@ -234,6 +317,10 @@ test("introducing staged updates locally roll back all managed prompt artifacts"
   assert.ok(shell.indexOf("SUBAGENTS_PATCH_COMMITTED=1") > shTarget, "update.sh: subagents guard must own its snapshot after target validation");
   assert.ok(powershell.indexOf("$skillLoaderSnapshotCommitted = $true") > psTarget, "update.ps1: skill-loader guard must own its snapshot after target validation");
   assert.ok(shell.indexOf("SKILL_LOADER_SNAPSHOT_COMMITTED=1") > shTarget, "update.sh: skill-loader guard must own its snapshot after target validation");
+  assert.ok(powershell.indexOf("$modelCatalogSnapshotCommitted = $true") > psTarget, "update.ps1: model-catalog guard must own its snapshot after target validation");
+  assert.ok(shell.indexOf("MODEL_CATALOG_SNAPSHOT_COMMITTED=1") > shTarget, "update.sh: model-catalog guard must own its snapshot after target validation");
+  assert.ok(powershell.indexOf("$modelPolicySnapshotCommitted = $true") > psTarget, "update.ps1: model-policy guard must own its snapshot after target validation");
+  assert.ok(shell.indexOf("MODEL_POLICY_SNAPSHOT_COMMITTED=1") > shTarget, "update.sh: model-policy guard must own its snapshot after target validation");
   const subagentsPatch = fs.readFileSync(path.join(repoRoot, "lib", "pui-subagents-patch.js"), "utf8");
   assert.match(subagentsPatch, /command === "guard-snapshot"/, "subagents guard exposes the guard-snapshot command");
   assert.match(subagentsPatch, /writeFileSync\(path\.join\(stateDir, "guard-ready"\)/, "subagents guard writes its ready marker");

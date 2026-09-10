@@ -22,6 +22,7 @@ const {
   writeJson,
   reconcileModelMappings,
   validateModelMappingsConfig,
+  validateModelPolicyConfig,
   validateReasoningSummaryModesConfig,
   validateSessionTitlesConfig,
 } = require(LIB);
@@ -80,6 +81,44 @@ test("reconcileModelMappings preserves user key casing without creating a duplic
   }, { [canonical]: "openai-codex/gpt-5.6-terra" });
   assert.deepEqual(out.modelMappings, { [userKey]: "openai-codex/gpt-5.6-terra" });
   assert.deepEqual(out._pui.defaultMappings, { [canonical]: "openai-codex/gpt-5.6-terra" });
+});
+
+test("validateModelPolicyConfig accepts provider-grouped capabilities and rejects malformed rules", () => {
+  assert.equal(validateModelPolicyConfig({ schemaVersion: 1, providers: {
+    openai: { models: [{ id: "gpt-x", tools: { deny: ["subagent"] } }] },
+  } }).ok, true);
+  assert.equal(validateModelPolicyConfig({ schemaVersion: 1, providers: {
+    anthropic: { models: [{ id: "claude-x", tools: { allow: ["read"] } }] },
+  } }).ok, true);
+  for (const value of [
+    { schemaVersion: 2, providers: {} },
+    { schemaVersion: 1, providers: [] },
+    { schemaVersion: 1, providers: { openai: { models: [{ id: "gpt-x", tools: { allow: [], deny: [] } }] } } },
+    { schemaVersion: 1, providers: { openai: { models: [{ id: "gpt-x", tools: { deny: [" bad"] } }] } } },
+  ]) assert.equal(validateModelPolicyConfig(value).ok, false, JSON.stringify(value));
+});
+
+test("model-policy configuration is optional and validates through the CLI when present", (t) => {
+  const d = tmpdir();
+  t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  const f = path.join(d, "model-policy.json");
+
+  const missing = runCli(["validate-model-policy", f]);
+  assert.equal(missing.exit, 0);
+  assert.match(missing.out, /OPTIONAL/);
+  assert.equal(fs.existsSync(f), false);
+
+  fs.writeFileSync(f, JSON.stringify({ schemaVersion: 1, providers: { openai: { models: [{ id: "x", tools: { deny: ["subagent"] } }] } } }));
+  runCli(["validate-model-policy", f]);
+});
+
+test("invalid existing model-policy config fails without overwriting", (t) => {
+  const d = tmpdir();
+  t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  const f = path.join(d, "model-policy.json");
+  fs.writeFileSync(f, JSON.stringify({ schemaVersion: 1, providers: [] }));
+  assert.notEqual(runCli(["validate-model-policy", f]).exit, 0);
+  assert.deepEqual(rj(d, "model-policy.json"), { schemaVersion: 1, providers: [] });
 });
 
 test("validateModelMappingsConfig accepts fuzzy strings and rejects malformed mappings", () => {

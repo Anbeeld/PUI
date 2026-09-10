@@ -394,6 +394,7 @@ test("projects Responses context and deferred-thinking API responses", () => {
 
 const LIVE_CUSTOM_WEB_SOURCE = 'async function wait(){let response=await state(),current=response.state;if(!response.running||!current||!current.isStreaming&&!current.isPromptRunning)return void await finish()}async function reconcile(){let response=await state(),current=response.state;if(response.running&&current&&(current.isStreaming||current.isPromptRunning||current.isCompacting)){active.current=!!current.isStreaming;return}await finish()}function live(e){switch(e.type){case"connected":end({type:"end"}),!0===e.isStreaming&&(cancel(),active.current=!0,running.current=!0,setRunning(!0),setPhase({kind:"waiting_model"}));break;case"agent_start":cancel(),active.current=!0,running.current=!0,setRunning(!0),setPhase({kind:"waiting_model"}),end({type:"start"});break;case"agent_end":if(!running.current)break;setPhase(null),setRetry(null),end({type:"end"}),sid.current&&(load(sid.current),fetch(`/api/agent/${encodeURIComponent(sid.current)}`));break;case"agent_settled":{let was=active.current;if(active.current=!1,!was||rpc.current)break;settle()}case"prompt_done":{let run=runId.current,was=rpc.current;rpc.current=!1,optimistic.current=null;let first=notify(run);if(!was&&!first)break;let current=sid.current;current&&load(current),!active.current&&(settle(),current&&close(current))}break;case"message_start":case"message_update":if(!running.current)break;if("message_start"===e.type){let msg=e.message;if(msg?.role==="user")break;msg?.role==="assistant"?(dispatch({type:"snapshot",message:msg}),msg.content.length>0&&setPhase(null)):msg&&setPhase(null)}else{let delta=e.assistantMessageEvent;delta&&dispatch({type:"delta",event:delta})}break;}}';
 const CUSTOM_MESSAGE_WEB_SOURCE = 'function custom({message:a,cwd:b,onOpenFile:c}){let d,{t:e}=useI18n(),f=!1===a.display,[g,h]=(0,R.useState)(!f),[i,j]=(0,R.useState)(!1),k=text(a.content),o=void 0!==a.details,q=a.customType||"extension",r=time(a.timestamp);return view({background:f?"hidden-card-color":"visible-card-color",children:[header({style:{borderBottom:"1px solid var(--border)"},children:[title(q),r&&timestamp(r)]}),g?markdown({className:"markdown-custom-message",children:k}):button({onClick:()=>h(!0),children:preview(k)}),footer({children:[copy(k),(o||f)&&jsx("button",{onClick:()=>{f?h(a=>!a):j(a=>!a)},style:{marginLeft:"auto",padding:"3px 7px"},children:e(f?g?"i18n.collapse":"i18n.expand":i?"i18n.hideDetails":"i18n.showDetails")})]}),o&&(f&&g||!f&&i)&&details(a.details)]})}';
+const TOOLBAR_WEB_SOURCE = 'function cp(a){if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(a);try{return Promise.resolve(a)}catch{return Promise.reject()}}tb=m=>{let a,b;return m||shown?(0,J.jsxs)("div",{style:{display:"flex",alignItems:"stretch",height:"100%"},children:[(0,J.jsxs)("button",{type:"button",onClick:()=>{open(),m&&x&&show(!0)},disabled:!session,title:session?t("history.full"):t("history.unsaved")})]}):null}';
 
 test("makes only subagent notifications a reversible collapsed custom-message spoiler", () => {
   const { patchPiWebCustomMessageSpoiler } = patchModule();
@@ -436,14 +437,33 @@ test("makes only subagent notifications a reversible collapsed custom-message sp
   );
 });
 
+test("renders peer-message envelopes with real message line breaks", () => {
+  const { peerMessageDisplayContent } = patchModule();
+  const prefix = "A peer Pi Web session sent the task input below.\n\nSource session: source\nOperation: op\nMessage JSON: ";
+  assert.equal(
+    peerMessageDisplayContent(`${prefix}${JSON.stringify("first line\n\n- second line")}`),
+    "A peer Pi Web session sent the task input below.\n\nSource session: source\nOperation: op\nMessage:\n\nfirst line  \n  \n- second line",
+  );
+  assert.equal(peerMessageDisplayContent("ordinary custom content"), "ordinary custom content");
+  assert.equal(peerMessageDisplayContent(`${prefix}{bad json`), `${prefix}{bad json`);
+});
+
 test("keeps Goal complete expanded when React reuses a collapsed custom-message component", () => {
   const { patchPiWebCustomMessageSpoiler } = patchModule();
   const result = patchPiWebCustomMessageSpoiler(CUSTOM_MESSAGE_WEB_SOURCE);
   assert.match(
     result.text,
-    /\("Goal complete"===a\.customType\|\|g\)\?markdown\(\{className:"Goal complete"===a\.customType\?"markdown-compaction-message":"markdown-custom-message"/,
+    /\("Goal complete"===a\.customType\|\|g\)\?markdown\(\{className:\("Goal complete"===a\.customType\|\|"pui-peer-message"===a\.customType\)\?"markdown-compaction-message":"markdown-custom-message"/,
   );
   assert.equal((result.text.match(/markdown-compaction-message/g) || []).length, 1, "compaction typography leaked to another generic custom-message path");
+});
+
+test("uses compaction typography and decoded display content only for peer messages", () => {
+  const { patchPiWebCustomMessageSpoiler } = patchModule();
+  const result = patchPiWebCustomMessageSpoiler(CUSTOM_MESSAGE_WEB_SOURCE);
+  assert.match(result.text, /k=text\("pui-peer-message"===a\.customType\?puiPeerMessageDisplayContent\(a\.content\):a\.content\)/);
+  assert.match(result.text, /className:\("Goal complete"===a\.customType\|\|"pui-peer-message"===a\.customType\)\?"markdown-compaction-message":"markdown-custom-message"/);
+  assert.equal((result.text.match(/puiPeerMessageDisplayContent\(a\.content\)/g) || []).length, 1);
 });
 
 test("classifies only goal commands and queues that can start a generated turn", () => {
@@ -579,6 +599,53 @@ test("reconciles persisted custom prompts when Pi Web reconnects to an extension
   assert.equal(idleFinishes, 1, "server-state recovery did not settle a genuinely idle command");
 });
 
+test("Copy ID feedback lasts three seconds and resets without changing the control", async () => {
+  const { puiCopySessionId } = patchModule();
+  const label = { textContent: "Copy ID", isConnected: true };
+  const attributes = new Map([["aria-label", "Copy ID"]]);
+  const button = {
+    isConnected: true,
+    querySelector: () => label,
+    setAttribute: (name, value) => attributes.set(name, value),
+  };
+  const scheduled = [];
+  const copied = [];
+
+  await puiCopySessionId(button, async (value) => copied.push(value), "session-123", (callback, delay) => {
+    scheduled.push({ callback, delay });
+    return 42;
+  }, () => {});
+
+  assert.deepEqual(copied, ["session-123"]);
+  assert.equal(label.textContent, "Copied!");
+  assert.equal(attributes.get("aria-label"), "Copied!");
+  assert.equal(scheduled[0].delay, 3000);
+  scheduled[0].callback();
+  assert.equal(label.textContent, "Copy ID");
+  assert.equal(attributes.get("aria-label"), "Copy ID");
+});
+
+test("adds a fixed-width Copy ID button immediately before Full history", () => {
+  const { patchPiWebCopyIdButton } = patchModule();
+  const result = patchPiWebCopyIdButton(TOOLBAR_WEB_SOURCE);
+
+  assert.equal(result.changed, true);
+  assert.ok(result.text.indexOf('children:"Copy ID"') < result.text.indexOf('t("history.full")'));
+  assert.match(result.text, /puiCopySessionId\([^,]+,cp,session\.id\)/);
+  assert.match(result.text, /width:m\?36:88/);
+  assert.match(result.text, /width:44/);
+  assert.match(result.text, /textContent\s*=\s*"Copied!"/);
+  assert.match(result.text, /schedule\([\s\S]*?,\s*3000\)/);
+  assert.match(result.text, /aria-label":"Copy ID"/);
+  assert.match(result.text, /"aria-live":"polite"/);
+  assert.equal(patchPiWebCopyIdButton(result.text).reason, "already-patched");
+});
+
+test("Pi Web copy-ID patch fails closed when its exact toolbar seam drifts", () => {
+  const { patchPiWebCopyIdButton } = patchModule();
+  assert.throws(() => patchPiWebCopyIdButton(TOOLBAR_WEB_SOURCE.replace('height:"100%"', 'height:"99%"')), /toolbar|seam|not found/i);
+});
+
 test("Pi Web patching fails closed when any required display seam is absent", () => {
   const { patchPiWebBundle } = patchModule();
   const reducerOnly = 'case"thinking_delta":return rV(a,c.contentIndex,a=>a?.type==="thinking"?{...a,thinking:a.thinking+c.delta}:null);case"thinking_end":return rV(a,c.contentIndex,a=>({...a?.type==="thinking"?a:{},type:"thinking",thinking:c.content}));';
@@ -594,6 +661,7 @@ test("patches both Pi Web display bundles and carries safe streaming summaries",
     'function preview(m){if("assistant"!==m.role)return"";let{answerBlocks:a}=group(m);return a.filter(b=>"text"===b.type)}',
     CUSTOM_MESSAGE_WEB_SOURCE,
     LIVE_CUSTOM_WEB_SOURCE,
+    TOOLBAR_WEB_SOURCE,
   ].join(";");
   const result = patchPiWebBundle(source);
   assert.equal(result.changed, true);
@@ -602,6 +670,8 @@ test("patches both Pi Web display bundles and carries safe streaming summaries",
   assert.match(result.text, /puiHideUntrustedThinking\(puiCurrentAssistantMessage,b,s\)/);
   assert.match(result.text, /puiProjectAssistantBlock\(puiCurrentAssistantMessage,b,s\)/);
   assert.match(result.text, /"subagent-notification"!==a\.customType/);
+  assert.match(result.text, /children:"Copy ID"/);
+  assert.match(result.text, /textContent\s*=\s*"Copied!"/);
   assert.equal(patchPiWebBundle(result.text).reason, "already-patched");
 });
 
@@ -648,7 +718,7 @@ function packageFixture(t) {
   }
 }`;
 
-  const webSource = `function be(a,b={}){return"thinking"===a.type&&!a.deferred&&!b.isStreaming&&""===a.thinking.trim()}function bf(a,b={}){return(a.content??[]).filter(a=>!be(a,b))}function bg(a,b={}){return b.isStreaming||"error"!==a.stopReason?null:a.errorMessage?.trim()||"Unknown provider error"}function bh(a,b={}){let c=bf(a,b),d=c.findLastIndex(a=>"text"!==a.type&&"image"!==a.type);return -1===d?{answerBlocks:c,processBlocks:[]}:{answerBlocks:c.slice(d+1),processBlocks:c.slice(0,d+1)}}function bi(a){return a.filter(a=>"toolCall"===a.type).length};function reduce(event){switch(event.type){case"thinking_delta":return rV(a,c.contentIndex,a=>a?.type==="thinking"?{...a,thinking:a.thinking+c.delta}:null);case"thinking_end":return rV(a,c.contentIndex,a=>({...a?.type==="thinking"?a:{},type:"thinking",thinking:c.content}));default:return null}};function AssistantMessageView({message:m,isStreaming:s}){let q=m.content.map((block,originalIndex)=>({block,originalIndex})).filter(({block:b})=>!be(b,{isStreaming:s})),v=(0,R.useMemo)(()=>q.map(({block:b})=>b),[q]);return view({block:b,toolResults:t})};function preview(m){if("assistant"!==m.role)return"";let{answerBlocks:a}=group(m);return a.filter(b=>"text"===b.type)};${CUSTOM_MESSAGE_WEB_SOURCE};${LIVE_CUSTOM_WEB_SOURCE}`;
+  const webSource = `function be(a,b={}){return"thinking"===a.type&&!a.deferred&&!b.isStreaming&&""===a.thinking.trim()}function bf(a,b={}){return(a.content??[]).filter(a=>!be(a,b))}function bg(a,b={}){return b.isStreaming||"error"!==a.stopReason?null:a.errorMessage?.trim()||"Unknown provider error"}function bh(a,b={}){let c=bf(a,b),d=c.findLastIndex(a=>"text"!==a.type&&"image"!==a.type);return -1===d?{answerBlocks:c,processBlocks:[]}:{answerBlocks:c.slice(d+1),processBlocks:c.slice(0,d+1)}}function bi(a){return a.filter(a=>"toolCall"===a.type).length};function reduce(event){switch(event.type){case"thinking_delta":return rV(a,c.contentIndex,a=>a?.type==="thinking"?{...a,thinking:a.thinking+c.delta}:null);case"thinking_end":return rV(a,c.contentIndex,a=>({...a?.type==="thinking"?a:{},type:"thinking",thinking:c.content}));default:return null}};function AssistantMessageView({message:m,isStreaming:s}){let q=m.content.map((block,originalIndex)=>({block,originalIndex})).filter(({block:b})=>!be(b,{isStreaming:s})),v=(0,R.useMemo)(()=>q.map(({block:b})=>b),[q]);return view({block:b,toolResults:t})};function preview(m){if("assistant"!==m.role)return"";let{answerBlocks:a}=group(m);return a.filter(b=>"text"===b.type)};${CUSTOM_MESSAGE_WEB_SOURCE};${LIVE_CUSTOM_WEB_SOURCE};${TOOLBAR_WEB_SOURCE}`;
   write(piWeb, ".next/server/app/page.js", webSource);
   write(piWeb, ".next/static/chunks/app/page-hash.js", webSource);
   const clientReference = 'self.__RSC_MANIFEST={entryJSFiles:{"app/page":["static/chunks/app/page-hash.js?pui=a1b2c3d4e5f6"]}};';

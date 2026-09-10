@@ -13,6 +13,8 @@ NO_BROWSER=0
 KEYLESS_ROUTE=0
 GATE_RESULTS=()
 FAILURES=()
+SESSION_COMMUNICATION_PATCH_SNAPSHOT=""
+SESSION_COMMUNICATION_PATCH_COMMITTED=1
 
 for arg in "$@"; do
   case "$arg" in
@@ -26,6 +28,7 @@ done
 # npm's bulk-advisory audit POST stalls indefinitely on pi's large package tree;
 # every npm child (including the one inside `pi install`) inherits this setting.
 export npm_config_audit=false
+export npm_config_fund=false
 
 # ---- OS detection ----
 OS_TYPE="$(uname -s)"
@@ -53,7 +56,8 @@ PI_TIMEOUT_SECONDS=120
 # children that can stall indefinitely on the registry or on file locks; the
 # watchdog kills the whole pi process group on timeout so no orphan survives.
 run_pi_bounded() {
-  local tmp pid watchdog code=0
+  local tmp pid watchdog code=0 quiet_success=0
+  if [ "${1:-}" = "--quiet-success" ]; then quiet_success=1; shift; fi
   tmp="$(mktemp)"
   set -m
   pi "$@" >"$tmp" 2>&1 &
@@ -72,7 +76,9 @@ run_pi_bounded() {
   if wait "$pid"; then code=0; else code=$?; fi
   kill "$watchdog" 2>/dev/null || true
   wait "$watchdog" 2>/dev/null || true
-  sed 's/^/    /' "$tmp"
+  if [ "$code" -ne 0 ] || [ "$quiet_success" -eq 0 ]; then
+    sed 's/^/    /' "$tmp"
+  fi
   rm -f -- "$tmp"
   if [ "$code" -eq 143 ] || [ "$code" -eq 137 ]; then
     echo "  pi $* timed out after ${PI_TIMEOUT_SECONDS}s" >&2
@@ -114,6 +120,7 @@ PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
 PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
 PUI_REASONING_SUMMARIES="$(expand_path "$(jget configPaths.puiReasoningSummaries)")"
 PUI_SESSION_TITLES="$(expand_path "$(jget configPaths.puiSessionTitles)")"
+PUI_MODEL_POLICY_CONFIG="$(expand_path "$(jget configPaths.puiModelPolicy)")"
 ASK_USER_CONFIG="$(node_config resolve-config-path "$(jget configPaths.askUserQuestion)" "$(jget askUserQuestion.configRelativePath)")" || { echo "  ask-user-question config path resolution failed" >&2; exit 1; }
 MIN_NODE="$(jget minimumNode)"
 PIWEB_URL="$(jget piWeb.url)"
@@ -147,7 +154,7 @@ fi
 # ---- Phase 2: preserve (G2) ----
 write_phase 2 "preserve existing state"
 G2=1
-for f in "$PI_SETTINGS" "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG" "$PUI_REASONING_SUMMARIES" "$PUI_SESSION_TITLES"; do
+for f in "$PI_SETTINGS" "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG" "$PUI_REASONING_SUMMARIES" "$PUI_SESSION_TITLES" "$PUI_MODEL_POLICY_CONFIG"; do
   if [ -f "$f" ]; then
     BK="$(node_config backup "$f" | tail -1)" || { echo "  backup failed: $f" >&2; G2=0; continue; }
     echo "  backed up: $BK"
@@ -162,6 +169,10 @@ for f in "$PI_SETTINGS" "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_FFF_FEATURES" "$PI_G
     elif [ "$f" = "$PUI_SESSION_TITLES" ] && ! node_config validate-session-titles "$f" >/dev/null 2>&1; then
       echo "  INVALID session-title configuration (not overwritten): $f" >&2
       node_config validate-session-titles "$f" >&2 || true
+      G2=0
+    elif [ "$f" = "$PUI_MODEL_POLICY_CONFIG" ] && ! node_config validate-model-policy "$f" >/dev/null 2>&1; then
+      echo "  INVALID model-policy configuration (not overwritten): $f" >&2
+      node_config validate-model-policy "$f" >&2 || true
       G2=0
     fi
   fi
@@ -309,6 +320,33 @@ if ! node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" apply "$SCRIPT_DIR" "
   exit 1
 fi
 echo "  Responses reasoning-summary display patch applied to Pi Web and standalone Pi"
+SESSION_COMMUNICATION_PATCH_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-session-broker-install.XXXXXX")"
+SESSION_COMMUNICATION_PATCH_COMMITTED=0
+if ! node "$SCRIPT_DIR/lib/pui-session-communication-patch.js" snapshot "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" "$PIWEB_PKG_ROOT" >/dev/null; then
+  rm -rf -- "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"
+  SESSION_COMMUNICATION_PATCH_SNAPSHOT=""
+  echo "  Pi Web session communication broker snapshot could not be created; install aborted" >&2
+  exit 1
+fi
+restore_session_communication_patch_on_exit() {
+  status=$?
+  trap - EXIT
+  if [ "$SESSION_COMMUNICATION_PATCH_COMMITTED" -eq 0 ] && [ -n "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" ]; then
+    if node "$SCRIPT_DIR/lib/pui-session-communication-patch.js" restore-snapshot "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" "$PIWEB_PKG_ROOT" >/dev/null 2>&1; then
+      rm -rf -- "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"
+    else
+      echo "  FAILED to restore Pi Web session communication artifacts; recovery snapshot retained at $SESSION_COMMUNICATION_PATCH_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  exit "$status"
+}
+trap restore_session_communication_patch_on_exit EXIT
+if ! node "$SCRIPT_DIR/lib/pui-session-communication-patch.js" apply "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" >/dev/null; then
+  echo "  Pi Web session communication broker patch could not be applied; install aborted" >&2
+  exit 1
+fi
+echo "  Pi Web session communication broker patch applied"
 if ! node "$SCRIPT_DIR/lib/pui-web-integration.js" finalize "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" >/dev/null; then
   echo "  Pi Web update integration finalization failed; install aborted" >&2
   exit 1
@@ -326,7 +364,8 @@ for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.retired
 done
 for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPackages)console.log(p)' "$STACK"); do
   echo "  pi install $spec"
-  if run_pi_bounded install "$spec"; then
+  if run_pi_bounded --quiet-success install "$spec"; then
+    echo "    reconciled managed extension $spec"
     node_config set-package "$PI_SETTINGS" "$spec" >/dev/null || G4=0
   else
     echo "  FAILED: $spec"; G4=0
@@ -336,6 +375,19 @@ node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null 
 node "$SCRIPT_DIR/lib/pui-skill-loader-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI skill loader extension install failed" >&2; G4=0; }
 node "$SCRIPT_DIR/lib/pui-reasoning-summary-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI reasoning-summary extension install failed" >&2; G4=0; }
 node "$SCRIPT_DIR/lib/pui-session-title-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI session-title extension install failed" >&2; G4=0; }
+node "$SCRIPT_DIR/lib/pui-session-communication-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI session communication extension install failed" >&2; G4=0; }
+node "$SCRIPT_DIR/lib/pui-model-catalog-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI model catalog extension install failed" >&2; G4=0; }
+node "$SCRIPT_DIR/lib/pui-model-policy-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI model policy extension install failed" >&2; G4=0; }
+
+if node_config validate-model-policy "$PUI_MODEL_POLICY_CONFIG" >/dev/null; then
+  if [ -f "$PUI_MODEL_POLICY_CONFIG" ]; then
+    echo "  model-policy configuration valid: $PUI_MODEL_POLICY_CONFIG"
+  else
+    echo "  model-policy configuration not configured (unrestricted)"
+  fi
+else
+  echo "  model-policy configuration is invalid and was not overwritten" >&2; G4=0
+fi
 
 ASK_GUIDANCE="$(node -e 'const s=require(process.argv[1]);process.stdout.write(JSON.stringify(s.askUserQuestion.guidance))' "$STACK")"
 if node_config set-owned-fields "$ASK_USER_CONFIG" guidance "$ASK_GUIDANCE" >/dev/null; then
@@ -639,4 +691,6 @@ if [ "$NO_PWA" -eq 0 ] && [ "$NO_BROWSER" -eq 0 ]; then
     echo "Complete PWA installation via Chrome/Edge 'Install page as app' on the opened page."
   fi
 fi
+SESSION_COMMUNICATION_PATCH_COMMITTED=1
+rm -rf -- "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"
 echo "Run ./doctor.sh anytime for diagnostics."

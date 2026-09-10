@@ -67,11 +67,17 @@ if node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" verify "$SCRIPT_DIR" "$
 else
   status_line "reasoning-summary display patch" "FAIL" "missing or drifted"
 fi
+if node "$SCRIPT_DIR/lib/pui-session-communication-patch.js" verify "$SCRIPT_DIR" "$PIWEB_ROOT" >/dev/null 2>&1; then
+  status_line "session communication broker" "PASS" "Pi Web-only broker v1"
+else
+  status_line "session communication broker" "FAIL" "missing or drifted"
+fi
 
 PI_AGENT_DIR="$(expand_path "$(jget configPaths.piAgentDir)")"
 PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
 PUI_REASONING_SUMMARIES="$(expand_path "$(jget configPaths.puiReasoningSummaries)")"
 PUI_SESSION_TITLES="$(expand_path "$(jget configPaths.puiSessionTitles)")"
+PUI_MODEL_POLICY_CONFIG="$(expand_path "$(jget configPaths.puiModelPolicy)")"
 PI_SETTINGS="$(expand_path "$(jget configPaths.piSettings)")"
 PI_WEB_ACCESS="$(expand_path "$(jget configPaths.piWebAccess)")"
 MCP_SHARED="$(expand_path "$(jget configPaths.mcpShared)")"
@@ -153,6 +159,18 @@ else
   status_line "reasoning-summary modes" "FAIL" "missing or invalid: $PUI_REASONING_SUMMARIES"
 fi
 node "$SCRIPT_DIR/lib/pui-session-title-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI session titles" "PASS" "automatic title extension" || status_line "PUI session titles" "FAIL" "extension missing or mismatched"
+node "$SCRIPT_DIR/lib/pui-session-communication-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI session communication" "PASS" "five Pi Web peer-session tools" || status_line "PUI session communication" "FAIL" "extension missing or mismatched"
+node "$SCRIPT_DIR/lib/pui-model-catalog-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI model catalog" "PASS" "model_list tool" || status_line "PUI model catalog" "FAIL" "extension missing or mismatched"
+node "$SCRIPT_DIR/lib/pui-model-policy-extension.js" verify "$SCRIPT_DIR" >/dev/null 2>&1 && status_line "PUI model policy" "PASS" "model policy extension" || status_line "PUI model policy" "FAIL" "extension missing or mismatched"
+if node "$LIB" validate-model-policy "$PUI_MODEL_POLICY_CONFIG" >/dev/null 2>&1; then
+  if [ -f "$PUI_MODEL_POLICY_CONFIG" ]; then
+    status_line "model-policy configuration" "PASS" "$PUI_MODEL_POLICY_CONFIG"
+  else
+    status_line "model-policy configuration" "PASS" "not configured (unrestricted)"
+  fi
+else
+  status_line "model-policy configuration" "FAIL" "invalid: $PUI_MODEL_POLICY_CONFIG"
+fi
 if node "$LIB" validate-session-titles "$PUI_SESSION_TITLES" >/dev/null 2>&1; then
   status_line "session-title models" "PASS" "$PUI_SESSION_TITLES"
 else

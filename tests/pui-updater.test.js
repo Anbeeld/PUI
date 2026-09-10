@@ -16,10 +16,16 @@ const {
   backupSkillLoaderForStacks,
   backupReasoningSummaryExtensionForStacks,
   backupSessionTitleExtensionForStacks,
+  backupSessionCommunicationExtensionForStacks,
+  backupModelCatalogExtensionForStacks,
+  backupModelPolicyExtensionForStacks,
   restoreConfigFiles,
   restoreSkillLoaderBackup,
   restoreReasoningSummaryExtensionBackup,
   restoreSessionTitleExtensionBackup,
+  restoreSessionCommunicationExtensionBackup,
+  restoreModelCatalogExtensionBackup,
+  restoreModelPolicyExtensionBackup,
   rollbackScriptWithRecovery,
   runScript,
   runTransaction,
@@ -33,6 +39,9 @@ const {
   validateSkillLoaderIdentity,
   validateReasoningSummaryExtensionIdentity,
   validateSessionTitleExtensionIdentity,
+  validateSessionCommunicationExtensionIdentity,
+  validateModelCatalogExtensionIdentity,
+  validateModelPolicyExtensionIdentity,
   validateInstalledExtensionIdentities,
 } = require(path.join(repoRoot, "lib", "pui-updater.js"));
 
@@ -112,7 +121,7 @@ test("transaction backups include every managed JSON config surface", (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-all-config-"));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const configPaths = Object.fromEntries(
-    ["piSettings", "piWebAccess", "mcpShared", "piFffFeatures", "piGoal", "askUserQuestion", "puiSubagents", "puiReasoningSummaries", "puiSessionTitles"]
+    ["piSettings", "piWebAccess", "mcpShared", "piFffFeatures", "piGoal", "askUserQuestion", "puiSubagents", "puiReasoningSummaries", "puiSessionTitles", "puiModelPolicy"]
       .map((key) => [key, path.join(temp, `${key}.json`)]),
   );
   for (const file of Object.values(configPaths)) fs.writeFileSync(file, JSON.stringify({ file }));
@@ -181,6 +190,81 @@ test("transaction validation rejects session-title extension identity drift", (t
   assert.doesNotThrow(() => validateSessionTitleExtensionIdentity(require(path.join(repoRoot, "package.json")).version, target));
   fs.appendFileSync(path.join(target, "core.ts"), "\nmodified");
   assert.throws(() => validateSessionTitleExtensionIdentity(require(path.join(repoRoot, "package.json")).version, target), /mismatch/);
+});
+
+test("transaction validation requires session communication identity from v1.3.2", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-session-communication-validation-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const target = path.join(temp, "pui-session-communication");
+  require(path.join(repoRoot, "lib", "pui-session-communication-extension.js")).installExtension({ repoRoot, target });
+  assert.doesNotThrow(() => validateSessionCommunicationExtensionIdentity("1.3.2", target));
+  fs.appendFileSync(path.join(target, "core.ts"), "\nmodified");
+  assert.throws(() => validateSessionCommunicationExtensionIdentity("1.3.2", target), /mismatch/);
+});
+
+test("transaction validation requires model catalog identity from v1.3.2", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-model-catalog-validation-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const target = path.join(temp, "pui-model-catalog");
+  require(path.join(repoRoot, "lib", "pui-model-catalog-extension.js")).installExtension({ repoRoot, target });
+  assert.doesNotThrow(() => validateModelCatalogExtensionIdentity("1.3.2", target));
+  fs.appendFileSync(path.join(target, "core.ts"), "\nmodified");
+  assert.throws(() => validateModelCatalogExtensionIdentity("1.3.2", target), /mismatch/);
+});
+
+test("transaction validation and rollback cover the model policy extension", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-model-policy-transaction-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-model-policy");
+  const backup = backupModelPolicyExtensionForStacks([
+    { modelPolicyExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  require(path.join(repoRoot, "lib", "pui-model-policy-extension.js")).installExtension({ repoRoot, target: live });
+  assert.doesNotThrow(() => validateModelPolicyExtensionIdentity("1.3.2", live));
+  fs.appendFileSync(path.join(live, "core.ts"), "\nmodified");
+  assert.throws(() => validateModelPolicyExtensionIdentity("1.3.2", live), /mismatch/);
+  assert.throws(() => restoreModelPolicyExtensionBackup(backup), /drift/i);
+  fs.rmSync(live, { recursive: true });
+  require(path.join(repoRoot, "lib", "pui-model-policy-extension.js")).installExtension({ repoRoot, target: live });
+  restoreModelPolicyExtensionBackup(backup);
+  assert.equal(fs.existsSync(live), false);
+});
+
+test("transaction rollback removes a newly introduced model catalog extension", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-model-catalog-transaction-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-model-catalog");
+  const backup = backupModelCatalogExtensionForStacks([
+    { modelCatalogExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  require(path.join(repoRoot, "lib", "pui-model-catalog-extension.js")).installExtension({ repoRoot, target: live });
+  restoreModelCatalogExtensionBackup(backup);
+  assert.equal(fs.existsSync(live), false);
+});
+
+test("transaction rollback preserves post-backup model catalog drift", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-model-catalog-drift-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-model-catalog");
+  require(path.join(repoRoot, "lib", "pui-model-catalog-extension.js")).installExtension({ repoRoot, target: live });
+  const backup = backupModelCatalogExtensionForStacks([
+    { modelCatalogExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  fs.appendFileSync(path.join(live, "core.ts"), "\nuser change");
+  assert.throws(() => restoreModelCatalogExtensionBackup(backup), /drift/i);
+  assert.match(fs.readFileSync(path.join(live, "core.ts"), "utf8"), /user change/);
+});
+
+test("transaction rollback removes a newly introduced session communication extension", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pui-session-communication-transaction-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const live = path.join(temp, "pui-session-communication");
+  const backup = backupSessionCommunicationExtensionForStacks([
+    { sessionCommunicationExtension: { target: live } },
+  ], path.join(temp, "backup"));
+  require(path.join(repoRoot, "lib", "pui-session-communication-extension.js")).installExtension({ repoRoot, target: live });
+  restoreSessionCommunicationExtensionBackup(backup);
+  assert.equal(fs.existsSync(live), false);
 });
 
 test("transaction rollback restores the exact pre-update session-title extension", (t) => {
@@ -477,30 +561,49 @@ test("pi-web process detection matches the managed GUI server and excludes the a
 });
 
 
-test("Windows relaunch uses the absolute Pi Web command directly instead of trusting the Startup VBS", () => {
+test("Windows relaunch uses the canonical VBS so Pi Web descendants inherit a hidden console", () => {
   const piWebCmd = path.join("appdata", "npm", "pi-web.cmd");
-  const spec = piWebLaunchSpec({ platform: "win32", appData: "appdata", env: { ComSpec: "cmd.exe" }, existsSync: (p) => p === piWebCmd });
-  assert.equal(spec.file, "cmd.exe");
-  assert.deepEqual(spec.args, ["/d", "/s", "/c", `""${piWebCmd}" --no-open"`]);
-  assert.equal(spec.windowsVerbatimArguments, true);
-  assert.equal(spec.env.PI_WEB_SKIP_VERSION_CHECK, "1");
+  const launcherVbs = path.join("appdata", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "pui-piweb.vbs");
+  const expectedVbs = `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""${piWebCmd}"" --no-open", 0, False`;
+  const spec = piWebLaunchSpec({
+    platform: "win32",
+    appData: "appdata",
+    wscriptExecutable: "wscript.exe",
+    existsSync: (p) => p === piWebCmd || p === launcherVbs,
+    readFileSync: (p) => p === launcherVbs ? expectedVbs : "",
+  });
+  assert.equal(spec.file, "wscript.exe");
+  assert.deepEqual(spec.args, [launcherVbs]);
   assert.equal(spec.stopsExisting, false);
 });
 
-test("Windows relaunch executes a spaced absolute command with the hidden-launch environment", { skip: process.platform !== "win32" }, (t) => {
+test("Windows relaunch executes a spaced absolute command through the hidden VBS", { skip: process.platform !== "win32" }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui launcher probe "));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const piWebCmd = path.join(root, "pi-web.cmd");
+  const launcherVbs = path.join(root, "pui-piweb.vbs");
   const marker = path.join(root, "result.txt");
   fs.writeFileSync(piWebCmd, `@echo off\r\n> "${marker}" echo ARGS=%* ENV=%PI_WEB_SKIP_VERSION_CHECK%\r\n`);
-  const spec = piWebLaunchSpec({ platform: "win32", piWebCmd, env: process.env, existsSync: (p) => p === piWebCmd });
-  const result = spawnSync(spec.file, spec.args, { env: spec.env, windowsHide: true, windowsVerbatimArguments: spec.windowsVerbatimArguments });
+  fs.writeFileSync(launcherVbs, `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run "cmd /c set PI_WEB_SKIP_VERSION_CHECK=1&&""${piWebCmd}"" --no-open", 0, False`);
+  const spec = piWebLaunchSpec({ platform: "win32", piWebCmd, launcherVbs, existsSync: (p) => p === piWebCmd || p === launcherVbs });
+  const result = spawnSync(spec.file, spec.args, { windowsHide: true });
   assert.equal(result.status, 0);
+  for (let attempt = 0; attempt < 30 && !fs.existsSync(marker); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   assert.equal(fs.readFileSync(marker, "utf8").trim(), "ARGS=--no-open ENV=1");
 });
 
-test("Windows relaunch fails clearly when the absolute Pi Web command is missing", () => {
-  assert.throws(() => piWebLaunchSpec({ platform: "win32", appData: "appdata", env: {}, existsSync: () => false }), /launcher is missing.*pi-web\.cmd/i);
+test("Windows relaunch rejects a missing or modified hidden launcher", () => {
+  const piWebCmd = path.join("appdata", "npm", "pi-web.cmd");
+  const launcherVbs = path.join("appdata", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "pui-piweb.vbs");
+  assert.throws(() => piWebLaunchSpec({ platform: "win32", appData: "appdata", existsSync: () => false }), /launcher is missing.*pi-web\.cmd/i);
+  assert.throws(() => piWebLaunchSpec({
+    platform: "win32",
+    appData: "appdata",
+    existsSync: (p) => p === piWebCmd || p === launcherVbs,
+    readFileSync: () => "modified",
+  }), /hidden launcher is modified/i);
 });
 
 test("staged script failures retain output in the transaction log and surface the useful error", (t) => {

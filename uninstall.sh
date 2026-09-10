@@ -133,6 +133,7 @@ if command -v npm >/dev/null 2>&1; then
   GLOBAL_ROOT="$(npm root -g 2>/dev/null)" || true
   PIWEB_ROOT="${GLOBAL_ROOT}/@agegr/pi-web"
   PI_STANDALONE_ROOT="${GLOBAL_ROOT}/@earendil-works/pi-coding-agent"
+  node "$SCRIPT_DIR/lib/pui-session-communication-patch.js" remove "$PIWEB_ROOT" >/dev/null || echo "  session communication broker patch differs from its owned shape; preserving."
   node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" remove "$PIWEB_ROOT" "$PI_STANDALONE_ROOT" "$SCRIPT_DIR" >/dev/null || echo "  reasoning-summary patch differs from its owned shape; preserving."
   if [ -d "$PIWEB_ROOT" ]; then
     node "$SCRIPT_DIR/lib/pui-pi-8782-backport.js" remove "$PIWEB_ROOT" >/dev/null || echo "  Pi #8782 backport differs from its owned shape; preserving."
@@ -164,6 +165,9 @@ node "$SCRIPT_DIR/lib/pui-update-extension.js" remove "$SCRIPT_DIR" >/dev/null |
 node "$SCRIPT_DIR/lib/pui-skill-loader-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI skill loader extension differs from its owned shape; preserving."
 node "$SCRIPT_DIR/lib/pui-reasoning-summary-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI reasoning-summary extension differs from its owned shape; preserving."
 node "$SCRIPT_DIR/lib/pui-session-title-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI session-title extension differs from its owned shape; preserving."
+node "$SCRIPT_DIR/lib/pui-session-communication-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI session communication extension differs from its owned shape; preserving."
+node "$SCRIPT_DIR/lib/pui-model-catalog-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI model catalog extension differs from its owned shape; preserving."
+node "$SCRIPT_DIR/lib/pui-model-policy-extension.js" remove "$SCRIPT_DIR" >/dev/null || echo "  PUI model policy extension differs from its owned shape; preserving."
 
 if [ "$FULL" -eq 1 ]; then
   echo "  --full: removing PUI-selected Pi packages..."

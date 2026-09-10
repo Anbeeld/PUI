@@ -7,6 +7,12 @@ const { pathToFileURL } = require("node:url");
 
 const repoRoot = path.resolve(__dirname, "..");
 const coreUrl = pathToFileURL(path.join(repoRoot, "extensions", "pui-session-title", "core.ts")).href;
+const resolverUrl = pathToFileURL(path.join(repoRoot, "extensions", "pui-model-catalog", "resolver.ts")).href;
+
+test.before(async () => {
+  const { installPuiModelResolver } = await import(`${resolverUrl}?title-resolver=${Date.now()}`);
+  installPuiModelResolver();
+});
 
 async function loadCore() {
   return import(`${coreUrl}?test=${Date.now()}-${Math.random()}`);
@@ -21,7 +27,7 @@ function writeConfig(t, value) {
 }
 
 function model(provider, id, name = id) {
-  return { provider, id, name, api: "openai-responses" };
+  return { provider, id, name, api: "openai-responses", reasoning: true };
 }
 
 function registry(models, complete) {

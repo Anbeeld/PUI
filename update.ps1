@@ -13,6 +13,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # npm's bulk-advisory audit POST stalls indefinitely on pi's large package tree;
 # every npm child (including the one inside `pi install`) inherits this setting.
 $env:npm_config_audit = "false"
+$env:npm_config_fund = "false"
 
 function Wait-IfInteractive {
   if ($env:PUI_NONINTERACTIVE) { return }
@@ -102,6 +103,7 @@ $piGoalSettings = Expand-Path $Stack.configPaths.piGoal
 $puiSubagentsConfig = Expand-Path $Stack.configPaths.puiSubagents
 $puiReasoningSummaries = Expand-Path $Stack.configPaths.puiReasoningSummaries
 $puiSessionTitles = Expand-Path $Stack.configPaths.puiSessionTitles
+$puiModelPolicy = Expand-Path $Stack.configPaths.puiModelPolicy
 $askUserConfig = (& node $Lib "resolve-config-path" ([string]$Stack.configPaths.askUserQuestion) ([string]$Stack.askUserQuestion.configRelativePath) 2>&1 | Select-Object -Last 1).ToString().Trim()
 if ($LASTEXITCODE -ne 0) { Write-Host "  ask-user-question config path resolution failed" -ForegroundColor Red; exit 1 }
 
@@ -135,6 +137,51 @@ if ($sessionTitleSnapshotExit -ne 0) {
   Write-Host "  could not snapshot PUI session-title extension; update aborted" -ForegroundColor Red
   exit 1
 }
+$sessionCommunicationExtension = Join-Path $ScriptDir "lib\pui-session-communication-extension.js"
+$sessionCommunicationSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-session-communication-" + [guid]::NewGuid().ToString("N"))
+$sessionCommunicationSnapshotCommitted = $false
+New-Item -ItemType Directory -Path $sessionCommunicationSnapshot -Force | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionCommunicationExtension snapshot $sessionCommunicationSnapshot $ScriptDir 2>&1 | Out-Null; $sessionCommunicationSnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($sessionCommunicationSnapshotExit -ne 0) {
+  Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionTitleSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionCommunicationSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  $skillLoaderSnapshot = $null
+  $sessionTitleSnapshot = $null
+  $sessionCommunicationSnapshot = $null
+  Write-Host "  could not snapshot PUI session communication extension; update aborted" -ForegroundColor Red
+  exit 1
+}
+$modelCatalogExtension = Join-Path $ScriptDir "lib\pui-model-catalog-extension.js"
+$modelCatalogSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-model-catalog-" + [guid]::NewGuid().ToString("N"))
+$modelCatalogSnapshotCommitted = $false
+New-Item -ItemType Directory -Path $modelCatalogSnapshot -Force | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $modelCatalogExtension snapshot $modelCatalogSnapshot $ScriptDir 2>&1 | Out-Null; $modelCatalogSnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($modelCatalogSnapshotExit -ne 0) {
+  foreach ($snapshot in @($skillLoaderSnapshot, $sessionTitleSnapshot, $sessionCommunicationSnapshot, $modelCatalogSnapshot)) { if ($snapshot) { Remove-Item $snapshot -Recurse -Force -ErrorAction SilentlyContinue } }
+  $skillLoaderSnapshot = $null
+  $sessionTitleSnapshot = $null
+  $sessionCommunicationSnapshot = $null
+  $modelCatalogSnapshot = $null
+  Write-Host "  could not snapshot PUI model catalog extension; update aborted" -ForegroundColor Red
+  exit 1
+}
+$modelPolicyExtension = Join-Path $ScriptDir "lib\pui-model-policy-extension.js"
+$modelPolicySnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-model-policy-" + [guid]::NewGuid().ToString("N"))
+$modelPolicySnapshotCommitted = $false
+New-Item -ItemType Directory -Path $modelPolicySnapshot -Force | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $modelPolicyExtension snapshot $modelPolicySnapshot $ScriptDir 2>&1 | Out-Null; $modelPolicySnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($modelPolicySnapshotExit -ne 0) {
+  foreach ($snapshot in @($skillLoaderSnapshot, $sessionTitleSnapshot, $sessionCommunicationSnapshot, $modelCatalogSnapshot, $modelPolicySnapshot)) { if ($snapshot) { Remove-Item $snapshot -Recurse -Force -ErrorAction SilentlyContinue } }
+  Write-Host "  could not snapshot PUI model policy extension; update aborted" -ForegroundColor Red
+  exit 1
+}
 $backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
 $backgroundSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-background-task-" + [guid]::NewGuid().ToString("N"))
 $backgroundPatchCommitted = $false
@@ -146,9 +193,15 @@ if ($backgroundSnapshotExit -ne 0) {
   Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $sessionTitleSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionCommunicationSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $modelCatalogSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $modelPolicySnapshot -Recurse -Force -ErrorAction SilentlyContinue
   $backgroundSnapshot = $null
   $skillLoaderSnapshot = $null
   $sessionTitleSnapshot = $null
+  $sessionCommunicationSnapshot = $null
+  $modelCatalogSnapshot = $null
+  $modelPolicySnapshot = $null
   Write-Host "  could not snapshot pi-background-tasks compatibility artifacts; update aborted" -ForegroundColor Red
   exit 1
 }
@@ -164,9 +217,15 @@ if ($subagentsSnapshotExit -ne 0) {
   Remove-Item $subagentsSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $sessionTitleSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionCommunicationSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $modelCatalogSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $modelPolicySnapshot -Recurse -Force -ErrorAction SilentlyContinue
   $backgroundSnapshot = $null
   $subagentsSnapshot = $null
   $sessionTitleSnapshot = $null
+  $sessionCommunicationSnapshot = $null
+  $modelCatalogSnapshot = $null
+  $modelPolicySnapshot = $null
   Write-Host "  could not snapshot pi-subagents prompt artifacts; update aborted" -ForegroundColor Red
   exit 1
 }
@@ -175,28 +234,48 @@ $reasoningPatch = Join-Path $ScriptDir "lib\pui-reasoning-summary-patch.js"
 $reasoningSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-reasoning-summary-" + [guid]::NewGuid().ToString("N"))
 $reasoningPatchCommitted = $false
 $reasoningPiWebRoot = Join-Path (Join-Path $globalRoot "@agegr") "pi-web"
+$sessionCommunicationPatchSnapshotScript = Join-Path $ScriptDir "lib\pui-session-communication-patch.js"
+$sessionCommunicationPatchSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-session-broker-" + [guid]::NewGuid().ToString("N"))
+$sessionCommunicationPatchCommitted = $false
+New-Item -ItemType Directory -Path $sessionCommunicationPatchSnapshot -Force | Out-Null
 $reasoningStandaloneRoot = Join-Path $globalRoot "@earendil-works\pi-coding-agent"
 New-Item -ItemType Directory -Path $reasoningSnapshot -Force | Out-Null
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $reasoningPatch snapshot $reasoningSnapshot $ScriptDir $reasoningPiWebRoot $reasoningStandaloneRoot 2>&1 | Out-Null; $reasoningSnapshotExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionCommunicationPatchSnapshotScript snapshot $sessionCommunicationPatchSnapshot $reasoningPiWebRoot 2>&1 | Out-Null; $sessionCommunicationPatchSnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($sessionCommunicationPatchSnapshotExit -ne 0) {
+  foreach ($snapshot in @($backgroundSnapshot, $subagentsSnapshot, $reasoningSnapshot, $skillLoaderSnapshot, $sessionTitleSnapshot, $sessionCommunicationSnapshot, $modelCatalogSnapshot, $modelPolicySnapshot, $sessionCommunicationPatchSnapshot)) { if ($snapshot) { Remove-Item $snapshot -Recurse -Force -ErrorAction SilentlyContinue } }
+  Write-Host "  could not snapshot Pi Web session communication artifacts; update aborted" -ForegroundColor Red
+  exit 1
+}
 if ($reasoningSnapshotExit -ne 0) {
   Remove-Item $backgroundSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $subagentsSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $reasoningSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $skillLoaderSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $sessionTitleSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionCommunicationSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $modelCatalogSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $modelPolicySnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $sessionCommunicationPatchSnapshot -Recurse -Force -ErrorAction SilentlyContinue
   $backgroundSnapshot = $null
   $subagentsSnapshot = $null
   $reasoningSnapshot = $null
   $skillLoaderSnapshot = $null
   $sessionTitleSnapshot = $null
+  $sessionCommunicationSnapshot = $null
+  $modelCatalogSnapshot = $null
+  $modelPolicySnapshot = $null
+  $sessionCommunicationPatchSnapshot = $null
   Write-Host "  could not snapshot Responses reasoning-summary artifacts; update aborted" -ForegroundColor Red
   exit 1
 }
 
 $backupFiles = @()
-foreach ($f in @($piWebAccess, $mcpShared, $piSettings, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig, $puiReasoningSummaries, $puiSessionTitles) | Where-Object { Test-Path $_ }) {
+foreach ($f in @($piWebAccess, $mcpShared, $piSettings, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig, $puiReasoningSummaries, $puiSessionTitles, $puiModelPolicy) | Where-Object { Test-Path $_ }) {
   $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
   try {
     $bkOutput = & node $Lib "backup" $f 2>&1
@@ -222,6 +301,15 @@ if (Test-Path $puiSessionTitles) {
   finally { $ErrorActionPreference = $prev }
   if ($sessionTitlePreflightExit -ne 0) {
     Write-Host "  invalid session-title configuration backed up and left unchanged: $puiSessionTitles" -ForegroundColor Red
+    exit 1
+  }
+}
+if (Test-Path $puiModelPolicy) {
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $Lib "validate-model-policy" $puiModelPolicy 2>&1 | Out-Null; $modelPolicyPreflightExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+  if ($modelPolicyPreflightExit -ne 0) {
+    Write-Host "  invalid model-policy configuration backed up and left unchanged: $puiModelPolicy" -ForegroundColor Red
     exit 1
   }
 }
@@ -396,6 +484,13 @@ finally { $ErrorActionPreference = $prev }
 if ($reasoningPatchExit -ne 0) { Write-Host "  reasoning-summary compatibility patch could not be applied; update aborted" -ForegroundColor Red; exit 1 }
 Assert-NoInjectedFailure "reasoning-summary-patch"
 Write-Host "  Responses reasoning-summary display patch applied to Pi Web and standalone Pi"
+$sessionCommunicationPatch = Join-Path $ScriptDir "lib\pui-session-communication-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionCommunicationPatch apply $ScriptDir $piWebPkgRoot 2>&1 | Out-Null; $sessionCommunicationPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($sessionCommunicationPatchExit -ne 0) { Write-Host "  Pi Web session communication broker patch could not be applied; update aborted" -ForegroundColor Red; exit 1 }
+Assert-NoInjectedFailure "session-communication-patch"
+Write-Host "  Pi Web session communication broker patch applied"
 & node $integrationScript finalize $ScriptDir $piWebPkgRoot 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  Pi Web update integration finalization failed; update aborted" -ForegroundColor Red; exit 1 }
 
@@ -425,9 +520,12 @@ foreach ($spec in @($Stack.retiredPiPackages)) {
 foreach ($spec in @($Stack.piPackages)) {
   Write-Host "  reconciling managed extension $spec..."
   $piInstall = Invoke-PiBounded -PiArgs @("install", $spec)
-  if ($piInstall.out) { $piInstall.out -split "`r?`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } }
-  $piExit = $piInstall.exit
-  if ($piExit -ne 0) { Write-Host "  failed to install $spec" -ForegroundColor Red; exit 1 }
+  if ($piInstall.exit -ne 0) {
+    if ($piInstall.out) { $piInstall.out -split "`r?`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } }
+    Write-Host "  failed to install $spec" -ForegroundColor Red
+    exit 1
+  }
+  Write-Host "    reconciled managed extension $spec"
   & node (Join-Path $ScriptDir "lib\pui-config.js") set-package $piSettings $spec | Out-Null
   if ($LASTEXITCODE -ne 0) { Write-Host "  failed to set exact managed pin for $spec" -ForegroundColor Red; exit 1 }
 }
@@ -572,6 +670,18 @@ if ($LASTEXITCODE -ne 0) { Write-Host "  PUI skill loader extension replacement 
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI reasoning-summary extension replacement failed" -ForegroundColor Red; exit 1 }
 & node (Join-Path $ScriptDir "lib\pui-session-title-extension.js") install $ScriptDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI session-title extension replacement failed" -ForegroundColor Red; exit 1 }
+& node (Join-Path $ScriptDir "lib\pui-session-communication-extension.js") install $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI session communication extension replacement failed" -ForegroundColor Red; exit 1 }
+& node (Join-Path $ScriptDir "lib\pui-model-catalog-extension.js") install $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI model catalog extension replacement failed" -ForegroundColor Red; exit 1 }
+& node $modelPolicyExtension install $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI model policy extension replacement failed" -ForegroundColor Red; exit 1 }
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $Lib "validate-model-policy" $puiModelPolicy 2>&1 | Out-Null; $modelPolicyConfigExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($modelPolicyConfigExit -ne 0) { Write-Host "  model-policy configuration is invalid and was not overwritten" -ForegroundColor Red; exit 1 }
+if (Test-Path $puiModelPolicy) { Write-Host "  model-policy configuration valid: $puiModelPolicy" }
+else { Write-Host "  model-policy configuration not configured (unrestricted)" }
 Assert-NoInjectedFailure "extension-replacement"
 
 # 6. refresh model catalogs
@@ -703,6 +813,51 @@ if ($skillLoaderGuardExit -eq 75 -or $skillLoaderGuardExit -eq 76) {
   $skillLoaderSnapshotCommitted = $true
 }
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionCommunicationExtension spawn-guard $sessionCommunicationSnapshot $puiVersion $ScriptDir 2>&1 | Out-Null; $sessionCommunicationGuardExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($sessionCommunicationGuardExit -eq 75 -or $sessionCommunicationGuardExit -eq 76) {
+  $sessionCommunicationSnapshotCommitted = $true
+  Remove-Item $sessionCommunicationSnapshot -Recurse -Force
+  $sessionCommunicationSnapshot = $null
+} elseif ($sessionCommunicationGuardExit -ne 0) {
+  throw "Could not start the outer-transaction session communication rollback guard"
+} else {
+  $sessionCommunicationGuardReady = Join-Path $sessionCommunicationSnapshot "guard-ready"
+  for ($guardWait = 0; $guardWait -lt 50 -and -not (Test-Path $sessionCommunicationGuardReady); $guardWait += 1) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path $sessionCommunicationGuardReady)) { throw "Session communication rollback guard did not become ready" }
+  $sessionCommunicationSnapshotCommitted = $true
+}
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $modelCatalogExtension spawn-guard $modelCatalogSnapshot $puiVersion $ScriptDir 2>&1 | Out-Null; $modelCatalogGuardExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($modelCatalogGuardExit -eq 75 -or $modelCatalogGuardExit -eq 76) {
+  $modelCatalogSnapshotCommitted = $true
+  Remove-Item $modelCatalogSnapshot -Recurse -Force
+  $modelCatalogSnapshot = $null
+} elseif ($modelCatalogGuardExit -ne 0) {
+  throw "Could not start the outer-transaction model catalog rollback guard"
+} else {
+  $modelCatalogGuardReady = Join-Path $modelCatalogSnapshot "guard-ready"
+  for ($guardWait = 0; $guardWait -lt 50 -and -not (Test-Path $modelCatalogGuardReady); $guardWait += 1) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path $modelCatalogGuardReady)) { throw "Model catalog rollback guard did not become ready" }
+  $modelCatalogSnapshotCommitted = $true
+}
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $modelPolicyExtension spawn-guard $modelPolicySnapshot $puiVersion $ScriptDir 2>&1 | Out-Null; $modelPolicyGuardExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($modelPolicyGuardExit -eq 75 -or $modelPolicyGuardExit -eq 76) {
+  $modelPolicySnapshotCommitted = $true
+  Remove-Item $modelPolicySnapshot -Recurse -Force
+  $modelPolicySnapshot = $null
+} elseif ($modelPolicyGuardExit -ne 0) {
+  throw "Could not start the outer-transaction model policy rollback guard"
+} else {
+  $modelPolicyGuardReady = Join-Path $modelPolicySnapshot "guard-ready"
+  for ($guardWait = 0; $guardWait -lt 50 -and -not (Test-Path $modelPolicyGuardReady); $guardWait += 1) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path $modelPolicyGuardReady)) { throw "Model policy rollback guard did not become ready" }
+  $modelPolicySnapshotCommitted = $true
+}
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $sessionTitleExtension spawn-guard $sessionTitleSnapshot $puiVersion $ScriptDir 2>&1 | Out-Null; $sessionTitleGuardExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
 if ($sessionTitleGuardExit -eq 75 -or $sessionTitleGuardExit -eq 76) {
@@ -733,8 +888,59 @@ if ($reasoningGuardExit -eq 75 -or $reasoningGuardExit -eq 76) {
   $reasoningPatchCommitted = $true
 }
 
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionCommunicationPatchSnapshotScript spawn-guard $sessionCommunicationPatchSnapshot $puiVersion $reasoningPiWebRoot 2>&1 | Out-Null; $sessionCommunicationPatchGuardExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($sessionCommunicationPatchGuardExit -eq 75 -or $sessionCommunicationPatchGuardExit -eq 76) {
+  $sessionCommunicationPatchCommitted = $true
+  Remove-Item $sessionCommunicationPatchSnapshot -Recurse -Force -ErrorAction SilentlyContinue
+  $sessionCommunicationPatchSnapshot = $null
+} elseif ($sessionCommunicationPatchGuardExit -ne 0) {
+  throw "Could not start the outer-transaction Pi Web session communication rollback guard"
+} else {
+  $sessionCommunicationPatchGuardReady = Join-Path $sessionCommunicationPatchSnapshot "guard-ready"
+  for ($guardWait = 0; $guardWait -lt 50 -and -not (Test-Path $sessionCommunicationPatchGuardReady); $guardWait += 1) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path $sessionCommunicationPatchGuardReady)) { throw "Pi Web session communication rollback guard did not become ready" }
+  $sessionCommunicationPatchCommitted = $true
+}
 Write-Host "`nUpdate complete: all doctor checks passed." -ForegroundColor Green
 } finally {
+  if ($sessionCommunicationPatchSnapshot -and -not $sessionCommunicationPatchCommitted) {
+    $sessionCommunicationPatchSnapshotResolved = $false
+    $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $sessionCommunicationPatchSnapshotScript restore-snapshot $sessionCommunicationPatchSnapshot $reasoningPiWebRoot 2>&1 | Out-Null; $sessionCommunicationPatchRestoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($sessionCommunicationPatchRestoreExit -eq 0) { $sessionCommunicationPatchSnapshotResolved = $true }
+    else { Write-Host "  FAILED to restore Pi Web session communication artifacts; recovery snapshot retained at $sessionCommunicationPatchSnapshot" -ForegroundColor Red }
+    if ($sessionCommunicationPatchSnapshotResolved) { Remove-Item $sessionCommunicationPatchSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  if ($sessionCommunicationSnapshot -and -not $sessionCommunicationSnapshotCommitted) {
+    $sessionCommunicationSnapshotResolved = $false
+    $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $sessionCommunicationExtension restore-snapshot $sessionCommunicationSnapshot $ScriptDir 2>&1 | Out-Null; $sessionCommunicationRestoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($sessionCommunicationRestoreExit -eq 0) { $sessionCommunicationSnapshotResolved = $true }
+    else { Write-Host "  FAILED to restore PUI session communication extension; recovery snapshot retained at $sessionCommunicationSnapshot" -ForegroundColor Red }
+    if ($sessionCommunicationSnapshotResolved) { Remove-Item $sessionCommunicationSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  if ($modelCatalogSnapshot -and -not $modelCatalogSnapshotCommitted) {
+    $modelCatalogSnapshotResolved = $false
+    $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $modelCatalogExtension restore-snapshot $modelCatalogSnapshot $ScriptDir 2>&1 | Out-Null; $modelCatalogRestoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($modelCatalogRestoreExit -eq 0) { $modelCatalogSnapshotResolved = $true }
+    else { Write-Host "  FAILED to restore PUI model catalog extension; recovery snapshot retained at $modelCatalogSnapshot" -ForegroundColor Red }
+    if ($modelCatalogSnapshotResolved) { Remove-Item $modelCatalogSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  if ($modelPolicySnapshot -and -not $modelPolicySnapshotCommitted) {
+    $modelPolicySnapshotResolved = $false
+    $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node $modelPolicyExtension restore-snapshot $modelPolicySnapshot $ScriptDir 2>&1 | Out-Null; $modelPolicyRestoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($modelPolicyRestoreExit -eq 0) { $modelPolicySnapshotResolved = $true }
+    else { Write-Host "  FAILED to restore PUI model policy extension; recovery snapshot retained at $modelPolicySnapshot" -ForegroundColor Red }
+    if ($modelPolicySnapshotResolved) { Remove-Item $modelPolicySnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
   if ($sessionTitleSnapshot -and -not $sessionTitleSnapshotCommitted) {
     $sessionTitleSnapshotResolved = $false
     $previousPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"

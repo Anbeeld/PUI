@@ -11,6 +11,17 @@ export interface SessionTitleConfig {
 
 type ModelRegistryLike = Pick<ExtensionContext["modelRegistry"], "complete" | "find" | "getAll" | "getAvailable">;
 type SessionTitlePi = Pick<ExtensionAPI, "getSessionName" | "on" | "setSessionName">;
+interface SharedModelResolver {
+  version: 1;
+  resolve(selector: string, models: readonly Model<any>[]): { status: string; model?: Model<any> };
+  getSupportedThinkingLevels(model: Model<any>): string[];
+}
+const MODEL_RESOLVER_SYMBOL = Symbol.for("pui.model-resolver.v1");
+
+function sharedModelResolver(): SharedModelResolver | undefined {
+  const resolver = (globalThis as Record<symbol, unknown>)[MODEL_RESOLVER_SYMBOL] as SharedModelResolver | undefined;
+  return resolver?.version === 1 ? resolver : undefined;
+}
 
 const MAX_INPUT_CODE_POINTS = 600;
 const TITLE_MAX_CODE_POINTS = 80;
@@ -55,36 +66,13 @@ export function loadConfig(configPath: string): SessionTitleConfig | undefined {
   }
 }
 
-/** Match the exact-then-fuzzy resolver used by PUI's pi-subagents integration. */
+/** Resolve through the versioned PUI model service installed by pui-model-catalog. */
 export function resolveModel(selector: string, registry: ModelRegistryLike): Model<any> | undefined {
-  const available = registry.getAvailable?.() ?? registry.getAll();
-  const slash = selector.indexOf("/");
-  if (slash !== -1) {
-    const exact = available.find((candidate) =>
-      `${candidate.provider}/${candidate.id}`.toLowerCase() === selector.toLowerCase());
-    if (exact) return registry.find(exact.provider, exact.id) ?? exact;
-  }
-
-  const query = selector.toLowerCase();
-  let best: Model<any> | undefined;
-  let bestScore = 0;
-  for (const candidate of available) {
-    const id = candidate.id.toLowerCase();
-    const name = candidate.name.toLowerCase();
-    const full = `${candidate.provider}/${candidate.id}`.toLowerCase();
-    let score = 0;
-    if (id === query || full === query) score = 100;
-    else if (id.includes(query) || full.includes(query)) score = 60 + (query.length / id.length) * 30;
-    else if (name.includes(query)) score = 40 + (query.length / name.length) * 20;
-    else if (query.split(/[\s\-/]+/).every((part) =>
-      id.includes(part) || name.includes(part) || candidate.provider.toLowerCase().includes(part))) score = 20;
-    if (score > bestScore) {
-      best = candidate;
-      bestScore = score;
-    }
-  }
-  if (!best || bestScore < 20) return undefined;
-  return registry.find(best.provider, best.id) ?? best;
+  const resolver = sharedModelResolver();
+  if (!resolver) return undefined;
+  const resolution = resolver.resolve(selector, registry.getAvailable?.() ?? registry.getAll());
+  if (resolution.status !== "resolved" || !resolution.model) return undefined;
+  return registry.find(resolution.model.provider, resolution.model.id) ?? resolution.model;
 }
 
 function clampCodePoints(value: string, maximum: number): string {
@@ -169,17 +157,10 @@ function candidateModels(config: SessionTitleConfig, active: Model<any>, registr
 }
 
 export function reasoningEffortFor(model: Model<any>): TitleReasoningEffort | undefined {
-  const levelMap = model.thinkingLevelMap;
-  if (levelMap?.off !== null) return "none";
-  for (const level of REASONING_LEVELS) {
-    const mapped = levelMap?.[level];
-    if (mapped === null) continue;
-    // Pi treats xhigh/max as opt-in; the four standard non-off levels are
-    // supported unless the model explicitly maps them to null.
-    if ((level === "xhigh" || level === "max") && mapped === undefined) continue;
-    return level;
-  }
-  return undefined;
+  const levels = sharedModelResolver()?.getSupportedThinkingLevels(model);
+  if (!levels) return undefined;
+  if (levels.includes("off")) return "none";
+  return REASONING_LEVELS.find((level) => levels.includes(level));
 }
 
 export function extractMarkedTitle(output: string): string | undefined {

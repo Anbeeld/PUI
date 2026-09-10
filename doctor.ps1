@@ -80,12 +80,18 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $reasoningPatchScript verify $ScriptDir $piWebRoot $standalonePiRoot 2>&1 | Out-Null; $reasoningPatchExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
 Status "reasoning-summary display patch" $(if ($reasoningPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($reasoningPatchExit -eq 0) { "Pi Web and standalone Pi" } else { "missing or drifted" })
+$sessionCommunicationPatch = Join-Path $ScriptDir "lib\pui-session-communication-patch.js"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionCommunicationPatch verify $ScriptDir $piWebRoot 2>&1 | Out-Null; $sessionCommunicationPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+Status "session communication broker" $(if ($sessionCommunicationPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($sessionCommunicationPatchExit -eq 0) { "Pi Web-only broker v1" } else { "missing or drifted" })
 
 # Pi package presence
 $piAgentDir = Expand-Path $Stack.configPaths.piAgentDir
 $piSettings = Expand-Path $Stack.configPaths.piSettings
 $piWebAccess = Expand-Path $Stack.configPaths.piWebAccess
 $mcpShared = Expand-Path $Stack.configPaths.mcpShared
+$puiModelPolicy = Expand-Path $Stack.configPaths.puiModelPolicy
 
 try {
   $piList = & pi list 2>&1
@@ -206,6 +212,16 @@ try { & node $Lib "validate-reasoning-summary-modes" $puiReasoningSummaries 2>&1
 Status "reasoning-summary modes" $(if ($reasoningSummaryConfigExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($reasoningSummaryConfigExit -eq 0) { $puiReasoningSummaries } else { "missing or invalid: $puiReasoningSummaries" })
 & node (Join-Path $ScriptDir "lib\pui-session-title-extension.js") verify $ScriptDir 2>$null | Out-Null
 Status "PUI session titles" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "automatic title extension"
+& node (Join-Path $ScriptDir "lib\pui-session-communication-extension.js") verify $ScriptDir 2>$null | Out-Null
+Status "PUI session communication" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "five Pi Web peer-session tools"
+& node (Join-Path $ScriptDir "lib\pui-model-catalog-extension.js") verify $ScriptDir 2>$null | Out-Null
+Status "PUI model catalog" $(if ($LASTEXITCODE -eq 0) { "PASS" } else { "FAIL" }) "model_list tool"
+& node (Join-Path $ScriptDir "lib\pui-model-policy-extension.js") verify $ScriptDir 2>$null | Out-Null
+$modelPolicyExtensionExit = $LASTEXITCODE
+Status "PUI model policy" $(if ($modelPolicyExtensionExit -eq 0) { "PASS" } else { "FAIL" }) "model policy extension"
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $Lib "validate-model-policy" $puiModelPolicy 2>&1 | Out-Null; $modelPolicyConfigExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+Status "model-policy configuration" $(if ($modelPolicyConfigExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($modelPolicyConfigExit -ne 0) { "invalid: $puiModelPolicy" } elseif (Test-Path $puiModelPolicy) { $puiModelPolicy } else { "not configured (unrestricted)" })
 $puiSessionTitles = Expand-Path $Stack.configPaths.puiSessionTitles
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $Lib "validate-session-titles" $puiSessionTitles 2>&1 | Out-Null; $sessionTitleConfigExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }

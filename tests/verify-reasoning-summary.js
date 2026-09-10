@@ -180,8 +180,13 @@ async function main() {
     assert.match(clientText, /points:"2 3\.5 5 6\.5 8 3\.5"/, "subagent notification header chevron is missing");
     assert.match(clientText, /marginLeft:[A-Za-z_$][\w$]*\?0:"auto"/, "subagent notification timestamp is not grouped with its chevron");
     assert.match(clientText, /borderBottom:"subagent-notification"===[A-Za-z_$][\w$]*\.customType&&!/, "collapsed subagent notification is not a single header row");
+    assert.match(clientText, /data-pui-copy-id-label/, "session toolbar Copy ID label is missing");
+    assert.match(clientText, /width:[A-Za-z_$][\w$]*\?36:88/, "session toolbar Copy ID button is not fixed-width");
+    assert.match(clientText, /textContent\s*=\s*"Copied!"[\s\S]*?schedule\([\s\S]*?,\s*3000\)/, "Copy ID success feedback does not last three seconds");
+    assert.match(clientText, /puiCopySessionId\([^,]+,[A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\.id\)/, "Copy ID does not use the active session identity");
     assert.match(clientText, /\("Goal complete"===[A-Za-z_$][\w$]*\.customType\|\|[A-Za-z_$][\w$]*\)\?/, "Goal completion is not forced expanded during live rendering");
-    assert.match(clientText, /className:"Goal complete"===[A-Za-z_$][\w$]*\.customType\?"markdown-compaction-message":"markdown-custom-message"/, "Goal completion does not reuse compaction typography");
+    assert.match(clientText, /className:\("Goal complete"===[A-Za-z_$][\w$]*\.customType\|\|"pui-peer-message"===[A-Za-z_$][\w$]*\.customType\)\?"markdown-compaction-message":"markdown-custom-message"/, "Goal completion and peer messages do not reuse compaction typography");
+    assert.match(clientText, /"pui-peer-message"===[A-Za-z_$][\w$]*\.customType\?puiPeerMessageDisplayContent\([A-Za-z_$][\w$]*\.content\):[A-Za-z_$][\w$]*\.content/, "Peer-message display content is not decoded");
     assert.match(clientText, /case"connected":[^;]+isStreaming&&\([^;]+\.puiCustomMessageReconcile=!0/, "streaming reconnect does not schedule custom-prompt reconciliation");
     assert.match(clientText, /\.puiCustomMessageReconcile&&\([^;]+\.puiCustomMessageReconcile=!1,[A-Za-z_$][\w$]*\.current&&void [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\.current\)/, "first assistant snapshot does not recover persisted custom prompts");
     const clientVersion = crypto.createHash("sha256").update(clientText).digest("hex").slice(0, 12);

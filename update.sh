@@ -16,13 +16,15 @@ pui_fail() { [ "${PUI_FAIL_AT:-}" = "$1" ] && { echo "Injected update failure at
 # npm's bulk-advisory audit POST stalls indefinitely on pi's large package tree;
 # every npm child (including the one inside `pi install`) inherits this setting.
 export npm_config_audit=false
+export npm_config_fund=false
 
 PI_TIMEOUT_SECONDS=120
 # Run a network-facing `pi` command with a hard watchdog. `pi` spawns npm
 # children that can stall indefinitely on the registry or on file locks; the
 # watchdog kills the whole pi process group on timeout so no orphan survives.
 run_pi_bounded() {
-  local tmp pid watchdog code=0
+  local tmp pid watchdog code=0 quiet_success=0
+  if [ "${1:-}" = "--quiet-success" ]; then quiet_success=1; shift; fi
   tmp="$(mktemp)"
   set -m
   pi "$@" >"$tmp" 2>&1 &
@@ -41,7 +43,9 @@ run_pi_bounded() {
   if wait "$pid"; then code=0; else code=$?; fi
   kill "$watchdog" 2>/dev/null || true
   wait "$watchdog" 2>/dev/null || true
-  sed 's/^/    /' "$tmp"
+  if [ "$code" -ne 0 ] || [ "$quiet_success" -eq 0 ]; then
+    sed 's/^/    /' "$tmp"
+  fi
   rm -f -- "$tmp"
   if [ "$code" -eq 143 ] || [ "$code" -eq 137 ]; then
     echo "  pi $* timed out after ${PI_TIMEOUT_SECONDS}s" >&2
@@ -83,6 +87,7 @@ PI_GOAL="$(expand_path "$(jget configPaths.piGoal)")"
 PUI_SUBAGENTS_CONFIG="$(expand_path "$(jget configPaths.puiSubagents)")"
 PUI_REASONING_SUMMARIES="$(expand_path "$(jget configPaths.puiReasoningSummaries)")"
 PUI_SESSION_TITLES="$(expand_path "$(jget configPaths.puiSessionTitles)")"
+PUI_MODEL_POLICY_CONFIG="$(expand_path "$(jget configPaths.puiModelPolicy)")"
 ASK_USER_CONFIG="$(node "$LIB" resolve-config-path "$(jget configPaths.askUserQuestion)" "$(jget askUserQuestion.configRelativePath)")" || { echo "  ask-user-question config path resolution failed" >&2; exit 1; }
 PIWEB_URL="$(jget piWeb.url)"
 
@@ -104,30 +109,62 @@ SKILL_LOADER_SNAPSHOT_COMMITTED=0
 SESSION_TITLE_EXTENSION="$SCRIPT_DIR/lib/pui-session-title-extension.js"
 SESSION_TITLE_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-session-title.XXXXXX")"
 SESSION_TITLE_SNAPSHOT_COMMITTED=0
+SESSION_COMMUNICATION_EXTENSION="$SCRIPT_DIR/lib/pui-session-communication-extension.js"
+SESSION_COMMUNICATION_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-session-communication.XXXXXX")"
+SESSION_COMMUNICATION_SNAPSHOT_COMMITTED=0
+MODEL_CATALOG_EXTENSION="$SCRIPT_DIR/lib/pui-model-catalog-extension.js"
+MODEL_CATALOG_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-model-catalog.XXXXXX")"
+MODEL_CATALOG_SNAPSHOT_COMMITTED=0
+MODEL_POLICY_EXTENSION="$SCRIPT_DIR/lib/pui-model-policy-extension.js"
+MODEL_POLICY_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-model-policy.XXXXXX")"
+MODEL_POLICY_SNAPSHOT_COMMITTED=0
 REASONING_PIWEB_ROOT="${GLOBAL_ROOT}/@agegr/pi-web"
+SESSION_COMMUNICATION_PATCH="$SCRIPT_DIR/lib/pui-session-communication-patch.js"
+SESSION_COMMUNICATION_PATCH_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/pui-session-broker.XXXXXX")"
+SESSION_COMMUNICATION_PATCH_COMMITTED=0
 REASONING_STANDALONE_ROOT="${GLOBAL_ROOT}/@earendil-works/pi-coding-agent"
 if ! node "$SKILL_LOADER_EXTENSION" snapshot "$SKILL_LOADER_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT" "$SESSION_COMMUNICATION_SNAPSHOT" "$MODEL_CATALOG_SNAPSHOT" "$MODEL_POLICY_SNAPSHOT" "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"
   echo "  could not snapshot PUI skill-loader extension; update aborted" >&2
   exit 1
 fi
 if ! node "$SESSION_TITLE_EXTENSION" snapshot "$SESSION_TITLE_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT" "$SESSION_COMMUNICATION_SNAPSHOT" "$MODEL_CATALOG_SNAPSHOT" "$MODEL_POLICY_SNAPSHOT" "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"
   echo "  could not snapshot PUI session-title extension; update aborted" >&2
   exit 1
 fi
+if ! node "$SESSION_COMMUNICATION_EXTENSION" snapshot "$SESSION_COMMUNICATION_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT" "$SESSION_COMMUNICATION_SNAPSHOT" "$MODEL_CATALOG_SNAPSHOT" "$MODEL_POLICY_SNAPSHOT" "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"
+  echo "  could not snapshot PUI session communication extension; update aborted" >&2
+  exit 1
+fi
+if ! node "$MODEL_CATALOG_EXTENSION" snapshot "$MODEL_CATALOG_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT" "$SESSION_COMMUNICATION_SNAPSHOT" "$MODEL_CATALOG_SNAPSHOT" "$MODEL_POLICY_SNAPSHOT" "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"
+  echo "  could not snapshot PUI model catalog extension; update aborted" >&2
+  exit 1
+fi
+if ! node "$MODEL_POLICY_EXTENSION" snapshot "$MODEL_POLICY_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT" "$SESSION_COMMUNICATION_SNAPSHOT" "$MODEL_CATALOG_SNAPSHOT" "$MODEL_POLICY_SNAPSHOT" "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"
+  echo "  could not snapshot PUI model policy extension; update aborted" >&2
+  exit 1
+fi
 if ! node "$BACKGROUND_PATCH" snapshot "$BACKGROUND_SNAPSHOT" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT" "$SESSION_COMMUNICATION_SNAPSHOT" "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" "$MODEL_CATALOG_SNAPSHOT" "$MODEL_POLICY_SNAPSHOT"
   echo "  could not snapshot pi-background-tasks compatibility artifacts; update aborted" >&2
   exit 1
 fi
 if ! node "$SUBAGENTS_PATCH" snapshot "$SUBAGENTS_SNAPSHOT" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT" "$SESSION_COMMUNICATION_SNAPSHOT" "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" "$MODEL_CATALOG_SNAPSHOT" "$MODEL_POLICY_SNAPSHOT"
   echo "  could not snapshot pi-subagents prompt artifacts; update aborted" >&2
   exit 1
 fi
+if ! node "$SESSION_COMMUNICATION_PATCH" snapshot "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" "$REASONING_PIWEB_ROOT" >/dev/null 2>&1; then
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT" "$SESSION_COMMUNICATION_SNAPSHOT" "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" "$MODEL_CATALOG_SNAPSHOT" "$MODEL_POLICY_SNAPSHOT"
+  echo "  could not snapshot Pi Web session communication artifacts; update aborted" >&2
+  exit 1
+fi
 if ! node "$REASONING_PATCH" snapshot "$REASONING_SNAPSHOT" "$SCRIPT_DIR" "$REASONING_PIWEB_ROOT" "$REASONING_STANDALONE_ROOT" >/dev/null 2>&1; then
-  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT"
+  rm -rf -- "$BACKGROUND_SNAPSHOT" "$SUBAGENTS_SNAPSHOT" "$REASONING_SNAPSHOT" "$SKILL_LOADER_SNAPSHOT" "$SESSION_TITLE_SNAPSHOT" "$SESSION_COMMUNICATION_SNAPSHOT" "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" "$MODEL_CATALOG_SNAPSHOT" "$MODEL_POLICY_SNAPSHOT"
   echo "  could not snapshot Responses reasoning-summary artifacts; update aborted" >&2
   exit 1
 fi
@@ -154,6 +191,16 @@ restore_background_patch_on_exit() {
     fi
   fi
   if [ "$subagents_resolved" -eq 1 ]; then rm -rf -- "$SUBAGENTS_SNAPSHOT"; fi
+  session_patch_resolved=0
+  if [ "$SESSION_COMMUNICATION_PATCH_COMMITTED" -eq 0 ]; then
+    if node "$SESSION_COMMUNICATION_PATCH" restore-snapshot "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" "$REASONING_PIWEB_ROOT" >/dev/null 2>&1; then
+      session_patch_resolved=1
+    else
+      echo "  FAILED to restore Pi Web session communication artifacts; recovery snapshot retained at $SESSION_COMMUNICATION_PATCH_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  if [ "$session_patch_resolved" -eq 1 ]; then rm -rf -- "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"; fi
   reasoning_resolved=0
   if [ "$REASONING_PATCH_COMMITTED" -eq 0 ]; then
     if node "$REASONING_PATCH" restore-snapshot "$REASONING_SNAPSHOT" "$SCRIPT_DIR" "$REASONING_PIWEB_ROOT" "$REASONING_STANDALONE_ROOT" >/dev/null 2>&1; then
@@ -174,6 +221,36 @@ restore_background_patch_on_exit() {
     fi
   fi
   if [ "$skill_loader_resolved" -eq 1 ]; then rm -rf -- "$SKILL_LOADER_SNAPSHOT"; fi
+  session_communication_resolved=0
+  if [ "$SESSION_COMMUNICATION_SNAPSHOT_COMMITTED" -eq 0 ]; then
+    if node "$SESSION_COMMUNICATION_EXTENSION" restore-snapshot "$SESSION_COMMUNICATION_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+      session_communication_resolved=1
+    else
+      echo "  FAILED to restore PUI session communication extension; recovery snapshot retained at $SESSION_COMMUNICATION_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  if [ "$session_communication_resolved" -eq 1 ]; then rm -rf -- "$SESSION_COMMUNICATION_SNAPSHOT"; fi
+  model_catalog_resolved=0
+  if [ "$MODEL_CATALOG_SNAPSHOT_COMMITTED" -eq 0 ]; then
+    if node "$MODEL_CATALOG_EXTENSION" restore-snapshot "$MODEL_CATALOG_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+      model_catalog_resolved=1
+    else
+      echo "  FAILED to restore PUI model catalog extension; recovery snapshot retained at $MODEL_CATALOG_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  if [ "$model_catalog_resolved" -eq 1 ]; then rm -rf -- "$MODEL_CATALOG_SNAPSHOT"; fi
+  model_policy_resolved=0
+  if [ "$MODEL_POLICY_SNAPSHOT_COMMITTED" -eq 0 ]; then
+    if node "$MODEL_POLICY_EXTENSION" restore-snapshot "$MODEL_POLICY_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
+      model_policy_resolved=1
+    else
+      echo "  FAILED to restore PUI model policy extension; recovery snapshot retained at $MODEL_POLICY_SNAPSHOT" >&2
+      status=1
+    fi
+  fi
+  if [ "$model_policy_resolved" -eq 1 ]; then rm -rf -- "$MODEL_POLICY_SNAPSHOT"; fi
   session_title_resolved=0
   if [ "$SESSION_TITLE_SNAPSHOT_COMMITTED" -eq 0 ]; then
     if node "$SESSION_TITLE_EXTENSION" restore-snapshot "$SESSION_TITLE_SNAPSHOT" "$SCRIPT_DIR" >/dev/null 2>&1; then
@@ -188,7 +265,7 @@ restore_background_patch_on_exit() {
 }
 trap restore_background_patch_on_exit EXIT
 
-for f in "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_SETTINGS" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG" "$PUI_REASONING_SUMMARIES" "$PUI_SESSION_TITLES"; do
+for f in "$PI_WEB_ACCESS" "$MCP_SHARED" "$PI_SETTINGS" "$PI_FFF_FEATURES" "$PI_GOAL" "$ASK_USER_CONFIG" "$PUI_SUBAGENTS_CONFIG" "$PUI_REASONING_SUMMARIES" "$PUI_SESSION_TITLES" "$PUI_MODEL_POLICY_CONFIG"; do
   if [ -f "$f" ]; then
     BK="$(node "$LIB" backup "$f" | tail -1)" || { echo "  backup failed: $f" >&2; exit 1; }
     echo "  backed up: $BK"
@@ -201,6 +278,10 @@ if [ -f "$PUI_REASONING_SUMMARIES" ] && ! node "$LIB" validate-reasoning-summary
 fi
 if [ -f "$PUI_SESSION_TITLES" ] && ! node "$LIB" validate-session-titles "$PUI_SESSION_TITLES" >/dev/null 2>&1; then
   echo "  invalid session-title configuration backed up and left unchanged: $PUI_SESSION_TITLES" >&2
+  exit 1
+fi
+if [ -f "$PUI_MODEL_POLICY_CONFIG" ] && ! node "$LIB" validate-model-policy "$PUI_MODEL_POLICY_CONFIG" >/dev/null 2>&1; then
+  echo "  invalid model-policy configuration backed up and left unchanged: $PUI_MODEL_POLICY_CONFIG" >&2
   exit 1
 fi
 
@@ -331,6 +412,12 @@ if ! node "$SCRIPT_DIR/lib/pui-reasoning-summary-patch.js" apply "$SCRIPT_DIR" "
 fi
 pui_fail reasoning-summary-patch
 echo "  Responses reasoning-summary display patch applied to Pi Web and standalone Pi"
+if ! node "$SCRIPT_DIR/lib/pui-session-communication-patch.js" apply "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" >/dev/null; then
+  echo "  Pi Web session communication broker patch could not be applied; update aborted" >&2
+  exit 1
+fi
+pui_fail session-communication-patch
+echo "  Pi Web session communication broker patch applied"
 if ! node "$SCRIPT_DIR/lib/pui-web-integration.js" finalize "$SCRIPT_DIR" "$PIWEB_PKG_ROOT" >/dev/null; then
   echo "  Pi Web update integration finalization failed; update aborted" >&2
   exit 1
@@ -348,7 +435,8 @@ for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.retired
 done
 for spec in $(node -e 'const s=require(process.argv[1]);for(const p of s.piPackages)console.log(p)' "$STACK"); do
   echo "  reconciling managed extension $spec..."
-  if ! run_pi_bounded install "$spec"; then echo "  failed to install $spec" >&2; exit 1; fi
+  if ! run_pi_bounded --quiet-success install "$spec"; then echo "  failed to install $spec" >&2; exit 1; fi
+  echo "    reconciled managed extension $spec"
   node "$SCRIPT_DIR/lib/pui-config.js" set-package "$PI_SETTINGS" "$spec" >/dev/null || { echo "  failed to set exact managed pin for $spec" >&2; exit 1; }
 done
 pui_fail package-reconciliation
@@ -421,10 +509,22 @@ MCP_FOOTER_CFG="$(node -e 'process.stdout.write(JSON.stringify({settings:{mcpFoo
 node "$LIB" merge-object "$MCP_SHARED" "$MCP_FOOTER_CFG" >/dev/null || { echo "  MCP footer status reconciliation failed" >&2; exit 1; }
 echo "  MCP footer status configured (mcpFooterStatus=$MCP_FOOTER_STATUS)"
 pui_fail config-migration
+if ! node "$LIB" validate-model-policy "$PUI_MODEL_POLICY_CONFIG" >/dev/null; then
+  echo "  model-policy configuration is invalid and was not overwritten" >&2
+  exit 1
+fi
+if [ -f "$PUI_MODEL_POLICY_CONFIG" ]; then
+  echo "  model-policy configuration valid: $PUI_MODEL_POLICY_CONFIG"
+else
+  echo "  model-policy configuration not configured (unrestricted)"
+fi
 node "$SCRIPT_DIR/lib/pui-update-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI update extension replacement failed" >&2; exit 1; }
 node "$SCRIPT_DIR/lib/pui-skill-loader-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI skill loader extension replacement failed" >&2; exit 1; }
 node "$SCRIPT_DIR/lib/pui-reasoning-summary-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI reasoning-summary extension replacement failed" >&2; exit 1; }
 node "$SCRIPT_DIR/lib/pui-session-title-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI session-title extension replacement failed" >&2; exit 1; }
+node "$SCRIPT_DIR/lib/pui-session-communication-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI session communication extension replacement failed" >&2; exit 1; }
+node "$SCRIPT_DIR/lib/pui-model-catalog-extension.js" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI model catalog extension replacement failed" >&2; exit 1; }
+node "$MODEL_POLICY_EXTENSION" install "$SCRIPT_DIR" >/dev/null || { echo "  PUI model policy extension replacement failed" >&2; exit 1; }
 pui_fail extension-replacement
 echo "  refreshing model catalogs..."
 if ! run_pi_bounded update --models; then echo "  model catalog refresh failed" >&2; exit 1; fi
@@ -596,6 +696,56 @@ else
   SKILL_LOADER_SNAPSHOT_COMMITTED=1
 fi
 set +e
+node "$SESSION_COMMUNICATION_EXTENSION" spawn-guard "$SESSION_COMMUNICATION_SNAPSHOT" "$PUI_VERSION" "$SCRIPT_DIR" >/dev/null
+SESSION_COMMUNICATION_GUARD_EXIT=$?
+set -e
+if [ "$SESSION_COMMUNICATION_GUARD_EXIT" -eq 75 ] || [ "$SESSION_COMMUNICATION_GUARD_EXIT" -eq 76 ]; then
+  SESSION_COMMUNICATION_SNAPSHOT_COMMITTED=1
+  rm -rf -- "$SESSION_COMMUNICATION_SNAPSHOT"
+elif [ "$SESSION_COMMUNICATION_GUARD_EXIT" -ne 0 ]; then
+  echo "  could not start the outer-transaction session communication rollback guard" >&2
+  exit 1
+else
+  SESSION_COMMUNICATION_GUARD_READY="$SESSION_COMMUNICATION_SNAPSHOT/guard-ready"
+  for _ in $(seq 1 50); do
+    [ -f "$SESSION_COMMUNICATION_GUARD_READY" ] && break
+    sleep 0.1
+  done
+  [ -f "$SESSION_COMMUNICATION_GUARD_READY" ] || { echo "  session communication rollback guard did not become ready" >&2; exit 1; }
+  SESSION_COMMUNICATION_SNAPSHOT_COMMITTED=1
+fi
+set +e
+node "$MODEL_CATALOG_EXTENSION" spawn-guard "$MODEL_CATALOG_SNAPSHOT" "$PUI_VERSION" "$SCRIPT_DIR" >/dev/null
+MODEL_CATALOG_GUARD_EXIT=$?
+set -e
+if [ "$MODEL_CATALOG_GUARD_EXIT" -eq 75 ] || [ "$MODEL_CATALOG_GUARD_EXIT" -eq 76 ]; then
+  MODEL_CATALOG_SNAPSHOT_COMMITTED=1
+  rm -rf -- "$MODEL_CATALOG_SNAPSHOT"
+elif [ "$MODEL_CATALOG_GUARD_EXIT" -ne 0 ]; then
+  echo "  could not start the outer-transaction model catalog rollback guard" >&2
+  exit 1
+else
+  for _ in $(seq 1 50); do [ -f "$MODEL_CATALOG_SNAPSHOT/guard-ready" ] && break; sleep 0.1; done
+  if [ ! -f "$MODEL_CATALOG_SNAPSHOT/guard-ready" ]; then echo "  model catalog rollback guard did not become ready" >&2; exit 1; fi
+  MODEL_CATALOG_SNAPSHOT_COMMITTED=1
+fi
+set +e
+node "$MODEL_POLICY_EXTENSION" spawn-guard "$MODEL_POLICY_SNAPSHOT" "$PUI_VERSION" "$SCRIPT_DIR" >/dev/null
+MODEL_POLICY_GUARD_EXIT=$?
+set -e
+if [ "$MODEL_POLICY_GUARD_EXIT" -eq 75 ] || [ "$MODEL_POLICY_GUARD_EXIT" -eq 76 ]; then
+  MODEL_POLICY_SNAPSHOT_COMMITTED=1
+  rm -rf -- "$MODEL_POLICY_SNAPSHOT"
+elif [ "$MODEL_POLICY_GUARD_EXIT" -ne 0 ]; then
+  echo "  could not start the outer-transaction model policy rollback guard" >&2
+  exit 1
+else
+  MODEL_POLICY_GUARD_READY="$MODEL_POLICY_SNAPSHOT/guard-ready"
+  for _ in $(seq 1 50); do [ -f "$MODEL_POLICY_GUARD_READY" ] && break; sleep 0.1; done
+  [ -f "$MODEL_POLICY_GUARD_READY" ] || { echo "  model policy rollback guard did not become ready" >&2; exit 1; }
+  MODEL_POLICY_SNAPSHOT_COMMITTED=1
+fi
+set +e
 node "$SESSION_TITLE_EXTENSION" spawn-guard "$SESSION_TITLE_SNAPSHOT" "$PUI_VERSION" "$SCRIPT_DIR" >/dev/null
 SESSION_TITLE_GUARD_EXIT=$?
 set -e
@@ -634,5 +784,24 @@ else
   REASONING_PATCH_COMMITTED=1
 fi
 
+set +e
+node "$SESSION_COMMUNICATION_PATCH" spawn-guard "$SESSION_COMMUNICATION_PATCH_SNAPSHOT" "$PUI_VERSION" "$REASONING_PIWEB_ROOT" >/dev/null
+SESSION_COMMUNICATION_PATCH_GUARD_EXIT=$?
+set -e
+if [ "$SESSION_COMMUNICATION_PATCH_GUARD_EXIT" -eq 75 ] || [ "$SESSION_COMMUNICATION_PATCH_GUARD_EXIT" -eq 76 ]; then
+  SESSION_COMMUNICATION_PATCH_COMMITTED=1
+  rm -rf -- "$SESSION_COMMUNICATION_PATCH_SNAPSHOT"
+elif [ "$SESSION_COMMUNICATION_PATCH_GUARD_EXIT" -ne 0 ]; then
+  echo "  could not start the outer-transaction Pi Web session communication rollback guard" >&2
+  exit 1
+else
+  SESSION_COMMUNICATION_PATCH_GUARD_READY="$SESSION_COMMUNICATION_PATCH_SNAPSHOT/guard-ready"
+  for _ in $(seq 1 50); do
+    [ -f "$SESSION_COMMUNICATION_PATCH_GUARD_READY" ] && break
+    sleep 0.1
+  done
+  [ -f "$SESSION_COMMUNICATION_PATCH_GUARD_READY" ] || { echo "  Pi Web session communication rollback guard did not become ready" >&2; exit 1; }
+  SESSION_COMMUNICATION_PATCH_COMMITTED=1
+fi
 echo
 echo "Update complete: all doctor checks passed."

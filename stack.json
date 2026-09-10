@@ -70,7 +70,7 @@
   },
   "reasoningSummaryPatch": {
     "schemaVersion": 1,
-    "revision": 18,
+    "revision": 20,
     "piWebPackage": "@agegr/pi-web",
     "piWebVersion": "0.8.11",
     "codingAgentPackage": "@earendil-works/pi-coding-agent",
@@ -82,7 +82,7 @@
   },
   "subagentsPromptPatch": {
     "schemaVersion": 1,
-    "revision": 15,
+    "revision": 18,
     "packagePath": "node_modules/@gotgenes/pi-subagents",
     "files": [
       "src/tools/agent-tool.ts",
@@ -101,7 +101,8 @@
       "src/lifecycle/subagent-session.ts",
       "src/lifecycle/subagent-state.ts",
       "src/observation/renderer.ts",
-      "src/tools/get-result-report.ts"
+      "src/tools/get-result-report.ts",
+      "src/tools/steer-tool.ts"
     ],
     "backupSuffix": ".pui-original",
     "manifest": ".pui-subagents-prompt-manifest.json"
@@ -136,6 +137,47 @@
       "package.json"
     ],
     "manifest": "manifest.json"
+  },
+  "sessionCommunicationExtension": {
+    "schemaVersion": 1,
+    "target": "~/.pi/agent/extensions/pui-session-communication",
+    "files": [
+      "core.ts",
+      "index.ts",
+      "package.json"
+    ],
+    "manifest": "manifest.json"
+  },
+  "modelCatalogExtension": {
+    "schemaVersion": 1,
+    "target": "~/.pi/agent/extensions/pui-model-catalog",
+    "files": [
+      "core.ts",
+      "index.ts",
+      "package.json",
+      "resolver.ts"
+    ],
+    "manifest": "manifest.json"
+  },
+  "modelPolicyExtension": {
+    "schemaVersion": 1,
+    "target": "~/.pi/agent/extensions/pui-model-policy",
+    "files": [
+      "core.ts",
+      "index.ts",
+      "package.json"
+    ],
+    "manifest": "manifest.json"
+  },
+  "sessionCommunicationPatch": {
+    "schemaVersion": 1,
+    "revision": 1,
+    "piWebPackage": "@agegr/pi-web",
+    "piWebVersion": "0.8.11",
+    "chunk": ".next/server/chunks/6429.js",
+    "sidecar": ".next/server/pui-session-broker.cjs",
+    "backupSuffix": ".pui-session-original",
+    "manifest": ".next/server/.pui-session-communication.json"
   },
   "sessionTitles": {
     "schemaVersion": 1,
@@ -271,7 +313,8 @@
     "askUserQuestion": "~/.config/rpiv-ask-user-question/config.json",
     "puiSubagents": "~/.config/pui/subagents.json",
     "puiReasoningSummaries": "~/.config/pui/reasoning-summaries.json",
-    "puiSessionTitles": "~/.config/pui/session-titles.json"
+    "puiSessionTitles": "~/.config/pui/session-titles.json",
+    "puiModelPolicy": "~/.config/pui/model-policy.json"
   },
   "minimumNode": "22.19.0"
 }

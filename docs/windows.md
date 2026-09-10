@@ -23,6 +23,10 @@ Unless `-NoPwa` is used, PUI writes `%APPDATA%\Microsoft\Windows\Start Menu\Prog
 
 After installation, use the browser's install-app action at `http://127.0.0.1:30141`. The browser requires this manual confirmation.
 
+## Session collaboration
+
+Session collaboration is available only through Pi Web. The five tools—`session_list`, `session_get`, `session_send`, `session_start`, and `session_abort`—use the PUI-owned Pi Web 0.8.11 server patch and sidecar. Starts run in the background and queue a completion notification; stopped targets resume. Peer task input is attributed and untrusted, not user authority or approval. `session_get` returns `sessionLogPath`, the persisted JSONL session-log path, without reading the log into context. Model selectors may be exact or fuzzy; model and effort overrides are used only when explicitly requested, with effort rounded down to the nearest supported level. Unrestricted chaining or fan-out can grow without bound.
+
 ## Maintenance
 
 ```powershell

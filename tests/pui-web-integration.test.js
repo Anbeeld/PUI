@@ -362,8 +362,8 @@ function appHarness(fetchImpl) {
   return { body, findButton, findClose, findRestart, reloads: () => reloads };
 }
 
-async function settle() {
-  for (let index = 0; index < 8; index += 1) await new Promise((resolve) => setImmediate(resolve));
+async function settle(turns = 8) {
+  for (let index = 0; index < turns; index += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
 test("startup consumes a completed service restart and immediately checks for PUI updates", async () => {
@@ -507,6 +507,27 @@ test("restart flow shows progress on the card and reloads on completion", async 
   await settle();
   assert.match(harness.body.textContent, /Restarting Pi Web…/, "progress is visible while the restart runs");
   assert.equal(harness.reloads(), 1, "reload after success restores a fresh, active button");
+});
+
+test("restart flow reloads after another client consumes the completed restart status", async () => {
+  let clicked = false;
+  let restartingDelivered = false;
+  const harness = appHarness(async (_url, options = {}) => {
+    const method = options.method || "GET";
+    if (method === "PUT") { clicked = true; return response({ accepted: true }); }
+    if (!clicked) return response({ currentVersion: "1.1.0", updateAvailable: false });
+    if (!restartingDelivered) {
+      restartingDelivered = true;
+      return response({ phase: "restarting", result: null });
+    }
+    // A different tab can consume the one-shot completed status before this
+    // tab's next poll, leaving only an ordinary healthy discovery response.
+    return response({ currentVersion: "1.1.0", updateAvailable: false });
+  });
+  await settle();
+  await harness.findRestart().click();
+  await settle(100);
+  assert.equal(harness.reloads(), 1, "a healthy response after observed restart progress proves Pi Web returned");
 });
 
 test("restart flow reports failure and reactivates the button", async () => {

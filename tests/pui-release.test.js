@@ -15,8 +15,8 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.3.1");
-  assert.equal(release.stack.reasoningSummaryPatch.revision, 18, "v1.3.1 must keep live Goal complete messages expanded");
+  assert.equal(release.version, "1.3.2");
+  assert.equal(release.stack.reasoningSummaryPatch.revision, 20, "v1.3.2 must add Copy ID and peer-message display styling");
   assert.deepEqual(release.stack.skillLoaderExtension, {
     schemaVersion: 1,
     target: "~/.pi/agent/extensions/pui-skill-loader",
@@ -36,6 +36,36 @@ test("the repository release pins every managed direct component", () => {
     manifest: "manifest.json",
   });
   assert.deepEqual(release.stack.sessionTitles, { schemaVersion: 1, models: [] });
+  assert.deepEqual(release.stack.sessionCommunicationExtension, {
+    schemaVersion: 1,
+    target: "~/.pi/agent/extensions/pui-session-communication",
+    files: ["core.ts", "index.ts", "package.json"],
+    manifest: "manifest.json",
+  });
+  assert.deepEqual(release.stack.modelCatalogExtension, {
+    schemaVersion: 1,
+    target: "~/.pi/agent/extensions/pui-model-catalog",
+    files: ["core.ts", "index.ts", "package.json", "resolver.ts"],
+    manifest: "manifest.json",
+  });
+  assert.deepEqual(release.stack.modelPolicyExtension, {
+    schemaVersion: 1,
+    target: "~/.pi/agent/extensions/pui-model-policy",
+    files: ["core.ts", "index.ts", "package.json"],
+    manifest: "manifest.json",
+  });
+  assert.equal(Object.hasOwn(release.stack, "modelPolicy"), false, "optional model policy must not ship a generated config");
+  assert.equal(release.stack.configPaths.puiModelPolicy, "~/.config/pui/model-policy.json");
+  assert.deepEqual(release.stack.sessionCommunicationPatch, {
+    schemaVersion: 1,
+    revision: 1,
+    piWebPackage: "@agegr/pi-web",
+    piWebVersion: "0.8.11",
+    chunk: ".next/server/chunks/6429.js",
+    sidecar: ".next/server/pui-session-broker.cjs",
+    backupSuffix: ".pui-session-original",
+    manifest: ".next/server/.pui-session-communication.json",
+  });
   assert.deepEqual(release.stack.reasoningSummaries.modelModes, {
     "gpt-5.6-sol": "detailed",
     "gpt-5.6-terra": "detailed",
@@ -96,6 +126,21 @@ test("release validation rejects rolling managed versions", () => {
   const invalidTitlePath = loadRelease(repoRoot);
   invalidTitlePath.stack.configPaths.puiSessionTitles = "~/.pi/other.json";
   assert.match(validateRelease(invalidTitlePath).join("\n"), /puiSessionTitles/i);
+  const invalidCommunicationExtension = loadRelease(repoRoot);
+  invalidCommunicationExtension.stack.sessionCommunicationExtension.target = "~/.pi/agent/extensions/other";
+  assert.match(validateRelease(invalidCommunicationExtension).join("\n"), /sessionCommunicationExtension/i);
+  const invalidCommunicationPatch = loadRelease(repoRoot);
+  invalidCommunicationPatch.stack.sessionCommunicationPatch.piWebVersion = "0.0.0";
+  assert.match(validateRelease(invalidCommunicationPatch).join("\n"), /sessionCommunicationPatch/i);
+  const invalidModelCatalogExtension = loadRelease(repoRoot);
+  invalidModelCatalogExtension.stack.modelCatalogExtension.target = "~/.pi/agent/extensions/other";
+  assert.match(validateRelease(invalidModelCatalogExtension).join("\n"), /modelCatalogExtension/i);
+  const invalidModelPolicyExtension = loadRelease(repoRoot);
+  invalidModelPolicyExtension.stack.modelPolicyExtension.target = "~/.pi/agent/extensions/other";
+  assert.match(validateRelease(invalidModelPolicyExtension).join("\n"), /modelPolicyExtension/i);
+  const invalidModelPolicyPath = loadRelease(repoRoot);
+  invalidModelPolicyPath.stack.configPaths.puiModelPolicy = "~/.pi/other.json";
+  assert.match(validateRelease(invalidModelPolicyPath).join("\n"), /puiModelPolicy/i);
 
   const invalidFooter = loadRelease(repoRoot);
   invalidFooter.stack.mcp.footerStatus = "visible";

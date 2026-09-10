@@ -8,6 +8,7 @@ const { spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 
 const patchModule = () => require("../lib/pui-subagents-patch.js");
+const repoRoot = path.join(__dirname, "..");
 const FIXTURES_ROOT = path.join(__dirname, "fixtures");
 
 // Keep unit inputs inline and minimal. tests/verify-prompt-patches.js applies the
@@ -285,7 +286,30 @@ export class NotificationManager implements NotificationSystem {
 }
 `;
 
-const INDEX = `export default function (pi: ExtensionAPI) {
+const STEER_TOOL = `import { defineTool } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import { formatLifetimeTokens, textResult } from "#src/tools/helpers";
+import type { SteerOutcome, Subagent } from "#src/types";
+
+export interface SteerToolManager {
+\tgetRecord(id: string): Subagent | undefined;
+}
+
+export interface SteerToolEvents {
+\temit(name: string, data: unknown): void;
+}
+
+// ---- Class ----
+
+export class SteerTool {
+\tconstructor(private readonly manager: SteerToolManager, private readonly events: SteerToolEvents) {}
+  toToolDefinition() { return defineTool({ name: "steer_subagent" as const }); }
+}
+`;
+
+const INDEX = `import { SteerTool } from "#src/tools/steer-tool";
+
+export default function (pi: ExtensionAPI) {
   const notifications = new NotificationManager(
     (msg, opts) => pi.sendMessage(msg, opts),
   );
@@ -296,6 +320,8 @@ const INDEX = `export default function (pi: ExtensionAPI) {
   // followUp continuations each emit one.
   pi.on("agent_start", () => notifications.onParentAgentStart());
   pi.on("agent_settled", () => notifications.onParentAgentSettled());
+
+  pi.registerTool(new SteerTool(manager, pi.events).toToolDefinition());
 }
 `;
 
@@ -468,6 +494,7 @@ function fixtureFiles() {
     "src/lifecycle/subagent-state.ts": SUBAGENT_STATE,
     "src/observation/renderer.ts": RENDERER,
     "src/tools/get-result-report.ts": GET_RESULT_REPORT,
+    "src/tools/steer-tool.ts": STEER_TOOL,
     "src/session/prompts.ts": PROMPTS,
   };
 }
@@ -736,18 +763,21 @@ test("delegation contracts prevent duplicate investigations and unsupported comp
   assert.match(EXPLORE_PROMPT, /Missing coverage makes the track incomplete/);
 });
 
-test("revision 14 upgrades and uninstalls without losing upstream originals", (t) => {
-  assert.equal(require("../stack.json").subagentsPromptPatch.revision, 15);
-  for (const action of ["apply", "remove"]) {
-    const dir = makePackage();
-    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-    const { PATCH_FILES } = patchModule();
-    installLegacyShape(dir, 14, PATCH_FILES, "// pui-subagents-patch:policy-v14");
-    assert.equal(patchModule()[action](dir).action, action === "apply" ? "migrated" : "restored");
-    if (action === "apply") assert.equal(patchModule().verify(dir).ok, true);
-    for (const [relative, original] of Object.entries(fixtureFiles())) {
-      const file = path.join(dir, relative) + (action === "apply" ? ".pui-original" : "");
-      assert.equal(fs.readFileSync(file, "utf8"), original);
+test("recent revisions upgrade and uninstall without losing upstream originals", (t) => {
+  assert.equal(require("../stack.json").subagentsPromptPatch.revision, 18);
+  for (const revision of [14, 16, 17]) {
+    for (const action of ["apply", "remove"]) {
+      const dir = makePackage();
+      t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+      const { PATCH_FILES } = patchModule();
+      const legacyFiles = PATCH_FILES.filter((relative) => relative !== "src/tools/steer-tool.ts");
+      installLegacyShape(dir, revision, legacyFiles, `// pui-subagents-patch:policy-v${revision}`);
+      assert.equal(patchModule()[action](dir).action, action === "apply" ? "migrated" : "restored");
+      if (action === "apply") assert.equal(patchModule().verify(dir).ok, true);
+      for (const [relative, original] of Object.entries(fixtureFiles())) {
+        const file = path.join(dir, relative) + (action === "apply" ? ".pui-original" : "");
+        assert.equal(fs.readFileSync(file, "utf8"), original);
+      }
     }
   }
 });
@@ -1162,11 +1192,117 @@ test("patchFiles delivers a pending completion at the next parent turn boundary"
   const { patchFiles } = patchModule();
   const result = patchFiles(fixtureFiles());
   assert.equal(result.patched, true);
-  assert.match(result.files["src/index.ts"], /pi\.on\("turn_end", \(\) => notifications\.onParentTurnEnd\(\)\)/);
+  assert.match(result.files["src/index.ts"], /pi\.on\("turn_end", \(\) => \{/);
+  assert.match(result.files["src/index.ts"], /notifications\.onParentTurnEnd\(\)/);
+  assert.match(result.files["src/index.ts"], /manager\.listAgents\(\)/);
+  assert.match(result.files["src/index.ts"], /customType: "pui-subagent-ledger"/);
+  assert.match(result.files["src/index.ts"], /reconciliation: agent\.consumed \? \(reconciled \? "reconciled" : "pending"\) : "not_applicable"/);
+  assert.match(result.files["src/index.ts"], /result: agent\.consumed \? "collected" : "uncollected"/);
+  assert.match(result.files["src/index.ts"], /action: ledgerAction\(agent\.status, agent\.consumed/);
   assert.match(result.files["src/observation/notification.ts"], /onParentTurnEnd\(\): void/);
   assert.match(result.files["src/observation/notification.ts"], /flushPendingNudges\("steer"\)/);
   assert.match(result.files["src/observation/notification.ts"], /flushPendingNudges\("followUp"\)/);
   assert.match(result.files["src/observation/notification.ts"], /\{ deliverAs, triggerTurn: true \}/);
+});
+
+test("runtime ledger covers active, terminal, collection, reconciliation, and stale projections", (t) => {
+  const { patchFiles } = patchModule();
+  const result = patchFiles(fixtureFiles());
+  assert.equal(result.patched, true);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pui-subagent-ledger-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const moduleFile = path.join(dir, "ledger.ts");
+  fs.writeFileSync(moduleFile, `
+class NotificationManager {
+  constructor(_send) {}
+  onParentAgentStart() {}
+  onParentTurnEnd() {}
+  onParentAgentSettled() {}
+}
+class SteerTool { toToolDefinition() { return {}; } }
+class AbortTool { toToolDefinition() { return {}; } }
+const manager = globalThis.__manager;
+${result.files["src/index.ts"].replace(/^import .*steer-tool.*\n\n/m, "")}
+`);
+  const runtime = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "--eval", `
+    const handlers = {};
+    const records = [
+      { id: "run-1", description: "running", status: "running", consumed: false },
+      { id: "done-new", description: "completed new", status: "completed", consumed: false },
+      { id: "done-read", description: "completed read", status: "completed", consumed: true },
+      { id: "failed-1", description: "failed", status: "error", consumed: false },
+      { id: "stopped-1", description: "stopped", status: "stopped", consumed: false },
+    ];
+    globalThis.__manager = { listAgents: () => records };
+    const extension = (await import(${JSON.stringify(pathToFileURL(moduleFile).href)})).default;
+    extension({
+      registerMessageRenderer() {},
+      sendMessage() {},
+      events: {},
+      registerTool() {},
+      on(name, handler) { handlers[name] = handler; },
+    });
+    const stale = { role: "custom", customType: "pui-subagent-ledger", content: "foreign-id", display: false, timestamp: 0 };
+    const first = handlers.context({ messages: [stale, { role: "user", content: "keep", timestamp: 0 }] }).messages;
+    if (first.filter((message) => message.customType === "pui-subagent-ledger").length !== 1) throw new Error("ledger duplicated");
+    const parsed = JSON.parse(first.at(-1).content.split("\\n")[1]);
+    if (parsed.subagents.length !== 5 || JSON.stringify(parsed).includes("foreign-id")) throw new Error("manager records were not authoritative");
+    const byId = Object.fromEntries(parsed.subagents.map((agent) => [agent.id, agent]));
+    if (byId["run-1"].status !== "running" || byId["run-1"].result !== "uncollected") throw new Error("running state missing");
+    if (byId["done-new"].reconciliation !== "not_applicable") throw new Error("uncollected state missing");
+    if (byId["done-read"].reconciliation !== "pending") throw new Error("pending reconciliation missing");
+    if (byId["failed-1"].status !== "error" || byId["stopped-1"].status !== "stopped") throw new Error("terminal state missing");
+    handlers.turn_end();
+    const sameTurn = handlers.context({ messages: first }).messages;
+    const sameTurnParsed = JSON.parse(sameTurn.at(-1).content.split("\\n")[1]);
+    if (sameTurnParsed.subagents.find((agent) => agent.id === "done-read").reconciliation !== "pending") throw new Error("collection was reconciled before a following model turn");
+    handlers.turn_start();
+    handlers.turn_end();
+    const second = handlers.context({ messages: sameTurn }).messages;
+    const reparsed = JSON.parse(second.at(-1).content.split("\\n")[1]);
+    if (reparsed.subagents.find((agent) => agent.id === "done-read").reconciliation !== "reconciled") throw new Error("reconciliation was not advanced after the following turn");
+  `], { encoding: "utf8" });
+  assert.equal(runtime.status, 0, runtime.stderr || runtime.stdout);
+});
+
+test("patch adds a guarded per-agent abort tool", (t) => {
+  const { patchFiles, PATCH_FILES, SENTINEL } = patchModule();
+  const result = patchFiles(fixtureFiles());
+  assert.equal(result.patched, true, JSON.stringify(result));
+  assert.equal(PATCH_FILES.includes("src/tools/steer-tool.ts"), true);
+  const source = result.files["src/tools/steer-tool.ts"];
+  assert.match(source, /export class AbortTool/);
+  assert.match(source, /name: "abort_subagent" as const/);
+  assert.match(source, /this\.manager\.abort\(record\.id\)/);
+  assert.match(result.files["src/index.ts"], /pi\.registerTool\(new AbortTool\(manager\)\.toToolDefinition\(\)\)/);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pui-subagent-abort-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const moduleFile = path.join(dir, "abort.ts");
+  const abortClass = source.slice(source.indexOf("export class AbortTool"), source.indexOf(SENTINEL))
+    .replace("\tconstructor(private readonly manager: SteerToolManager) {}", "\tprivate manager: any;\n\tconstructor(manager: any) { this.manager = manager; }");
+  fs.writeFileSync(moduleFile, `
+    const textResult = (text) => ({ content: [{ type: "text", text }] });
+    const defineTool = (definition) => definition;
+    const Type = { Object: (value) => value, String: (value) => value };
+    ${abortClass}
+  `);
+  const runtime = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "--eval", `
+    import { AbortTool } from ${JSON.stringify(pathToFileURL(moduleFile).href)};
+    const queued = { id: "queued-1", status: "queued", isActive: () => true };
+    const records = new Map([[queued.id, queued]]);
+    const aborted = [];
+    const tool = new AbortTool({ getRecord: (id) => records.get(id), abort: (id) => { aborted.push(id); return true; } });
+    const queuedResult = await tool.execute("call", { agent_id: queued.id });
+    if (aborted[0] !== queued.id || !queuedResult.content[0].text.includes("will not start")) throw new Error("queued abort failed");
+    queued.status = "completed";
+    queued.isActive = () => false;
+    const terminalResult = await tool.execute("call", { agent_id: queued.id });
+    if (aborted.length !== 1 || !terminalResult.content[0].text.includes("not active")) throw new Error("terminal guard failed");
+    const missingResult = await tool.execute("call", { agent_id: "missing" });
+    if (!missingResult.content[0].text.includes("Agent not found")) throw new Error("missing guard failed");
+  `], { encoding: "utf8" });
+  assert.equal(runtime.status, 0, runtime.stderr || runtime.stdout);
 });
 
 test("notification runtime flushes once as steer at turn end and keeps settled as fallback", (t) => {
@@ -1254,7 +1390,9 @@ test("patchFiles loads fuzzy mappings from user config without embedding model n
   assert.match(result.files["src/config/invocation-config.ts"], /modelFromParams: params\.model != null/);
   assert.match(result.files["src/config/invocation-config.ts"], /thinking: params\.thinking/);
   assert.doesNotMatch(result.files["src/tools/spawn-config.ts"], /gpt-5\.6-(?:sol|luna)/);
-  assert.match(result.files["src/tools/spawn-config.ts"], /resolveModel\(parentInput, modelInfo\.modelRegistry\)/);
+  assert.match(result.files["src/tools/spawn-config.ts"], /resolvePuiModel\(parentInput, modelInfo\.modelRegistry\)/);
+  assert.match(result.files["src/tools/spawn-config.ts"], /Symbol\.for\("pui\.model-resolver\.v1"\)/);
+  assert.doesNotMatch(result.files["src/tools/spawn-config.ts"], /import \{ resolveInvocationModel, resolveModel \}/);
   assert.match(result.files["src/tools/spawn-config.ts"], /resolvedConfig\.thinking \?\? modelInfo\.parentThinkingLevel/);
   assert.match(result.files["src/runtime.ts"], /loadPuiModelMappings/);
   assert.match(result.files["src/runtime.ts"], /parentThinkingLevel: this\.currentCtx\?\.thinkingLevel/);
@@ -1284,20 +1422,12 @@ test("runtime resolution uses fuzzy config mappings, parent fallback, and explic
     function resolveAgentInvocationConfig(agentConfig: any, params: any) {
       return { modelInput: params.model, modelFromParams: params.model != null, thinking: params.thinking };
     }
-    function resolveModel(input: string, registry: any) {
-      const query = input.toLowerCase();
-      return registry.models.find((model: any) => model.id.toLowerCase().includes(query) || model.name.toLowerCase().includes(query)) ?? "not found";
-    }
-    function resolveInvocationModel(parent: any, input: string | undefined, explicit: boolean, registry: any) {
-      if (!input) return { model: parent };
-      if (!registry) return explicit ? { error: "registry missing" } : { model: parent };
-      const model = resolveModel(input, registry);
-      return typeof model !== "string" ? { model } : explicit ? { error: model } : { model: parent };
-    }
     ${spawnSource.slice(anchor)}
   `);
   const script = `
     import { resolveSpawnConfig } from ${JSON.stringify(pathToFileURL(runtimeFile).href)};
+    import { installPuiModelResolver } from ${JSON.stringify(pathToFileURL(path.join(repoRoot, "extensions", "pui-model-catalog", "resolver.ts")).href)};
+    installPuiModelResolver();
     const sol = { provider: "openai-codex", id: "gpt-5.6-sol", name: "Sol" };
     const luna = { provider: "openai-codex", id: "gpt-5.6-luna", name: "Luna" };
     const configs = new Map([
@@ -1311,14 +1441,20 @@ test("runtime resolution uses fuzzy config mappings, parent fallback, and explic
       getAvailableTypes: () => [...configs.entries()].filter(([, config]) => config.enabled !== false).map(([name]) => name),
       resolveAgentConfig: (input) => configs.get(input),
     };
-    const available = { models: [sol, luna] };
+    const modelRegistry = (models) => ({
+      models,
+      getAvailable: () => models,
+      getAll: () => models,
+      find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+    });
+    const available = modelRegistry([sol, luna]);
     const info = { parentModel: sol, parentThinkingLevel: "xhigh", modelRegistry: available, modelMappings: { sol: "luna" } };
     const base = { subagent_type: "Worker", prompt: "test", description: "test" };
     const mapped = resolveSpawnConfig(base, registry, info, {});
     if (mapped.execution.model !== luna || mapped.execution.thinking !== "xhigh") throw new Error("mapped default failed");
     const explicit = resolveSpawnConfig({ ...base, model: "sol", thinking: "low" }, registry, info, {});
     if (explicit.execution.model !== sol || explicit.execution.thinking !== "low") throw new Error("explicit override failed");
-    const unavailable = resolveSpawnConfig(base, registry, { ...info, parentThinkingLevel: "high", modelRegistry: { models: [sol] } }, {});
+    const unavailable = resolveSpawnConfig(base, registry, { ...info, parentThinkingLevel: "high", modelRegistry: modelRegistry([sol]) }, {});
     if (unavailable.execution.model !== sol || unavailable.execution.thinking !== "high") throw new Error("fallback failed");
     const duplicate = resolveSpawnConfig(base, registry, { ...info, modelMappings: { sol: "luna", "gpt-5.6-sol": "luna" } }, {});
     if (!duplicate.error?.includes("Multiple configured mappings")) throw new Error("duplicate parent mapping was not rejected");
@@ -1472,7 +1608,7 @@ test("apply migrates revision 5 completion ownership and adds taxonomy ownership
   assert.equal(verify(dir).ok, true);
   assert.equal(PATCH_FILES.includes("src/config/agent-types.ts"), true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 15);
+  assert.equal(manifest.revision, 18);
   assert.equal(manifest.files.length, PATCH_FILES.length);
   for (const relative of PATCH_FILES) {
     assert.equal(fs.existsSync(`${path.join(dir, relative)}.pui-original`), true);
@@ -1491,7 +1627,7 @@ test("apply migrates revision 6 policy ownership to the current revision", (t) =
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 15);
+  assert.equal(manifest.revision, 18);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1506,7 +1642,7 @@ test("apply migrates revision 7 ownership and adds bounded concurrency files", (
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 15);
+  assert.equal(manifest.revision, 18);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1521,7 +1657,7 @@ test("apply migrates revision 8 sequential-routing ownership to the current revi
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 15);
+  assert.equal(manifest.revision, 18);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1536,7 +1672,7 @@ test("apply migrates revision 9 parallel-routing ownership to the current revisi
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 15);
+  assert.equal(manifest.revision, 18);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1551,7 +1687,7 @@ test("apply migrates revision 10 capability ownership to the current revision", 
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 15);
+  assert.equal(manifest.revision, 18);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1566,7 +1702,7 @@ test("apply migrates revision 11 skill-loader capability ownership to the curren
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 15);
+  assert.equal(manifest.revision, 18);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1583,7 +1719,7 @@ test("apply migrates revision 12 prompt ownership and adds result-integrity file
   assert.equal(PATCH_FILES.includes("src/lifecycle/subagent-session.ts"), true);
   assert.equal(PATCH_FILES.includes("src/tools/get-result-report.ts"), true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 15);
+  assert.equal(manifest.revision, 18);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1598,7 +1734,7 @@ test("apply migrates revision 13 ownership and prompt contracts", (t) => {
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 15);
+  assert.equal(manifest.revision, 18);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 

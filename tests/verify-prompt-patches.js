@@ -101,7 +101,8 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   const spawnFile = path.join(packageDir, "src", "tools", "spawn-config.ts");
   const spawnSource = fs.readFileSync(spawnFile, "utf8");
   assert.doesNotMatch(spawnSource, /gpt-5\.6-(?:sol|luna)/);
-  assert.match(spawnSource, /resolveModel\(parentInput, modelInfo\.modelRegistry\)/);
+  assert.match(spawnSource, /resolvePuiModel\(parentInput, modelInfo\.modelRegistry\)/);
+  assert.match(spawnSource, /Symbol\.for\("pui\.model-resolver\.v1"\)/);
   assert.match(spawnSource, /resolvedConfig\.thinking \?\? modelInfo\.parentThinkingLevel/);
   assert.match(spawnSource, /Unknown agent type/);
   assert.doesNotMatch(spawnSource, /resolved \?\? "general-purpose"/);
@@ -113,7 +114,19 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
   assert.match(notificationSource, /onParentTurnEnd\(\): void/);
   assert.match(notificationSource, /flushPendingNudges\("steer"\)/);
   assert.match(notificationSource, /flushPendingNudges\("followUp"\)/);
-  assert.match(fs.readFileSync(path.join(packageDir, "src", "index.ts"), "utf8"), /pi\.on\("turn_end", \(\) => notifications\.onParentTurnEnd\(\)\)/);
+  const indexSource = fs.readFileSync(path.join(packageDir, "src", "index.ts"), "utf8");
+  assert.match(indexSource, /pi\.on\("turn_end", \(\) => \{/);
+  assert.match(indexSource, /notifications\.onParentTurnEnd\(\)/);
+  assert.match(indexSource, /customType: "pui-subagent-ledger"/);
+  assert.match(indexSource, /const agents = manager\.listAgents\(\)/);
+  assert.match(indexSource, /result: agent\.consumed \? "collected" : "uncollected"/);
+  assert.match(indexSource, /reconciliation: agent\.consumed/);
+  assert.match(indexSource, /reconciliationCandidates = new WeakSet<object>\(\)/);
+  assert.match(indexSource, /pi\.registerTool\(new AbortTool\(manager\)\.toToolDefinition\(\)\)/);
+  const abortSource = fs.readFileSync(path.join(packageDir, "src", "tools", "steer-tool.ts"), "utf8");
+  assert.match(abortSource, /export class AbortTool/);
+  assert.match(abortSource, /name: "abort_subagent" as const/);
+  assert.match(abortSource, /this\.manager\.abort\(record\.id\)/);
   const settingsSource = fs.readFileSync(path.join(packageDir, "src", "settings.ts"), "utf8");
   assert.match(settingsSource, /const DEFAULT_MAX_CONCURRENT = 128;/);
   assert.match(settingsSource, /const MAX_CONCURRENT_CEILING = 128;/);
@@ -167,20 +180,6 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
         maxTurns: params.max_turns ?? agentConfig?.maxTurns,
       };
     }
-    function resolveModel(input: string, registry: ModelRegistry) {
-      const all = registry.getAvailable?.() ?? registry.getAll();
-      const query = input.toLowerCase();
-      return all.find((model) =>
-        \`${"${model.provider}/${model.id}"}\`.toLowerCase() === query ||
-        model.id.toLowerCase().includes(query) ||
-        model.name.toLowerCase().includes(query)) ?? "not found";
-    }
-    function resolveInvocationModel(parentModel: Model<any> | undefined, input: string | undefined, fromParams: boolean, registry: ModelRegistry | undefined) {
-      if (!input) return { model: parentModel };
-      if (!registry) return fromParams ? { error: "No model registry available." } : { model: parentModel };
-      const found = resolveModel(input, registry);
-      return typeof found !== "string" ? { model: found } : fromParams ? { error: found } : { model: parentModel };
-    }
     function normalizeMaxTurns(value: unknown) { return typeof value === "number" ? value : undefined; }
     function getDisplayName(type: string, registry: any) { const config = registry.resolveAgentConfig(type); return config.displayName ?? config.name; }
     function getPromptModeLabel() { return undefined; }
@@ -193,6 +192,8 @@ function assertSubagentsArtifact(packageDir, runtimeRoot) {
     "--eval",
     `
       import { resolveSpawnConfig } from ${JSON.stringify(pathToFileURL(runtimeSpawnFile).href)};
+      import { installPuiModelResolver } from ${JSON.stringify(pathToFileURL(path.join(repoRoot, "extensions", "pui-model-catalog", "resolver.ts")).href)};
+      installPuiModelResolver();
       const sol = { provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT 5.6 Sol" };
       const luna = { provider: "openai-codex", id: "gpt-5.6-luna", name: "GPT 5.6 Luna" };
       const registry = {

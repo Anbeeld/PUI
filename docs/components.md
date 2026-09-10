@@ -22,6 +22,9 @@ PUI-managed configuration, build overrides, and patch ownership are documented i
 | Background tasks | `@99percentpeople/pi-background-tasks` | Pi package entry + PUI-owned prompt patch + native dependency | `bg_*` pipe and PTY tasks with compact model guidance; install/update verifies and can rebuild `node-pty` |
 | Reasoning-summary modes | PUI-owned `pui-reasoning-summary` extension | `~/.config/pui/reasoning-summaries.json` | Per-model Responses request modes with provider-qualified precedence; create-only defaults set all three GPT-5.6 variants to `detailed` |
 | Automatic session titles | PUI-owned `pui-session-title` extension | `~/.config/pui/session-titles.json` | Concurrent first-prompt naming through ordered exact-or-fuzzy model selectors with active-model fallback |
+| Session communication | PUI-owned `pui-session-communication` extension + Pi Web server patch and sidecar | Pi Web runtime only | `session_list`, `session_get`, `session_send`, `session_start`, and `session_abort`; sending or starting requires an explicit current-user request; attributed peer input, background starts, stopped-session resume, and caller-owned abort |
+| Model catalog | PUI-owned `pui-model-catalog` extension | Pi model registry | `model_list` groups authenticated models by provider and reports exact IDs, context limits, capabilities, costs, and reasoning efforts; optional fuzzy filtering resolves user-supplied names |
+| Model policy | PUI-owned `pui-model-policy` extension | Optional `~/.config/pui/model-policy.json` | Missing configuration is unrestricted; provider-grouped exact-model tool `allow` or `deny` rules control prompt visibility and execution |
 | PUI update identity | PUI-owned `pui-update` extension | `~/.pi/agent/extensions/pui-update/manifest.json` | Inert unless invoked; no polling or daemon |
 
 ## Repository layout
@@ -34,10 +37,14 @@ PUI/
 |-- package.json               test commands
 |-- assets/icons/              committed browser, PWA, and Apple icons
 |-- assets/pui-update-client.js update-card client
+|-- assets/pui-session-broker.cjs Pi Web session broker sidecar
 |-- extensions/pui-update/     installed update extension source
 |-- extensions/pui-skill-loader/ installed skill-loader source
 |-- extensions/pui-reasoning-summary/ installed request-policy source
 |-- extensions/pui-session-title/ installed automatic-title source
+|-- extensions/pui-session-communication/ installed session-communication source
+|-- extensions/pui-model-catalog/ installed model-catalog source
+|-- extensions/pui-model-policy/ installed model-policy source
 |-- lib/
 |   |-- pui-config.js          structural JSON merge helper
 |   |-- pui-stack.js           stack value reader for shell scripts
@@ -52,6 +59,10 @@ PUI/
 |   |-- pui-pi-8782-backport.js temporary Pi #8782 Pi Web runtime patch and restore helper
 |   |-- pui-reasoning-summary-extension.js request-policy extension ownership helper
 |   |-- pui-session-title-extension.js automatic-title extension ownership helper
+|   |-- pui-session-communication-extension.js session-communication extension ownership helper
+|   |-- pui-model-catalog-extension.js model-catalog extension ownership helper
+|   |-- pui-model-policy-extension.js model-policy extension ownership helper
+|   |-- pui-session-communication-patch.js Pi Web broker injection and sidecar ownership helper
 |   |-- pui-reasoning-summary-patch.js Responses summary display patch and ownership helper
 |   |-- pui-native-check.js    node-pty verification and rebuild helper
 |   `-- recolor-icons.cjs      icon regeneration utility

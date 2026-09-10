@@ -37,10 +37,13 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # npm's bulk-advisory audit POST stalls indefinitely on pi's large package tree;
 # every npm child (including the one inside `pi install`) inherits this setting.
 $env:npm_config_audit = "false"
+$env:npm_config_fund = "false"
 $Lib = Join-Path $ScriptDir "lib\pui-config.js"
 $Stack = Get-Content (Join-Path $ScriptDir "stack.json") -Raw | ConvertFrom-Json
 $script:GateResults = [ordered]@{}
 $script:Failures = @()
+$script:SessionCommunicationPatchSnapshot = $null
+$script:SessionCommunicationPatchCommitted = $true
 
 function Wait-IfInteractive {
   if ($env:PUI_NONINTERACTIVE) { return }
@@ -179,6 +182,7 @@ $piGoalSettings = Expand-Path $Stack.configPaths.piGoal
 $puiSubagentsConfig = Expand-Path $Stack.configPaths.puiSubagents
 $puiReasoningSummaries = Expand-Path $Stack.configPaths.puiReasoningSummaries
 $puiSessionTitles = Expand-Path $Stack.configPaths.puiSessionTitles
+$puiModelPolicy = Expand-Path $Stack.configPaths.puiModelPolicy
 
 # ----------------------------------------------------------------------------
 # Phase 1 — prerequisite detection (G1)
@@ -236,7 +240,7 @@ finally { $ErrorActionPreference = $prev }
 $askUserConfig = [string]($askResolved)
 $askUserConfig = $askUserConfig.Trim()
 if ($askResolveExit -ne 0 -or -not $askUserConfig) { Write-Host "  ask-user-question config path resolution failed: $askUserConfig" -ForegroundColor Red; exit 1 }
-$filesToChange = @($piSettings, $piWebAccess, $mcpShared, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig, $puiReasoningSummaries, $puiSessionTitles) | Select-Object -Unique
+$filesToChange = @($piSettings, $piWebAccess, $mcpShared, $piFffFeatures, $piGoalSettings, $askUserConfig, $puiSubagentsConfig, $puiReasoningSummaries, $puiSessionTitles, $puiModelPolicy) | Select-Object -Unique
 foreach ($f in $filesToChange) {
   if (Test-Path $f) {
     $bk = Invoke-NodeConfig -CfgArgs @("backup", $f)
@@ -262,6 +266,13 @@ foreach ($f in $filesToChange) {
       $r = Invoke-NodeConfig -CfgArgs @("validate-session-titles", $f)
       if ($r.exit -ne 0) {
         Write-Host "  INVALID session-title configuration (not overwritten): $f" -ForegroundColor Red
+        Write-Host "    $($r.out)" -ForegroundColor Red
+        $g2 = $false
+      }
+    } elseif ($f -eq $puiModelPolicy) {
+      $r = Invoke-NodeConfig -CfgArgs @("validate-model-policy", $f)
+      if ($r.exit -ne 0) {
+        Write-Host "  INVALID model-policy configuration (not overwritten): $f" -ForegroundColor Red
         Write-Host "    $($r.out)" -ForegroundColor Red
         $g2 = $false
       }
@@ -406,6 +417,19 @@ try { & node $reasoningPatchScript apply $ScriptDir $piWebPkgRoot $standalonePiR
 finally { $ErrorActionPreference = $prev }
 if ($reasoningPatchExit -ne 0) { Write-Host "  reasoning-summary compatibility patch could not be applied; install aborted" -ForegroundColor Red; exit 1 }
 Write-Host "  Responses reasoning-summary display patch applied to Pi Web and standalone Pi"
+$sessionCommunicationPatch = Join-Path $ScriptDir "lib\pui-session-communication-patch.js"
+$script:SessionCommunicationPatchSnapshot = Join-Path ([System.IO.Path]::GetTempPath()) ("pui-session-broker-install-" + [guid]::NewGuid().ToString("N"))
+$script:SessionCommunicationPatchCommitted = $false
+New-Item -ItemType Directory -Path $script:SessionCommunicationPatchSnapshot -Force | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionCommunicationPatch snapshot $script:SessionCommunicationPatchSnapshot $piWebPkgRoot 2>&1 | Out-Null; $sessionCommunicationPatchSnapshotExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($sessionCommunicationPatchSnapshotExit -ne 0) { Remove-Item $script:SessionCommunicationPatchSnapshot -Recurse -Force -ErrorAction SilentlyContinue; $script:SessionCommunicationPatchSnapshot = $null; throw "Pi Web session communication broker snapshot could not be created" }
+$prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { & node $sessionCommunicationPatch apply $ScriptDir $piWebPkgRoot 2>&1 | Out-Null; $sessionCommunicationPatchExit = $LASTEXITCODE }
+finally { $ErrorActionPreference = $prev }
+if ($sessionCommunicationPatchExit -ne 0) { Write-Host "  Pi Web session communication broker patch could not be applied; install aborted" -ForegroundColor Red; exit 1 }
+Write-Host "  Pi Web session communication broker patch applied"
 & node $integrationScript finalize $ScriptDir $piWebPkgRoot 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  Pi Web update integration finalization failed; install aborted" -ForegroundColor Red; exit 1 }
 
@@ -428,11 +452,14 @@ if ($r.exit -eq 0) {
   }
 }
 foreach ($spec in $pkgs) {
-  Write-Host "  pi install $spec"
-  $r = Invoke-PiBounded -PiArgs @("install", $spec)
-  if ($r.out) { $r.out -split "`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } }
-  if ($r.exit -ne 0) { Write-Host "  FAILED: $spec" -ForegroundColor Red; $g4 = $false }
-  else {
+  Write-Host "  reconciling managed extension $spec..."
+  $piInstall = Invoke-PiBounded -PiArgs @("install", $spec)
+  if ($piInstall.exit -ne 0) {
+    if ($piInstall.out) { $piInstall.out -split "`n" | ForEach-Object { if ($_) { Write-Host "    $_" } } }
+    Write-Host "  failed to install $spec" -ForegroundColor Red
+    $g4 = $false
+  } else {
+    Write-Host "    reconciled managed extension $spec"
     $setResult = Invoke-NodeConfig -CfgArgs @("set-package", $piSettings, $spec)
     if ($setResult.exit -ne 0) { Write-Host "  managed pin reconciliation failed: $($setResult.out)" -ForegroundColor Red; $g4 = $false }
   }
@@ -449,6 +476,19 @@ if ($LASTEXITCODE -ne 0) { Write-Host "  PUI reasoning-summary extension install
 $sessionTitleExtensionScript = Join-Path $ScriptDir "lib\pui-session-title-extension.js"
 & node $sessionTitleExtensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI session-title extension install failed" -ForegroundColor Red; $g4 = $false }
+$sessionCommunicationExtensionScript = Join-Path $ScriptDir "lib\pui-session-communication-extension.js"
+& node $sessionCommunicationExtensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI session communication extension install failed" -ForegroundColor Red; $g4 = $false }
+$modelCatalogExtensionScript = Join-Path $ScriptDir "lib\pui-model-catalog-extension.js"
+& node $modelCatalogExtensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI model catalog extension install failed" -ForegroundColor Red; $g4 = $false }
+$modelPolicyExtensionScript = Join-Path $ScriptDir "lib\pui-model-policy-extension.js"
+& node $modelPolicyExtensionScript install $ScriptDir 2>&1 | ForEach-Object { Write-Host "    $_" }
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI model policy extension install failed" -ForegroundColor Red; $g4 = $false }
+$r = Invoke-NodeConfig -CfgArgs @("validate-model-policy", $puiModelPolicy)
+if ($r.exit -ne 0) { Write-Host "  model-policy configuration is invalid and was not overwritten: $($r.out)" -ForegroundColor Red; $g4 = $false }
+elseif (Test-Path $puiModelPolicy) { Write-Host "  model-policy configuration valid: $puiModelPolicy" }
+else { Write-Host "  model-policy configuration not configured (unrestricted)" }
 
 $askGuidance = $Stack.askUserQuestion.guidance | ConvertTo-Json -Depth 10 -Compress
 $askGuidanceFile = [System.IO.Path]::GetTempFileName()
@@ -834,5 +874,16 @@ Write-Host "`nPUI setup complete. Pi remains the runtime; the update extension a
 if (-not $NoPwa -and -not $NoBrowser) {
   Write-Host "Complete PWA installation with the browser's 'Install app' action on the page that opened." -ForegroundColor Yellow
 }
+$script:SessionCommunicationPatchCommitted = $true
+if ($script:SessionCommunicationPatchSnapshot) { Remove-Item $script:SessionCommunicationPatchSnapshot -Recurse -Force -ErrorAction SilentlyContinue; $script:SessionCommunicationPatchSnapshot = $null }
 Write-Host "Run ./doctor.ps1 anytime for diagnostics." -ForegroundColor Green
-} finally { Wait-IfInteractive }
+} finally {
+  if ($script:SessionCommunicationPatchSnapshot -and -not $script:SessionCommunicationPatchCommitted) {
+    $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & node (Join-Path $ScriptDir "lib\pui-session-communication-patch.js") restore-snapshot $script:SessionCommunicationPatchSnapshot $piWebPkgRoot 2>&1 | Out-Null; $restoreExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $prev }
+    if ($restoreExit -eq 0) { Remove-Item $script:SessionCommunicationPatchSnapshot -Recurse -Force -ErrorAction SilentlyContinue }
+    else { Write-Host "  FAILED to restore Pi Web session communication artifacts; recovery snapshot retained at $script:SessionCommunicationPatchSnapshot" -ForegroundColor Red }
+  }
+  Wait-IfInteractive
+}

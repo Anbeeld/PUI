@@ -124,6 +124,11 @@ try {
   $globalRoot = & npm root -g
   $piWebRoot = Join-Path (Join-Path $globalRoot "@agegr") "pi-web"
   $standalonePiRoot = Join-Path $globalRoot "@earendil-works\pi-coding-agent"
+  $sessionCommunicationPatch = Join-Path $ScriptDir "lib\pui-session-communication-patch.js"
+  $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { & node $sessionCommunicationPatch remove $piWebRoot 2>&1 | Out-Null; $sessionCommunicationRemoveExit = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prev }
+  if ($sessionCommunicationRemoveExit -ne 0) { Write-Host "  session communication broker patch differs from its owned shape; preserving." -ForegroundColor Yellow }
   $reasoningPatchScript = Join-Path $ScriptDir "lib\pui-reasoning-summary-patch.js"
   $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
   try { & node $reasoningPatchScript remove $piWebRoot $standalonePiRoot $ScriptDir 2>&1 | Out-Null; $reasoningRemoveExit = $LASTEXITCODE }
@@ -173,6 +178,13 @@ if ($LASTEXITCODE -ne 0) { Write-Host "  PUI skill loader extension differs from
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI reasoning-summary extension differs from its owned shape; preserving." -ForegroundColor Yellow }
 & node (Join-Path $ScriptDir "lib\pui-session-title-extension.js") remove $ScriptDir | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "  PUI session-title extension differs from its owned shape; preserving." -ForegroundColor Yellow }
+& node (Join-Path $ScriptDir "lib\pui-session-communication-extension.js") remove $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI session communication extension differs from its owned shape; preserving." -ForegroundColor Yellow }
+& node (Join-Path $ScriptDir "lib\pui-model-catalog-extension.js") remove $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI model catalog extension differs from its owned shape; preserving." -ForegroundColor Yellow }
+& node (Join-Path $ScriptDir "lib\pui-model-policy-extension.js") remove $ScriptDir | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  PUI model policy extension differs from its owned shape; preserving." -ForegroundColor Yellow }
+Write-Host "  Preserved: PUI model-policy configuration (user policy is never removed)." -ForegroundColor Green
 
 # 4. optionally remove PUI-selected Pi packages
 if ($Full) {

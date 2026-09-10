@@ -317,15 +317,22 @@
   // (restoring a fresh, active button), re-enable the button on failure.
   async function pollRestart() {
     let seenDown = false;
+    let seenRestarting = false;
     for (let attempt = 0; attempt < 90; attempt += 1) {
       try {
         const response = await fetch("/api/app-update", { cache: "no-store" });
         if (response.ok) {
           if (seenDown) { location.reload(); return; }
           const status = await response.json().catch(() => ({}));
-          if (status.phase === "restarting") showRestartProgress();
-          else if (status.result === "restarted") { location.reload(); return; }
+          if (status.phase === "restarting") {
+            seenRestarting = true;
+            showRestartProgress();
+          } else if (status.result === "restarted") { location.reload(); return; }
           else if (status.result === "failed" && !status.target) { restartFailed(status.error); return; }
+          // Completed restart status is intentionally one-shot and another tab
+          // can consume it first. Once this tab observed restart progress, an
+          // ordinary healthy response means the replacement server is back.
+          else if (seenRestarting) { location.reload(); return; }
         }
       } catch {
         seenDown = true;

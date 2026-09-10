@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.2
+
+- Added Pi Web-only session collaboration through `session_list`, `session_get`, `session_send`, `session_start`, and `session_abort`. Sessions exchange attributed, untrusted task input, start background work with completion notifications, resume stopped targets, and abort only caller-owned work; `session_get` locates the persisted log without loading it. Sending or starting requires an explicit user request, as do model and effort overrides. Fuzzy model selectors and lower supported effort fallback are available, while unrestricted recursive collaboration can create loops or extra cost.
+- Added `model_list` and a shared resolver for authenticated model IDs, limits, capabilities, costs, reasoning efforts, and ranked fuzzy matches. The resolver rejects ambiguous selections and prefers stable aliases or the newest dated version. An optional exact-model `model-policy.json` can allow or deny tools, removing prohibited tool metadata and blocking stale calls.
+- Preserved retained subagent IDs, statuses, collection state, reconciliation state, and next actions across compaction through a runtime-generated session ledger. Added `abort_subagent` to stop one running or queued subagent without changing terminal records, and moved subagent model selection to the shared resolver.
+- Added a fixed-width, accessible "Copy ID" control before "Full history" in Pi Web. It copies the active session ID and displays "Copied!" for three seconds without shifting the toolbar.
+- Fixed the Pi Web restart control on Windows by relaunching through the canonical Startup VBS, keeping Pi Web and its Next.js child hidden while retaining HTTP recovery checks. The requesting tab now recognizes recovery when another tab consumes the one-shot completion status instead of falsely timing out after 90 seconds.
+- Updated Pi Web peer-message cards to use compact Goal-completion typography and render message newlines without changing persisted or model-facing content. Successful managed-package reconciliation now hides npm and funding chatter, while failures retain complete buffered output.
+
 ## v1.3.1
 
 - Gave Explore `bash` access for code inspection, Git revision comparison, and PR retrieval without a command whitelist. Its assignment remains read-only; shell access is not a sandbox. Worker now covers decided changes, builds, tests, and experiments rather than command-based investigation.
