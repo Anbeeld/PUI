@@ -507,6 +507,19 @@ test("rollback script environment clears target failure injection", () => {
   }
 });
 
+test("staged lifecycle scripts never inherit the installed-identity requirement", () => {
+  const previous = process.env.PUI_REQUIRE_INSTALLED_IDENTITY;
+  process.env.PUI_REQUIRE_INSTALLED_IDENTITY = "1";
+  try {
+    assert.equal(Object.hasOwn(scriptEnvironment(false), "PUI_REQUIRE_INSTALLED_IDENTITY"), false,
+      "a staged release tree has no certified lib/manifest.json for the detached worker's identity guard");
+    assert.equal(Object.hasOwn(scriptEnvironment(true), "PUI_REQUIRE_INSTALLED_IDENTITY"), false);
+  } finally {
+    if (previous === undefined) delete process.env.PUI_REQUIRE_INSTALLED_IDENTITY;
+    else process.env.PUI_REQUIRE_INSTALLED_IDENTITY = previous;
+  }
+});
+
 test("detached updater starts outside the replaceable Pi Web package tree", () => {
   const options = detachedSpawnOptions();
   assert.equal(options.cwd, os.tmpdir());

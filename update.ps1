@@ -419,6 +419,9 @@ try {
   }
 } finally { $ErrorActionPreference = $prev }
 
+# The identity requirement belongs to the detached worker running the installed
+# extension; a staged release tree has no certified lib/manifest.json beside it.
+Remove-Item Env:PUI_REQUIRE_INSTALLED_IDENTITY -ErrorAction SilentlyContinue
 & node (Join-Path $ScriptDir "lib\pui-updater.js") standalone-busy
 if ($LASTEXITCODE -eq 75) { Write-Host "  standalone Pi became active; update deferred" -ForegroundColor Yellow; exit 75 }
 if ($LASTEXITCODE -ne 0) { Write-Host "  could not verify standalone Pi idle state" -ForegroundColor Red; exit 1 }

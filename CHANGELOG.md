@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.3.4
+
+- Fixed in-app updates failing: the detached worker's `PUI_REQUIRE_INSTALLED_IDENTITY` requirement leaked into the staged lifecycle scripts, so their own `lib/pui-updater.js standalone-busy` idle gate demanded a certified `lib/manifest.json` that no release archive contains, failed with `ENOENT` after Pi Web had already been stopped, and rolled the update back.
+- Fixed Pi Web showing empty Thinking blocks for models that report reasoning through non-Responses APIs.
+
 ## v1.3.3
 
 - Fixed interrupted updates leaving Pi Web down on macOS and Linux. Any failure after the service manager was stopped skipped the final restart step and left the LaunchAgent booted out, which `launchctl kickstart` cannot revive. An exit trap now reloads or kickstarts the LaunchAgent, starts the systemd unit, or relaunches the stopped `pi-web --no-open`, then waits for HTTP 200. Windows recovers the same way from its exit path.

@@ -70,7 +70,7 @@
   },
   "reasoningSummaryPatch": {
     "schemaVersion": 1,
-    "revision": 20,
+    "revision": 21,
     "piWebPackage": "@agegr/pi-web",
     "piWebVersion": "0.8.11",
     "codingAgentPackage": "@earendil-works/pi-coding-agent",

@@ -258,7 +258,9 @@ if piweb_running; then
   exit 1
 fi
 set +e
-node "$SCRIPT_DIR/lib/pui-updater.js" standalone-busy
+# The identity requirement belongs to the detached worker running the installed
+# extension; a staged release tree has no certified lib/manifest.json beside it.
+env -u PUI_REQUIRE_INSTALLED_IDENTITY node "$SCRIPT_DIR/lib/pui-updater.js" standalone-busy
 STANDALONE_EXIT=$?
 set -e
 if [ "$STANDALONE_EXIT" -eq 75 ]; then echo "  standalone Pi is active; install deferred" >&2; exit 75; fi

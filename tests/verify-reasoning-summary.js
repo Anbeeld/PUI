@@ -116,6 +116,19 @@ async function verifyBehavior(piWebRoot, piAgentRoot, webManifest, temp) {
   assert.equal(event.message.content[0].text, "Safe summary");
   assert.doesNotMatch(JSON.stringify(event), /raw chain of thought|encrypted_content|thinkingSignature/);
 
+  const thinkingRouteSource = fs.readFileSync(manifestTarget(piWebRoot, webManifest, "web-thinking-route"), "utf8");
+  const thinkingSeam = /let ([A-Za-z_$][\w$]*)=puiProjectAssistantMessage\(([A-Za-z_$][\w$]*)\.message\)\.content\[([A-Za-z_$][\w$]*)\];if\(!\1\|\|\("thinking"!==\1\.type&&"text"!==\1\.type\)\)return ([A-Za-z_$][\w$]*)\.NextResponse\.json\(\{error:"Thinking block not found"\},\{status:404\}\);return \4\.NextResponse\.json\(\{thinking:"text"===\1\.type\?\1\.text:\1\.thinking\}\)/;
+  const thinkingMatch = thinkingSeam.exec(thinkingRouteSource);
+  assert.ok(thinkingMatch, "deferred-thinking route does not serve stored thinking for non-Responses blocks");
+  // new Function keeps the returned objects in this realm for deepEqual prototype checks.
+  const thinkingRun = new Function("b", "i", "e", `${helperPrelude(thinkingRouteSource, "puiHideUntrustedThinking")}\n${thinkingMatch[0]}`);
+  const serveThinking = (message, index) => thinkingRun({ message }, index, { NextResponse: { json: (body, init) => ({ status: init?.status ?? 200, body }) } });
+  const nonResponsesMessage = { role: "assistant", api: "openai-completions", provider: "deepseek", model: "deepseek-v4-flash", content: [{ type: "thinking", thinking: "provider chain of thought", thinkingSignature: "reasoning_content" }] };
+  assert.deepEqual(serveThinking(nonResponsesMessage, 0), { status: 200, body: { thinking: "provider chain of thought" } }, "non-Responses thinking was dropped");
+  assert.deepEqual(serveThinking(message, 0), { status: 200, body: { thinking: "Safe summary" } }, "projected summary text is not served");
+  const untrustedMessage = { role: "assistant", api: "openai-responses", provider: "arbitrary-provider", model: "future-reasoning-model", content: [{ type: "thinking", thinking: "raw chain of thought", thinkingSignature: "encrypted" }] };
+  assert.deepEqual(serveThinking(untrustedMessage, 0), { status: 200, body: { thinking: "" } }, "untrusted Responses thinking was exposed");
+
   const exportFile = manifestTarget(piWebRoot, webManifest, "web-export-module");
   const exportSource = fs.readFileSync(exportFile, "utf8");
   assert.equal((exportSource.match(/puiProjectSessionEntries\(sm\.getEntries\(\)\)/g) || []).length, 2, "Pi Web HTML export boundaries are not both projected");

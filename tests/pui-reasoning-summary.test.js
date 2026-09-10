@@ -389,7 +389,27 @@ test("projects Responses context and deferred-thinking API responses", () => {
   const routeResult = patchPiWebThinkingRoute(route);
   assert.match(contextResult.text, /puiProjectDisplayMessage\(c\)/);
   assert.match(routeResult.text, /puiProjectAssistantMessage\(b\.message\)/);
-  assert.match(routeResult.text, /"text"===g\.type\?g\.text:""/);
+  assert.match(routeResult.text, /"text"===g\.type\?g\.text:g\.thinking/);
+});
+
+test("deferred-thinking route returns stored provider thinking for non-Responses APIs", () => {
+  const { patchPiWebThinkingRoute } = patchModule();
+  const source = 'let g=b.message.content[i];if(!g||"thinking"!==g.type)return e.NextResponse.json({error:"Thinking block not found"},{status:404});return e.NextResponse.json({thinking:g.thinking})';
+  const result = patchPiWebThinkingRoute(source);
+  const run = new Function("b", "i", "e", result.text.split("\n").slice(1).join("\n"));
+  const json = (body, init) => ({ status: init?.status ?? 200, body });
+  const NextResponse = { json };
+
+  const nonResponses = assistant({ api: "openai-completions", provider: "deepseek", model: "deepseek-v4-flash", thinking: "provider chain of thought", thinkingSignature: "reasoning_content" });
+  assert.deepEqual(run({ message: nonResponses }, 0, { NextResponse }), { status: 200, body: { thinking: "provider chain of thought" } });
+
+  const trusted = assistant({ thinking: "raw chain of thought", thinkingSignature: signature([{ type: "summary_text", text: "Safe summary" }], { encrypted_content: "secret" }) });
+  assert.deepEqual(run({ message: trusted }, 0, { NextResponse }), { status: 200, body: { thinking: "Safe summary" } });
+
+  const untrusted = assistant({ thinking: "raw chain of thought", thinkingSignature: signature([], { encrypted_content: "secret" }) });
+  assert.deepEqual(run({ message: untrusted }, 0, { NextResponse }), { status: 200, body: { thinking: "" } });
+
+  assert.deepEqual(run({ message: nonResponses }, 1, { NextResponse }), { status: 404, body: { error: "Thinking block not found" } });
 });
 
 const LIVE_CUSTOM_WEB_SOURCE = 'async function wait(){let response=await state(),current=response.state;if(!response.running||!current||!current.isStreaming&&!current.isPromptRunning)return void await finish()}async function reconcile(){let response=await state(),current=response.state;if(response.running&&current&&(current.isStreaming||current.isPromptRunning||current.isCompacting)){active.current=!!current.isStreaming;return}await finish()}function live(e){switch(e.type){case"connected":end({type:"end"}),!0===e.isStreaming&&(cancel(),active.current=!0,running.current=!0,setRunning(!0),setPhase({kind:"waiting_model"}));break;case"agent_start":cancel(),active.current=!0,running.current=!0,setRunning(!0),setPhase({kind:"waiting_model"}),end({type:"start"});break;case"agent_end":if(!running.current)break;setPhase(null),setRetry(null),end({type:"end"}),sid.current&&(load(sid.current),fetch(`/api/agent/${encodeURIComponent(sid.current)}`));break;case"agent_settled":{let was=active.current;if(active.current=!1,!was||rpc.current)break;settle()}case"prompt_done":{let run=runId.current,was=rpc.current;rpc.current=!1,optimistic.current=null;let first=notify(run);if(!was&&!first)break;let current=sid.current;current&&load(current),!active.current&&(settle(),current&&close(current))}break;case"message_start":case"message_update":if(!running.current)break;if("message_start"===e.type){let msg=e.message;if(msg?.role==="user")break;msg?.role==="assistant"?(dispatch({type:"snapshot",message:msg}),msg.content.length>0&&setPhase(null)):msg&&setPhase(null)}else{let delta=e.assistantMessageEvent;delta&&dispatch({type:"delta",event:delta})}break;}}';

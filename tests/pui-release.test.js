@@ -15,8 +15,8 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.3.3");
-  assert.equal(release.stack.reasoningSummaryPatch.revision, 20, "v1.3.2 must add Copy ID and peer-message display styling");
+  assert.equal(release.version, "1.3.4");
+  assert.equal(release.stack.reasoningSummaryPatch.revision, 21, "v1.3.4 must restore on-demand thinking for non-Responses APIs");
   assert.deepEqual(release.stack.skillLoaderExtension, {
     schemaVersion: 1,
     target: "~/.pi/agent/extensions/pui-skill-loader",

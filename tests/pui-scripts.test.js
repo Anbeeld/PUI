@@ -545,6 +545,23 @@ test("staged apply rechecks standalone Pi after stopping Pi Web and before packa
   }
 });
 
+test("standalone Pi idle gate drops the detached worker's installed-identity requirement", () => {
+  for (const file of ["install.ps1", "update.ps1"]) {
+    const content = codeOnly(read(file));
+    const neutralized = content.indexOf("Remove-Item Env:PUI_REQUIRE_INSTALLED_IDENTITY");
+    const standalone = content.indexOf("standalone-busy");
+    assert.ok(neutralized !== -1, `${file}: the identity requirement must be cleared before the gate`);
+    assert.ok(neutralized < standalone, `${file}: clearing must precede the standalone gate`);
+  }
+  for (const file of ["install.sh", "update.sh"]) {
+    const content = codeOnly(read(file));
+    const neutralized = content.indexOf("env -u PUI_REQUIRE_INSTALLED_IDENTITY");
+    const standalone = content.indexOf("standalone-busy");
+    assert.ok(neutralized !== -1, `${file}: the identity requirement must be cleared before the gate`);
+    assert.ok(neutralized < standalone, `${file}: clearing must precede the standalone gate`);
+  }
+});
+
 test("uninstall preserves a Playwright entry with user-modified lifecycle or direct tools", () => {
   for (const file of ["uninstall.ps1", "uninstall.sh"]) {
     const content = read(file);
