@@ -240,7 +240,7 @@ test("PUI hides the MCP footer status from the extension bar", () => {
   }
 });
 
-test("PUI manages background tasks, compact guidance, runtime isolation, and node-pty", () => {
+test("PUI manages background tasks, runtime isolation, idle activity, and PTY teardown", () => {
   assert.deepEqual(stack.upstream.backgroundTasks, {
     npm: "@99percentpeople/pi-background-tasks",
     version: "2.1.1",
@@ -248,7 +248,7 @@ test("PUI manages background tasks, compact guidance, runtime isolation, and nod
   });
   assert.deepEqual(stack.backgroundTasksPromptPatch, {
     schemaVersion: 1,
-    revision: 2,
+    revision: 3,
     packagePath: "node_modules/@99percentpeople/pi-background-tasks",
     bundle: "index.min.js",
     backupSuffix: ".pui-original",

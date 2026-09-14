@@ -119,9 +119,9 @@ function fixtureBundle() {
     (_, index) => `import{basename as __puiImport${index}}from"node:path";`,
   ).join("");
   const tools = Object.entries(ORIGINAL).map(([name, tool]) =>
-    `pi.registerTool({name:${JSON.stringify(name)},description:${JSON.stringify(tool.description)},promptSnippet:${JSON.stringify(tool.snippet)},promptGuidelines:${JSON.stringify(tool.guidelines)},parameterDescriptions:${JSON.stringify(tool.parameters)}});`
+    `f.registerTool({name:${JSON.stringify(name)},description:${JSON.stringify(tool.description)},promptSnippet:${JSON.stringify(tool.snippet)},promptGuidelines:${JSON.stringify(tool.guidelines)},parameterDescriptions:${JSON.stringify(tool.parameters)}});`
   ).join("");
-  return `${imports}let appendTaskSnapshotEntry=null,retainedTask="";import{basename as __puiLateImport}from"node:path";function ru(pi){const snapshotAppender=(task)=>pi.appendEntry(task);appendTaskSnapshotEntry=snapshotAppender;pi.on("session_start",()=>{retainedTask=pi.instanceId;appendTaskSnapshotEntry=snapshotAppender});pi.on("before_agent_start",()=>appendTaskSnapshotEntry?.(retainedTask));pi.on("session_shutdown",()=>{retainedTask="";appendTaskSnapshotEntry=null});${tools}}export{ru as default};\n//# sourceMappingURL=index.min.js.map\n`;
+  return `${imports}let S=new Set,appendTaskSnapshotEntry=null,retainedTask="";import{basename as __puiLateImport}from"node:path";function __puiFixturePty(_){let j;j={kind:"pty",pid:_.pid,pty:_};return j}function ru(f,n={}){const snapshotAppender=(task)=>f.appendEntry(task);appendTaskSnapshotEntry=snapshotAppender;f.on("session_start",async(b,M)=>{retainedTask=f.instanceId;appendTaskSnapshotEntry=snapshotAppender});f.on("before_agent_start",()=>appendTaskSnapshotEntry?.(retainedTask));f.on("session_shutdown",async(b,M)=>{retainedTask="";appendTaskSnapshotEntry=null});${tools}}export{ru as default};\n//# sourceMappingURL=index.min.js.map\n`;
 }
 
 async function importFixture(text, dir, name) {
@@ -147,7 +147,8 @@ function createFixturePi(instanceId) {
       registerTool() {},
     },
     async emit(event) {
-      for (const handler of handlers.get(event) ?? []) await handler();
+      const context = { sessionManager: { getSessionId: () => instanceId } };
+      for (const handler of handlers.get(event) ?? []) await handler({}, context);
     },
   };
 }
@@ -178,6 +179,26 @@ test("patchText replaces the complete background-task model guidance", () => {
   const renderedGuidelineArrays = [...result.text.matchAll(/promptGuidelines:(\[[^\]]*\])/g)]
     .flatMap((match) => JSON.parse(match[1]));
   assert.deepEqual(renderedGuidelineArrays, [...EXPECTED_GUIDELINES, ...EXPECTED_GUIDELINES]);
+});
+
+test("PTY teardown wrapper calls the native kill path at most once", () => {
+  const { makePtyKillIdempotent } = patchModule();
+  let calls = 0;
+  const pty = { kill() { calls += 1; return "closed"; } };
+  assert.equal(makePtyKillIdempotent(pty), pty);
+  assert.equal(pty.kill(), "closed");
+  assert.equal(pty.kill(), undefined);
+  assert.equal(calls, 1);
+});
+
+test("patchText publishes session-scoped background activity and guards PTY teardown", () => {
+  const { patchText, BACKGROUND_ACTIVITY_SYMBOL } = patchModule();
+  const result = patchText(fixtureBundle());
+  assert.equal(result.patched, true);
+  assert.equal(result.text.includes(BACKGROUND_ACTIVITY_SYMBOL), true);
+  assert.match(result.text, /sessionManager\.getSessionId\(\)/);
+  assert.match(result.text, /Symbol\.for\(/);
+  assert.match(result.text, /pty:__puiMakePtyKillIdempotent\(/);
 });
 
 test("patchText isolates cached extension factory instances", async (t) => {

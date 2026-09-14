@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const vm = require("node:vm");
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -17,17 +18,64 @@ function fixture(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, ".next", "server", "chunks"), { recursive: true });
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@agegr/pi-web", version: "0.8.11" }));
-  fs.writeFileSync(path.join(root, ".next", "server", "chunks", "6429.js"), 'prefix;function B(){return globalThis.__piSessions}function I(a){return B().get(a)}function K(){return []}async function P(a,b,c,d={}){return{session:B().get(a),realSessionId:a}}d()}catch(a){d(a)}})},71069:suffix');
+  fs.writeFileSync(path.join(root, ".next", "server", "chunks", "6429.js"), 'prefix;class Y{constructor(a){this.sessionId=a;this._alive=!0;this.pendingPromptCount=0;this.inner={isStreaming:!1,isCompacting:!1,isBashRunning:!1}}isRunning(){return this._alive&&(this.pendingPromptCount>0||this.inner.isStreaming||this.inner.isCompacting||this.inner.isBashRunning)}}globalThis.__puiTestSession=Y;function B(){return globalThis.__piSessions}function I(a){return B().get(a)}function K(){return []}async function P(a,b,c,d={}){return{session:B().get(a),realSessionId:a}}d()}catch(a){d(a)}})},71069:suffix');
   return root;
 }
+
+test("patched Pi Web sessions stay active only while their own background tasks run", (t) => {
+  const root = fixture(t);
+  const { patchText, BACKGROUND_ACTIVITY_SYMBOL } = require("../lib/pui-session-communication-patch.js");
+  const original = fs.readFileSync(path.join(root, ".next", "server", "chunks", "6429.js"), "utf8");
+  const transformed = patchText(original);
+  assert.equal(transformed.ok, true);
+  const runtime = transformed.text.match(/class Y\{.*?globalThis\.__puiTestSession=Y;/s)?.[0];
+  assert.ok(runtime, "session fixture remains executable after patching");
+  const context = { globalThis: {} };
+  vm.runInNewContext(runtime, context);
+  const Session = context.globalThis.__puiTestSession;
+  const first = new Session("session-a");
+  const second = new Session("session-b");
+  assert.equal(first.isRunning(), false);
+  context.globalThis[Symbol.for(BACKGROUND_ACTIVITY_SYMBOL)] = new Map([
+    ["session-a", () => true],
+    ["session-b", () => false],
+  ]);
+  assert.equal(first.isRunning(), true);
+  assert.equal(second.isRunning(), false);
+  context.globalThis[Symbol.for(BACKGROUND_ACTIVITY_SYMBOL)].set("session-a", () => false);
+  assert.equal(first.isRunning(), false);
+});
 
 test("patch installs a versioned broker sidecar and exact owned transform", (t) => {
   const root = fixture(t);
   const patch = require("../lib/pui-session-communication-patch.js");
   assert.equal(patch.apply(repoRoot, root).ok, true);
   assert.equal(patch.verify(repoRoot, root).ok, true);
-  assert.match(fs.readFileSync(path.join(root, ".next", "server", "chunks", "6429.js"), "utf8"), /pui-session-communication:broker-v1/);
+  assert.match(fs.readFileSync(path.join(root, ".next", "server", "chunks", "6429.js"), "utf8"), /pui-session-communication:broker-v2/);
   assert.equal(fs.readFileSync(path.join(root, ".next", "server", "pui-session-broker.cjs"), "utf8"), fs.readFileSync(path.join(repoRoot, "assets", "pui-session-broker.cjs"), "utf8"));
+});
+
+test("apply migrates an intact prior broker patch to the idle-aware revision", (t) => {
+  const root = fixture(t);
+  const patch = require("../lib/pui-session-communication-patch.js");
+  const chunk = path.join(root, ".next", "server", "chunks", "6429.js");
+  const backup = `${chunk}.pui-session-original`;
+  const sidecarFile = path.join(root, ".next", "server", "pui-session-broker.cjs");
+  const manifestFile = path.join(root, ".next", "server", ".pui-session-communication.json");
+  const original = fs.readFileSync(chunk, "utf8");
+  const endToken = "d()}catch(a){d(a)}})},71069:";
+  const end = original.indexOf(endToken, original.indexOf("async function P(a,b,c,d={}){"));
+  const legacyInjection = '/* pui-session-communication:broker-v1 */require("../pui-session-broker.cjs").install({SessionManager:e.SessionManager,getSession:I,startSession:P,listActive:K,pathExists:h.existsSync,realpath:G,randomUUID:g.randomUUID,invalidate:n.mD});';
+  const legacy = original.slice(0, end) + legacyInjection + original.slice(end);
+  const sidecar = fs.readFileSync(path.join(repoRoot, "assets", "pui-session-broker.cjs"), "utf8");
+  fs.writeFileSync(backup, original);
+  fs.writeFileSync(chunk, legacy);
+  fs.writeFileSync(sidecarFile, sidecar);
+  fs.writeFileSync(manifestFile, JSON.stringify(patch.createManifest(original, legacy, sidecar)));
+
+  assert.equal(patch.apply(repoRoot, root).action, "updated");
+  assert.equal(patch.verify(repoRoot, root).ok, true);
+  assert.match(fs.readFileSync(chunk, "utf8"), /pui-session-communication:broker-v2/);
 });
 
 test("patch is idempotent, detects drift, and only restores intact ownership", (t) => {

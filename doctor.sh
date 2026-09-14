@@ -128,9 +128,9 @@ else
   status_line "MCP footer status" "FAIL" "mcp.json missing (expected $(jget mcp.footerStatus))"
 fi
 
-# pi-background-tasks compact guidance, runtime isolation, and node-pty binding
+# pi-background-tasks guidance, runtime isolation, idle activity, PTY guard, and native binding
 if node "$SCRIPT_DIR/lib/pui-background-tasks-patch.js" verify >/dev/null 2>&1; then
-  status_line "pi-background-tasks patch" "PASS" "compact guidance; isolated runtime state"
+  status_line "pi-background-tasks patch" "PASS" "compact guidance; isolated state; idle activity; PTY kill guard"
 else
   status_line "pi-background-tasks patch" "FAIL" "missing or drifted"
 fi

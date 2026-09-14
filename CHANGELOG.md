@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.5
+
+- Fixed Pi Web crashing and leaving PUI offline when a background task ended, due to interaction with Pi Web's ten-minute idle timer.
+
 ## v1.3.4
 
 - Fixed in-app updates failing: the detached worker's `PUI_REQUIRE_INSTALLED_IDENTITY` requirement leaked into the staged lifecycle scripts, so their own `lib/pui-updater.js standalone-busy` idle gate demanded a certified `lib/manifest.json` that no release archive contains, failed with `ENOENT` after Pi Web had already been stopped, and rolled the update back.

@@ -433,7 +433,7 @@ test("an interrupted update starts the stopped service manager and waits for hea
   leg("Linux", () => [/--user start pui-piweb/]);
 });
 
-test("Unix Pi Web detection matches the installed package and the npm bin shim", () => {
+test("Unix Pi Web detection matches the installed package and the npm bin shim", { skip: process.platform === "win32" }, () => {
   const shell = read("update.sh");
   const start = shell.indexOf("PIWEB_PS_PATTERN=");
   const end = shell.indexOf("stop_piweb_processes() {");

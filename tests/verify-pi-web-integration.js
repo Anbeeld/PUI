@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { applyIntegration, removeIntegration, verifyIntegration } = require("../lib/pui-web-integration.js");
+const sessionCommunicationPatch = require("../lib/pui-session-communication-patch.js");
 
 const repoRoot = path.resolve(__dirname, "..");
 const stack = require("../stack.json");
@@ -28,15 +29,24 @@ try {
   if (piWebPackage.dependencies?.[stack.upstream.agentRuntime.npm] !== stack.upstream.agentRuntime.version) {
     throw new Error(`Pi Web does not pin ${stack.upstream.agentRuntime.npm}@${stack.upstream.agentRuntime.version}`);
   }
+  const sessionPatch = sessionCommunicationPatch.apply(repoRoot, piWebRoot);
+  if (!sessionPatch.ok) throw new Error(`session communication patch failed: ${sessionPatch.reason}`);
+  const sessionVerification = sessionCommunicationPatch.verify(repoRoot, piWebRoot);
+  if (!sessionVerification.ok) throw new Error(`session communication verification failed: ${sessionVerification.reason}`);
   applyIntegration({ repoRoot, piWebRoot });
   const verification = verifyIntegration({ repoRoot, piWebRoot });
   if (!verification.ok) throw new Error(`integration verification failed: ${verification.reason}`);
   const route = path.join(piWebRoot, ".next", "server", "app", "api", "app-update", "route.js");
   const syntax = spawnSync(process.execPath, ["--check", route], { encoding: "utf8" });
   if (syntax.status !== 0) throw new Error(syntax.stderr || "patched route syntax check failed");
+  const sessionChunk = path.join(piWebRoot, ".next", "server", "chunks", "6429.js");
+  const sessionSyntax = spawnSync(process.execPath, ["--check", sessionChunk], { encoding: "utf8" });
+  if (sessionSyntax.status !== 0) throw new Error(sessionSyntax.stderr || "patched session chunk syntax check failed");
   const removed = removeIntegration(piWebRoot);
   if (removed.action !== "removed") throw new Error(`integration removal failed: ${removed.reason}`);
-  console.log(`Pi Web ${stack.upstream.gui.version} integration fixture passed`);
+  const sessionRemoved = sessionCommunicationPatch.remove(piWebRoot);
+  if (sessionRemoved.action !== "restored") throw new Error(`session communication removal failed: ${sessionRemoved.reason}`);
+  console.log(`Pi Web ${stack.upstream.gui.version} integration and session-activity fixture passed`);
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
 }

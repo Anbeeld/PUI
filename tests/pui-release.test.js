@@ -15,8 +15,10 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.3.4");
-  assert.equal(release.stack.reasoningSummaryPatch.revision, 21, "v1.3.4 must restore on-demand thinking for non-Responses APIs");
+  assert.equal(release.version, "1.3.5");
+  assert.equal(release.stack.reasoningSummaryPatch.revision, 21, "v1.3.5 retains on-demand thinking for non-Responses APIs");
+  assert.equal(release.stack.backgroundTasksPromptPatch.revision, 3, "v1.3.5 must publish background activity and guard PTY teardown");
+  assert.equal(release.stack.sessionCommunicationPatch.revision, 2, "v1.3.5 must keep sessions alive while background tasks run");
   assert.deepEqual(release.stack.skillLoaderExtension, {
     schemaVersion: 1,
     target: "~/.pi/agent/extensions/pui-skill-loader",
@@ -58,7 +60,7 @@ test("the repository release pins every managed direct component", () => {
   assert.equal(release.stack.configPaths.puiModelPolicy, "~/.config/pui/model-policy.json");
   assert.deepEqual(release.stack.sessionCommunicationPatch, {
     schemaVersion: 1,
-    revision: 1,
+    revision: 2,
     piWebPackage: "@agegr/pi-web",
     piWebVersion: "0.8.11",
     chunk: ".next/server/chunks/6429.js",

@@ -557,7 +557,7 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $backgroundPatch apply 2>&1 | ForEach-Object { Write-Host "    $_" }; $backgroundPatchExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
 if ($backgroundPatchExit -ne 0) { Write-Host "  pi-background-tasks compatibility patch could not be applied (version or bundle drift); install aborted." -ForegroundColor Red; $g4 = $false }
-else { Write-Host "  pi-background-tasks compact guidance and runtime isolation applied" }
+else { Write-Host "  pi-background-tasks guidance, runtime isolation, idle activity, and PTY kill guard applied" }
 $subagentsPatch = Join-Path $ScriptDir "lib\pui-subagents-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch apply 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE }

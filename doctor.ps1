@@ -168,11 +168,11 @@ if (Test-Path $mcpShared) {
   Status "MCP footer status" "FAIL" "mcp.json missing (expected $($Stack.mcp.footerStatus))"
 }
 
-# pi-background-tasks compact guidance, runtime isolation, and node-pty binding
+# pi-background-tasks guidance, runtime isolation, idle activity, PTY guard, and native binding
 $backgroundPatch = Join-Path $ScriptDir "lib\pui-background-tasks-patch.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $backgroundPatch verify 2>&1 | Out-Null; $backgroundPatchExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
-Status "pi-background-tasks patch" $(if ($backgroundPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($backgroundPatchExit -eq 0) { "compact guidance; isolated runtime state" } else { "missing or drifted" })
+Status "pi-background-tasks patch" $(if ($backgroundPatchExit -eq 0) { "PASS" } else { "FAIL" }) $(if ($backgroundPatchExit -eq 0) { "compact guidance; isolated state; idle activity; PTY kill guard" } else { "missing or drifted" })
 $nativeCheck = Join-Path $ScriptDir "lib\pui-native-check.js"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $nativeCheck verify (Join-Path $piAgentDir "npm") 2>&1 | Out-Null; $nativeExit = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }

@@ -469,7 +469,7 @@ if ! node "$SCRIPT_DIR/lib/pui-background-tasks-patch.js" apply >/dev/null 2>&1;
   echo "  pi-background-tasks compatibility patch could not be applied (version or bundle drift); install aborted." >&2
   G4=0
 else
-  echo "  pi-background-tasks compact guidance and runtime isolation applied"
+  echo "  pi-background-tasks guidance, runtime isolation, idle activity, and PTY kill guard applied"
 fi
 # Apply PUI's subagent taxonomy, capabilities, routing, model, and reasoning policy.
 if ! node "$SCRIPT_DIR/lib/pui-subagents-patch.js" apply >/dev/null 2>&1; then

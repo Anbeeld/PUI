@@ -571,7 +571,7 @@ if ! node "$BACKGROUND_PATCH" apply >/dev/null 2>&1; then
   echo "  pi-background-tasks compatibility patch could not be applied (version or bundle drift); update aborted." >&2
   exit 1
 fi
-echo "  pi-background-tasks compact guidance and runtime isolation applied"
+echo "  pi-background-tasks guidance, runtime isolation, idle activity, and PTY kill guard applied"
 if ! node "$SUBAGENTS_PATCH" apply >/dev/null 2>&1; then
   echo "  pi-subagents policy patch could not be applied (version or metadata drift); update aborted." >&2
   exit 1

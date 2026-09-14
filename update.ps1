@@ -666,7 +666,7 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $backgroundPatch apply 2>&1 | Out-Null; $backgroundPatchExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
 if ($backgroundPatchExit -ne 0) { Write-Host "  pi-background-tasks compatibility patch could not be applied (version or bundle drift); update aborted." -ForegroundColor Red; exit 1 }
-Write-Host "  pi-background-tasks compact guidance and runtime isolation applied"
+Write-Host "  pi-background-tasks guidance, runtime isolation, idle activity, and PTY kill guard applied"
 $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 try { & node $subagentsPatch apply 2>&1 | Out-Null; $subagentsPatchExit = $LASTEXITCODE }
 finally { $ErrorActionPreference = $prev }
