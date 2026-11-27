@@ -32,7 +32,7 @@ test("PUI manages pi-goal and retires pi-vcc", () => {
 test("PUI owns subagent taxonomy, capabilities, completion delivery, model mapping, and reasoning inheritance", () => {
   assert.deepEqual(stack.subagentsPromptPatch, {
     schemaVersion: 1,
-    revision: 18,
+    revision: 19,
     packagePath: "node_modules/@gotgenes/pi-subagents",
     files: [
       "src/tools/agent-tool.ts",
@@ -63,9 +63,9 @@ test("PUI owns subagent taxonomy, capabilities, completion delivery, model mappi
     maxConcurrent: 128,
     maxQueued: 512,
     modelMappings: {
-      "openai-codex/gpt-6-astra": "openai-codex/gpt-5.6-luna",
-      "openai-codex/gpt-5.6-sol": "openai-codex/gpt-5.6-luna",
-      "openai-codex/gpt-5.6-terra": "openai-codex/gpt-5.6-luna",
+      "gpt-*-astra": "gpt-*-luna",
+      "gpt-*-sol": "gpt-*-luna",
+      "gpt-*-terra": "gpt-*-luna",
     },
   });
   assert.equal(fs.existsSync(path.join(repoRoot, "lib", "pui-subagents-patch.js")), true);

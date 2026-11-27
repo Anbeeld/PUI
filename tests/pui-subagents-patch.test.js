@@ -764,13 +764,13 @@ test("delegation contracts prevent duplicate investigations and unsupported comp
 });
 
 test("recent revisions upgrade and uninstall without losing upstream originals", (t) => {
-  assert.equal(require("../stack.json").subagentsPromptPatch.revision, 18);
-  for (const revision of [14, 16, 17]) {
+  assert.equal(require("../stack.json").subagentsPromptPatch.revision, 19);
+  for (const revision of [14, 16, 17, 18]) {
     for (const action of ["apply", "remove"]) {
       const dir = makePackage();
       t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
       const { PATCH_FILES } = patchModule();
-      const legacyFiles = PATCH_FILES.filter((relative) => relative !== "src/tools/steer-tool.ts");
+      const legacyFiles = revision === 18 ? PATCH_FILES : PATCH_FILES.filter((relative) => relative !== "src/tools/steer-tool.ts");
       installLegacyShape(dir, revision, legacyFiles, `// pui-subagents-patch:policy-v${revision}`);
       assert.equal(patchModule()[action](dir).action, action === "apply" ? "migrated" : "restored");
       if (action === "apply") assert.equal(patchModule().verify(dir).ok, true);
@@ -1456,6 +1456,30 @@ test("runtime resolution uses fuzzy config mappings, parent fallback, and explic
     if (explicit.execution.model !== sol || explicit.execution.thinking !== "low") throw new Error("explicit override failed");
     const unavailable = resolveSpawnConfig(base, registry, { ...info, parentThinkingLevel: "high", modelRegistry: modelRegistry([sol]) }, {});
     if (unavailable.execution.model !== sol || unavailable.execution.thinking !== "high") throw new Error("fallback failed");
+    const familyMappings = { "gpt-*-astra": "gpt-*-luna", "gpt-*-sol": "gpt-*-luna", "gpt-*-terra": "gpt-*-luna" };
+    const newest = { ...luna, id: "gpt-10.2-luna" };
+    const older = { ...luna, id: "gpt-9.9-luna" };
+    for (const id of ["gpt-6-astra", "gpt-5.6-sol", "gpt-7-terra"]) {
+      const parent = { ...sol, provider: "other-provider", id };
+      const familyInfo = { ...info, parentModel: parent, modelMappings: familyMappings, modelRegistry: modelRegistry([parent, older, newest, luna]) };
+      const child = resolveSpawnConfig(base, registry, familyInfo, {});
+      if (child.execution?.model !== newest || child.execution.thinking !== "xhigh") throw new Error("highest Luna family default failed: " + id);
+      const missing = resolveSpawnConfig(base, registry, { ...familyInfo, modelRegistry: modelRegistry([parent]) }, {});
+      if (missing.execution?.model !== parent) throw new Error("missing family child fallback failed");
+      const custom = resolveSpawnConfig(base, registry, { ...familyInfo, modelMappings: { ...familyMappings, [parent.provider + "/" + id]: "openai-codex/gpt-5.6-luna" } }, {});
+      if (custom.execution?.model !== luna) throw new Error("custom mapping did not override family default");
+      const override = resolveSpawnConfig({ ...base, model: parent.provider + "/" + id }, registry, familyInfo, {});
+      if (override.execution?.model !== parent) throw new Error("explicit family override failed");
+    }
+    const sameVersionOtherProvider = { ...newest, provider: "aaa" };
+    const sameVersionParentProvider = { ...newest, provider: sol.provider };
+    const tied = resolveSpawnConfig(base, registry, { ...info, modelMappings: familyMappings, modelRegistry: modelRegistry([sol, sameVersionOtherProvider, sameVersionParentProvider, older]) }, {});
+    if (tied.execution?.model !== sameVersionParentProvider) throw new Error("equal-version provider preference failed");
+    const malformed = { ...newest, id: "gpt-future-luna" };
+    const availableOnly = resolveSpawnConfig(base, registry, { ...info, modelMappings: familyMappings, modelRegistry: { ...modelRegistry([sol, luna, malformed]), getAll: () => [sol, luna, newest] } }, {});
+    if (availableOnly.execution?.model !== luna) throw new Error("unavailable or nonnumeric version selected");
+    const unrelated = resolveSpawnConfig(base, registry, { ...info, parentModel: luna, modelMappings: familyMappings }, {});
+    if (unrelated.execution?.model !== luna) throw new Error("unrelated parent changed");
     const duplicate = resolveSpawnConfig(base, registry, { ...info, modelMappings: { sol: "luna", "gpt-5.6-sol": "luna" } }, {});
     if (!duplicate.error?.includes("Multiple configured mappings")) throw new Error("duplicate parent mapping was not rejected");
     const invalidConfig = resolveSpawnConfig(base, registry, { ...info, configError: "invalid config" }, {});
@@ -1608,7 +1632,7 @@ test("apply migrates revision 5 completion ownership and adds taxonomy ownership
   assert.equal(verify(dir).ok, true);
   assert.equal(PATCH_FILES.includes("src/config/agent-types.ts"), true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 18);
+  assert.equal(manifest.revision, 19);
   assert.equal(manifest.files.length, PATCH_FILES.length);
   for (const relative of PATCH_FILES) {
     assert.equal(fs.existsSync(`${path.join(dir, relative)}.pui-original`), true);
@@ -1627,7 +1651,7 @@ test("apply migrates revision 6 policy ownership to the current revision", (t) =
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 18);
+  assert.equal(manifest.revision, 19);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1642,7 +1666,7 @@ test("apply migrates revision 7 ownership and adds bounded concurrency files", (
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 18);
+  assert.equal(manifest.revision, 19);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1657,7 +1681,7 @@ test("apply migrates revision 8 sequential-routing ownership to the current revi
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 18);
+  assert.equal(manifest.revision, 19);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1672,7 +1696,7 @@ test("apply migrates revision 9 parallel-routing ownership to the current revisi
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 18);
+  assert.equal(manifest.revision, 19);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1687,7 +1711,7 @@ test("apply migrates revision 10 capability ownership to the current revision", 
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 18);
+  assert.equal(manifest.revision, 19);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1702,7 +1726,7 @@ test("apply migrates revision 11 skill-loader capability ownership to the curren
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 18);
+  assert.equal(manifest.revision, 19);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1719,7 +1743,7 @@ test("apply migrates revision 12 prompt ownership and adds result-integrity file
   assert.equal(PATCH_FILES.includes("src/lifecycle/subagent-session.ts"), true);
   assert.equal(PATCH_FILES.includes("src/tools/get-result-report.ts"), true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 18);
+  assert.equal(manifest.revision, 19);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 
@@ -1734,7 +1758,7 @@ test("apply migrates revision 13 ownership and prompt contracts", (t) => {
   assert.equal(result.action, "migrated");
   assert.equal(verify(dir).ok, true);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".pui-subagents-prompt-manifest.json"), "utf8"));
-  assert.equal(manifest.revision, 18);
+  assert.equal(manifest.revision, 19);
   for (const relative of PATCH_FILES) assert.equal(fs.readFileSync(path.join(dir, relative), "utf8").includes(SENTINEL), true);
 });
 

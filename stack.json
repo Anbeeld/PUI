@@ -82,7 +82,7 @@
   },
   "subagentsPromptPatch": {
     "schemaVersion": 1,
-    "revision": 18,
+    "revision": 19,
     "packagePath": "node_modules/@gotgenes/pi-subagents",
     "files": [
       "src/tools/agent-tool.ts",
@@ -196,9 +196,9 @@
     "maxConcurrent": 128,
     "maxQueued": 512,
     "modelMappings": {
-      "openai-codex/gpt-6-astra": "openai-codex/gpt-5.6-luna",
-      "openai-codex/gpt-5.6-sol": "openai-codex/gpt-5.6-luna",
-      "openai-codex/gpt-5.6-terra": "openai-codex/gpt-5.6-luna"
+      "gpt-*-astra": "gpt-*-luna",
+      "gpt-*-sol": "gpt-*-luna",
+      "gpt-*-terra": "gpt-*-luna"
     }
   },
   "backgroundTasksPromptPatch": {
@@ -236,7 +236,10 @@
     "host": "127.0.0.1",
     "port": 30141,
     "url": "http://127.0.0.1:30141",
-    "noOpenFlag": "--no-open"
+    "noOpenFlag": "--no-open",
+    "modelRefresh": {
+      "timeoutMs": 30000
+    }
   },
   "mcp": {
     "footerStatus": "off",

@@ -15,10 +15,10 @@ const {
 test("the repository release pins every managed direct component", () => {
   const release = loadRelease(repoRoot);
   assert.deepEqual(validateRelease(release), []);
-  assert.equal(release.version, "1.3.5");
-  assert.equal(release.stack.reasoningSummaryPatch.revision, 21, "v1.3.5 retains on-demand thinking for non-Responses APIs");
-  assert.equal(release.stack.backgroundTasksPromptPatch.revision, 3, "v1.3.5 must publish background activity and guard PTY teardown");
-  assert.equal(release.stack.sessionCommunicationPatch.revision, 2, "v1.3.5 must keep sessions alive while background tasks run");
+  assert.equal(release.version, "1.3.6");
+  assert.equal(release.stack.reasoningSummaryPatch.revision, 21, "v1.3.6 retains on-demand thinking for non-Responses APIs");
+  assert.equal(release.stack.backgroundTasksPromptPatch.revision, 3, "v1.3.6 must publish background activity and guard PTY teardown");
+  assert.equal(release.stack.sessionCommunicationPatch.revision, 2, "v1.3.6 must keep sessions alive while background tasks run");
   assert.deepEqual(release.stack.skillLoaderExtension, {
     schemaVersion: 1,
     target: "~/.pi/agent/extensions/pui-skill-loader",
@@ -237,4 +237,13 @@ test("CI validates release metadata and exact managed prompt artifacts", () => {
   assert.equal(packageJson.scripts["release:verify-reasoning-summary"], "node tests/verify-reasoning-summary.js");
   assert.match(workflow, /npm run release:verify-reasoning-summary/);
   assert.equal(fs.existsSync(path.join(repoRoot, "tests", "verify-reasoning-summary.js")), true);
+});
+
+test("v1.3.6 validates the bounded startup catalog refresh configuration", () => {
+  const release = loadRelease(repoRoot);
+  for (const timeoutMs of [undefined, 0, -1, "30000", Infinity]) {
+    const invalid = structuredClone(release);
+    invalid.stack.piWeb.modelRefresh.timeoutMs = timeoutMs;
+    assert.ok(validateRelease(invalid).some(error => error.includes("piWeb.modelRefresh.timeoutMs")));
+  }
 });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
+const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -42,11 +43,53 @@ try {
   const sessionChunk = path.join(piWebRoot, ".next", "server", "chunks", "6429.js");
   const sessionSyntax = spawnSync(process.execPath, ["--check", sessionChunk], { encoding: "utf8" });
   if (sessionSyntax.status !== 0) throw new Error(sessionSyntax.stderr || "patched session chunk syntax check failed");
+  // Run the exact npm launcher with isolated provider/Next fixtures. This proves
+  // refresh ordering without credentials, live network calls, or stopping PUI.
+  const launcher = path.join(piWebRoot, "bin", "pi-web.js");
+  const launcherSyntax = spawnSync(process.execPath, ["--check", launcher], { encoding: "utf8" });
+  if (launcherSyntax.status !== 0) throw new Error(launcherSyntax.stderr || "patched launcher syntax check failed");
+  const agentDir = path.join(temp, "agent");
+  fs.mkdirSync(agentDir);
+  const catalog = path.join(agentDir, "models-store.json");
+  const marker = path.join(agentDir, "server-observation.json");
+  const runtime = path.join(piWebRoot, "node_modules", "@earendil-works", "pi-coding-agent");
+  const next = path.join(piWebRoot, "node_modules", "next", "dist", "bin", "next");
+  fs.mkdirSync(runtime, { recursive: true });
+  fs.mkdirSync(path.dirname(next), { recursive: true });
+  fs.writeFileSync(path.join(runtime, "package.json"), JSON.stringify({ name: stack.upstream.agentRuntime.npm, bin: { pi: "cli.cjs" } }));
+  const successfulRefresh = `const fs=require('node:fs'),path=require('node:path');
+    if(JSON.stringify(process.argv.slice(2))!==JSON.stringify(['update','--models','--no-approve']))process.exit(7);
+    fs.writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR,'models-store.json'),'{"fresh":true}');`;
+  fs.writeFileSync(path.join(runtime, "cli.cjs"), successfulRefresh);
+  fs.writeFileSync(next, `const fs=require('node:fs'),path=require('node:path');
+    const root=process.env.PI_CODING_AGENT_DIR;
+    fs.copyFileSync(path.join(root,'models-store.json'),path.join(root,'server-observation.json'));`);
+  const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "0" };
+  function launch(args = ["--no-open"], launchEnv = env) {
+    const run = spawnSync(process.execPath, [launcher, ...args], { env: launchEnv, encoding: "utf8", timeout: 10000 });
+    if (run.error || run.status !== 0) throw new Error("Isolated Pi Web startup failed");
+    return run;
+  }
+  for (let run = 0; run < 2; run += 1) {
+    fs.writeFileSync(catalog, '{"cached":true}');
+    launch();
+    assert.deepEqual(JSON.parse(fs.readFileSync(marker)), { fresh: true });
+  }
+  fs.writeFileSync(path.join(runtime, "cli.cjs"), "process.exit(3)");
+  fs.writeFileSync(catalog, '{"cached":true}');
+  assert.match(launch().stderr, /starting with cached models/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker)), { cached: true });
+  fs.unlinkSync(marker);
+  launch(["--help"]);
+  assert.equal(fs.existsSync(marker), false);
+  fs.writeFileSync(path.join(runtime, "cli.cjs"), successfulRefresh);
+  launch(["--no-open"], { ...env, PI_OFFLINE: "1" });
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker)), { cached: true });
   const removed = removeIntegration(piWebRoot);
   if (removed.action !== "removed") throw new Error(`integration removal failed: ${removed.reason}`);
   const sessionRemoved = sessionCommunicationPatch.remove(piWebRoot);
   if (sessionRemoved.action !== "restored") throw new Error(`session communication removal failed: ${sessionRemoved.reason}`);
-  console.log(`Pi Web ${stack.upstream.gui.version} integration and session-activity fixture passed`);
+  console.log(`Pi Web ${stack.upstream.gui.version} integration, startup model refresh, and session-activity fixture passed`);
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
 }

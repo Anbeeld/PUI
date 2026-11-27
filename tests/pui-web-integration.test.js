@@ -19,6 +19,13 @@ function piWebFixture(root) {
   fs.mkdirSync(path.join(root, ".next", "server", "app", "api", "app-update"), { recursive: true });
   fs.mkdirSync(path.join(root, ".next", "server", "app"), { recursive: true });
   fs.mkdirSync(path.join(root, "public"), { recursive: true });
+  fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(root, "bin", "pi-web.js"), `"use strict";
+if (process.argv.includes("--help")) process.exit(0);
+const nextArgs = ["start", "-p", port];
+nextArgs.push("-H", hostname);
+startServer();
+`);
   fs.mkdirSync(path.join(root, ".next", "static", "chunks", "app"), { recursive: true });
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@agegr/pi-web", version: "0.8.11" }));
   fs.writeFileSync(path.join(root, ".next", "server", "app", "api", "app-update", "route.js"), 'x={62445:(a,b,c)=>{"use strict";c.r(b),c.d(b,{GET:()=>l,dynamic:()=>g});let g="force-dynamic",h="0.8.11";let u="registry.npmjs.org/@agegr%2Fpi-web/latest"},63033:a=>{}}');
@@ -31,7 +38,7 @@ test("apply restores every pre-operation byte when a later integration write fai
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   piWebFixture(root);
   const before = new Map();
-  for (const file of [".next/server/app/api/app-update/route.js", ".next/server/app/index.html", ".next/server/app/api/app-update/route.js.pui-update-original", ".next/server/app/index.html.pui-update-original", "pui-update-bridge.cjs", "public/pui-update.js", ".pui-update-integration.json"]) {
+  for (const file of [".next/server/app/api/app-update/route.js", ".next/server/app/index.html", ".next/server/app/api/app-update/route.js.pui-update-original", ".next/server/app/index.html.pui-update-original", "pui-update-bridge.cjs", "public/pui-update.js", ".pui-update-integration.json", "bin/pi-web.js", "bin/pi-web.js.pui-update-original", "pui-model-refresh.cjs"]) {
     const target = path.join(root, file);
     before.set(file, fs.existsSync(target) ? fs.readFileSync(target) : null);
   }
@@ -48,7 +55,7 @@ test("remove restores every pre-operation byte when a later removal fails", (t) 
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   piWebFixture(root);
   applyIntegration({ repoRoot, piWebRoot: root });
-  const files = [".next/server/app/api/app-update/route.js", ".next/server/app/index.html", ".next/server/app/api/app-update/route.js.pui-update-original", ".next/server/app/index.html.pui-update-original", "pui-update-bridge.cjs", "public/pui-update.js", ".pui-update-integration.json"];
+  const files = [".next/server/app/api/app-update/route.js", ".next/server/app/index.html", ".next/server/app/api/app-update/route.js.pui-update-original", ".next/server/app/index.html.pui-update-original", "pui-update-bridge.cjs", "public/pui-update.js", ".pui-update-integration.json", "bin/pi-web.js", "bin/pi-web.js.pui-update-original", "pui-model-refresh.cjs"];
   const before = new Map(files.map((file) => { const target = path.join(root, file); return [file, fs.existsSync(target) ? fs.readFileSync(target) : null]; }));
   const previous = process.env.PUI_FAIL_INTEGRATION_AT;
   process.env.PUI_FAIL_INTEGRATION_AT = "remove-client";
@@ -706,4 +713,112 @@ test("a rejected restart request keeps the button usable and explains the confli
   assert.match(harness.body.textContent, /already in progress/);
   assert.equal(restart.disabled, false, "button reactivated after a rejected restart");
   assert.equal(harness.reloads(), 0);
+});
+
+test("every integrated Pi Web launch refreshes catalogs before the server, but help does not", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-startup-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  piWebFixture(root);
+  const launcher = path.join(root, "bin", "pi-web.js");
+  const original = fs.readFileSync(launcher, "utf8");
+  applyIntegration({ repoRoot, piWebRoot: root });
+  const events = [];
+  const context = {
+    port: "30141", hostname: "127.0.0.1",
+    process: { argv: [], exit: () => { throw new Error("help exit"); } },
+    require: (name) => {
+      assert.equal(name, "../pui-model-refresh.cjs");
+      return { refreshModels: (options) => { assert.equal(options.timeoutMs, 30000); events.push("refresh"); } };
+    },
+    startServer: () => events.push("server"),
+  };
+  const patched = fs.readFileSync(launcher, "utf8");
+  vm.runInNewContext(patched, context);
+  vm.runInNewContext(patched, { ...context });
+  assert.deepEqual(events, ["refresh", "server", "refresh", "server"]);
+  context.process.argv = ["--help"];
+  assert.throws(() => vm.runInNewContext(patched, { ...context }), /help exit/);
+  assert.equal(events.length, 4);
+  const once = fs.readFileSync(launcher);
+  applyIntegration({ repoRoot, piWebRoot: root });
+  assert.deepEqual(fs.readFileSync(launcher), once);
+  assert.equal(removeIntegration(root).action, "removed");
+  assert.equal(fs.readFileSync(launcher, "utf8"), original);
+  assert.equal(fs.existsSync(path.join(root, "pui-model-refresh.cjs")), false);
+});
+
+test("verified four-file integration migrates and modified startup artifacts are preserved", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-startup-migrate-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  piWebFixture(root);
+  applyIntegration({ repoRoot, piWebRoot: root });
+  const launcher = path.join(root, "bin", "pi-web.js");
+  const original = fs.readFileSync(`${launcher}.pui-update-original`);
+  const manifestFile = path.join(root, ".pui-update-integration.json");
+  const legacy = JSON.parse(fs.readFileSync(manifestFile));
+  delete legacy.files["bin/pi-web.js"];
+  delete legacy.files["pui-model-refresh.cjs"];
+  const { identityHash, ...core } = legacy;
+  legacy.identityHash = crypto.createHash("sha256").update(JSON.stringify(core)).digest("hex");
+  fs.writeFileSync(manifestFile, JSON.stringify(legacy));
+  fs.writeFileSync(launcher, original);
+  fs.unlinkSync(`${launcher}.pui-update-original`);
+  fs.unlinkSync(path.join(root, "pui-model-refresh.cjs"));
+  assert.equal(verifyIntegration({ repoRoot, piWebRoot: root }).ok, false);
+  applyIntegration({ repoRoot, piWebRoot: root });
+  assert.equal(verifyIntegration({ repoRoot, piWebRoot: root }).ok, true);
+  fs.appendFileSync(launcher, "// user change");
+  const changed = fs.readFileSync(launcher);
+  assert.throws(() => applyIntegration({ repoRoot, piWebRoot: root }), /Modified.*preserved/);
+  assert.deepEqual(fs.readFileSync(launcher), changed);
+  assert.equal(removeIntegration(root).action, "preserved");
+});
+
+test("startup write failure restores the pristine integration and every new artifact", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-startup-rollback-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  piWebFixture(root);
+  const launcher = fs.readFileSync(path.join(root, "bin", "pi-web.js"));
+  const previous = process.env.PUI_FAIL_INTEGRATION_AT;
+  process.env.PUI_FAIL_INTEGRATION_AT = "startup";
+  try { assert.throws(() => applyIntegration({ repoRoot, piWebRoot: root }), /Injected/); }
+  finally { if (previous === undefined) delete process.env.PUI_FAIL_INTEGRATION_AT; else process.env.PUI_FAIL_INTEGRATION_AT = previous; }
+  assert.deepEqual(fs.readFileSync(path.join(root, "bin", "pi-web.js")), launcher);
+  for (const file of ["pui-model-refresh.cjs", "bin/pi-web.js.pui-update-original", ".pui-update-integration.json"]) assert.equal(fs.existsSync(path.join(root, file)), false);
+});
+
+test("reconciliation updates an older owned refresh sidecar without stacking launcher or index patches", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-startup-reconcile-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  piWebFixture(root);
+  applyIntegration({ repoRoot, piWebRoot: root });
+  const manifestFile = path.join(root, ".pui-update-integration.json");
+  const sidecar = path.join(root, "pui-model-refresh.cjs");
+  fs.writeFileSync(sidecar, "// previous certified sidecar");
+  const manifest = JSON.parse(fs.readFileSync(manifestFile));
+  manifest.files["pui-model-refresh.cjs"] = crypto.createHash("sha256").update(fs.readFileSync(sidecar)).digest("hex");
+  const { identityHash, ...core } = manifest;
+  manifest.identityHash = crypto.createHash("sha256").update(JSON.stringify(core)).digest("hex");
+  fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+  assert.equal(verifyIntegration({ repoRoot, piWebRoot: root }).reason, "startup-refresh-outdated");
+  applyIntegration({ repoRoot, piWebRoot: root });
+  assert.equal(verifyIntegration({ repoRoot, piWebRoot: root }).ok, true);
+  assert.equal(fs.readFileSync(path.join(root, "bin", "pi-web.js"), "utf8").split("PUI_MODEL_REFRESH_V1").length, 2);
+  assert.equal(fs.readFileSync(path.join(root, ".next/server/app/index.html"), "utf8").split('/pui-update.js?pui=').length, 2);
+});
+
+test("changed sidecars and launcher originals are preserved by apply and uninstall", (t) => {
+  for (const artifact of ["pui-model-refresh.cjs", "bin/pi-web.js.pui-update-original"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pui-startup-drift-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    piWebFixture(root);
+    applyIntegration({ repoRoot, piWebRoot: root });
+    const file = path.join(root, artifact);
+    fs.appendFileSync(file, "// user customization");
+    const before = fs.readFileSync(file);
+    assert.equal(verifyIntegration({ repoRoot, piWebRoot: root }).ok, false);
+    assert.throws(() => applyIntegration({ repoRoot, piWebRoot: root }), /Modified.*preserved/);
+    assert.equal(removeIntegration(root).action, "preserved");
+    assert.deepEqual(fs.readFileSync(file), before);
+  }
 });

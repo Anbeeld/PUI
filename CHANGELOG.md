@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.6
+
+- Added `restart.ps1` and `restart.sh` to stop and relaunch Pi Web using the existing platform launch methods, then verify HTTP health, without installing packages or changing configuration or autostart registration. Active sessions are interrupted; run from a separate terminal after finishing work.
+- Refresh configured Pi provider catalogs on every Pi Web startup, including autostart and Restart, before the server starts. Refresh has a 30-second limit and warns before falling back to cached catalogs on failure; `--help` does not refresh, enabled `PI_OFFLINE` skips network refresh, and terminal Pi is unchanged.
+- Changed default subagent mappings so `gpt-*-astra`, `gpt-*-sol`, and `gpt-*-terra` parents across providers select the highest available numeric-version `gpt-*-luna` child. Custom exact/fuzzy mappings and explicit overrides retain priority; unavailable Luna falls back to the parent. Updates replace untouched retired exact defaults with the new family rules while preserving custom mappings; deleting an old exact default does not suppress a newly shipped family rule.
+
 ## v1.3.5
 
 - Fixed Pi Web crashing and leaving PUI offline when a background task ended, due to interaction with Pi Web's ten-minute idle timer.
